@@ -22,12 +22,17 @@ export function nextStatus(type: string): SessionStatus {
 	}
 }
 
+/** Tools whose call spawns a subagent (Claude Code: `Task`, renamed `Agent` in newer versions). */
+export const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(["Task", "Agent"]);
+
 /**
- * Session-level SubagentStop keeps the session active (nextStatus), but ends that subagent's own
- * agent row: the hub sets agents.ended_at for the event's agent_id.
+ * Does this event end the (sub)agent it is attributed to? The session itself stays active
+ * (nextStatus). Collectors derive subagents from Task/Agent calls, so the PostToolUse of that call
+ * ends the subagent; a SubagentStop that carries a subagent id does too.
  */
-export function endsAgent(type: string): boolean {
-	return type === "SubagentStop";
+export function endsAgent(type: string, tool: string | null = null): boolean {
+	if (type === "SubagentStop") return true;
+	return type === "PostToolUse" && tool !== null && SUBAGENT_TOOLS.has(tool);
 }
 
 // Never time out: `ended` is final; `waiting` needs a human and must stay visible until the next

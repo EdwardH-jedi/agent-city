@@ -122,6 +122,9 @@ export const IngestEvent = Event.extend({
 });
 export type IngestEvent = z.infer<typeof IngestEvent>;
 
+export const IngestBatch = z.array(IngestEvent).min(1);
+export type IngestBatch = z.infer<typeof IngestBatch>;
+
 /** POST /ingest body: a single event or a batch. */
-export const IngestBody = z.union([IngestEvent, z.array(IngestEvent).min(1)]);
+export const IngestBody = z.union([IngestEvent, IngestBatch]);
 export type IngestBody = z.infer<typeof IngestBody>;

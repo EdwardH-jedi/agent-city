@@ -1,0 +1,7 @@
+#!/bin/sh
+# Claude Code hook entry for Agent City. Point every hook `command` at this file's absolute path.
+# Never blocks, never prints to stdout, always exits 0. `--no-env-file` stops Bun from loading the
+# .env of whatever project Claude is working in; the collector reads this checkout's .env itself.
+BUN="${AGENTCITY_BUN:-$(command -v bun 2>/dev/null || echo "$HOME/.bun/bin/bun")}"
+"$BUN" --no-env-file "$(dirname "$0")/../src/claude-hook.ts" 2>/dev/null
+exit 0

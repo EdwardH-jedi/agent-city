@@ -64,15 +64,24 @@ describe("endsAgent", () => {
 		expect(nextStatus("SubagentStop")).toBe("active");
 	});
 
+	test.each(["Task", "Agent"])(
+		"PostToolUse of %s ends the subagent it spawned",
+		(tool) => {
+			expect(endsAgent("PostToolUse", tool)).toBe(true);
+			expect(endsAgent("PreToolUse", tool)).toBe(false);
+		},
+	);
+
 	test.each([
-		"SessionStart",
-		"UserPromptSubmit",
-		"PreToolUse",
-		"PostToolUse",
-		"Notification",
-		"Stop",
-		"SessionEnd",
-	])("%s does not end an agent row", (type) => {
-		expect(endsAgent(type)).toBe(false);
+		["SessionStart", null],
+		["UserPromptSubmit", null],
+		["PreToolUse", "Bash"],
+		["PostToolUse", "Bash"],
+		["PostToolUse", null],
+		["Notification", null],
+		["Stop", null],
+		["SessionEnd", null],
+	] as const)("%s (%s) does not end an agent row", (type, tool) => {
+		expect(endsAgent(type, tool)).toBe(false);
 	});
 });
