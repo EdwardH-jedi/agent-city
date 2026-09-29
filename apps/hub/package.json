@@ -1,0 +1,13 @@
+{
+	"name": "@agent-city/hub",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "cd ../.. && bun --watch apps/hub/src/index.ts"
+	},
+	"dependencies": {
+		"@agent-city/schema": "workspace:*",
+		"hono": "4.13.11"
+	}
+}

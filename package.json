@@ -1,0 +1,24 @@
+{
+	"name": "agent-city",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"packages/*",
+		"apps/*"
+	],
+	"scripts": {
+		"dev": "bun --filter '@agent-city/hub' --filter '@agent-city/web' dev",
+		"dev:hub": "bun --watch apps/hub/src/index.ts",
+		"dev:web": "bun --filter '@agent-city/web' dev",
+		"test": "bun test",
+		"lint": "biome check .",
+		"format": "biome format --write .",
+		"sync:github": "bun apps/hub/src/github/sync.ts",
+		"check:secrets": "bun scripts/check-secrets.ts"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.14",
+		"@types/bun": "1.4.2",
+		"typescript": "7.0.2"
+	}
+}

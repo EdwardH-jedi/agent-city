@@ -1,0 +1,7 @@
+# District → repo mapping for the city view.
+# Values are repo names (owner/name). Unlisted repos land in `uncategorized`.
+games: []
+school: []
+client: []
+infra: []
+uncategorized: []

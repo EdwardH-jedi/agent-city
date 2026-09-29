@@ -1,0 +1,23 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+
+# local data
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+spool/
+
+# deps / build
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+
+# tooling / OS
+.DS_Store
+.remember/
+*.log
