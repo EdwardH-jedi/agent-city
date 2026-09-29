@@ -1,6 +1,6 @@
 // Find git checkouts under REPO_ROOTS and identify them (read-only: `git rev-parse` / `remote get-url`).
 // Remote URLs may embed credentials — only the parsed `owner/name` ever leaves this module.
-import { type Dirent, existsSync, readdirSync } from "node:fs";
+import { type Dirent, existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseGithubRemote } from "@agent-city/schema";
@@ -31,18 +31,23 @@ export function expandRoots(raw: string | undefined): string[] {
 	];
 }
 
+interface RootWalk {
+	exists: boolean;
+	/** Directories we couldn't list — the root's view is incomplete. */
+	unreadable: number;
+	dirs: string[];
+}
+
 /**
  * Directories containing `.git` (dir OR file — worktrees/submodules use a file), at most `maxDepth`
- * levels below each root. Doesn't descend into a repo, dot-dirs, node_modules, or symlinks.
+ * levels below `root`. Doesn't descend into a repo, dot-dirs, node_modules, or symlinks.
  */
-export function findCheckouts(
-	roots: readonly string[],
-	maxDepth = MAX_DEPTH,
-): string[] {
-	const found: string[] = [];
+function walkRoot(root: string, maxDepth: number): RootWalk {
+	const out: RootWalk = { exists: existsSync(root), unreadable: 0, dirs: [] };
+	if (!out.exists) return out;
 	const walk = (dir: string, depth: number) => {
 		if (existsSync(join(dir, ".git"))) {
-			found.push(dir);
+			out.dirs.push(dir);
 			return;
 		}
 		if (depth >= maxDepth) return;
@@ -50,7 +55,8 @@ export function findCheckouts(
 		try {
 			entries = readdirSync(dir, { withFileTypes: true });
 		} catch {
-			return; // unreadable dir
+			out.unreadable++;
+			return;
 		}
 		for (const e of entries) {
 			if (!e.isDirectory() || e.name.startsWith(".") || SKIP_DIRS.has(e.name))
@@ -58,9 +64,37 @@ export function findCheckouts(
 			walk(join(dir, e.name), depth + 1);
 		}
 	};
-	for (const root of roots) if (existsSync(root)) walk(root, 0);
-	return found.sort();
+	walk(root, 0);
+	return out;
 }
+
+export function findCheckouts(
+	roots: readonly string[],
+	maxDepth = MAX_DEPTH,
+): string[] {
+	return roots.flatMap((r) => walkRoot(r, maxDepth).dirs).sort();
+}
+
+export interface RootScan {
+	/** realpath of the root (as stored paths are), or the configured path when it doesn't exist. */
+	path: string;
+	exists: boolean;
+	/** Every directory was readable and every checkout probed without error. */
+	complete: boolean;
+}
+
+export interface LocalScan {
+	roots: RootScan[];
+	checkouts: (LocalCheckout & { root: string })[];
+}
+
+const real = (p: string) => {
+	try {
+		return realpathSync(p);
+	} catch {
+		return p;
+	}
+};
 
 async function git(
 	cwd: string,
@@ -104,17 +138,31 @@ export async function probeCheckout(dir: string): Promise<LocalCheckout> {
 	};
 }
 
+/** Scan every root and report, per root, whether the scan was complete (F07). */
 export async function scanLocal(
 	roots: readonly string[],
 	maxDepth = MAX_DEPTH,
 	concurrency = 8,
-): Promise<LocalCheckout[]> {
-	const dirs = findCheckouts(roots, maxDepth);
-	const out: LocalCheckout[] = [];
-	for (let i = 0; i < dirs.length; i += concurrency) {
-		out.push(
-			...(await Promise.all(dirs.slice(i, i + concurrency).map(probeCheckout))),
-		);
+): Promise<LocalScan> {
+	const result: LocalScan = { roots: [], checkouts: [] };
+	for (const configured of roots) {
+		const walk = walkRoot(configured, maxDepth);
+		const root = walk.exists ? real(configured) : configured;
+		let errors = 0;
+		for (let i = 0; i < walk.dirs.length; i += concurrency) {
+			const probed = await Promise.all(
+				walk.dirs.slice(i, i + concurrency).map(probeCheckout),
+			);
+			for (const c of probed) {
+				if (c.error) errors++;
+				result.checkouts.push({ ...c, root });
+			}
+		}
+		result.roots.push({
+			path: root,
+			exists: walk.exists,
+			complete: walk.exists && walk.unreadable === 0 && errors === 0,
+		});
 	}
-	return out;
+	return result;
 }

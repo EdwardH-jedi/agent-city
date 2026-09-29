@@ -26,6 +26,7 @@ export interface AppDeps {
 export function createApp(deps: AppDeps): Hono {
 	const app = new Hono();
 	const security = deps.security ?? { hubHost: "127.0.0.1" };
+	const spoolDrops = new Map<string, number>();
 
 	// First: reject foreign Host headers (DNS rebinding) on every route, /healthz included.
 	app.use("*", hostGuard(security));
@@ -36,10 +37,12 @@ export function createApp(deps: AppDeps): Hono {
 			ok: true,
 			machine: process.env.AGENTCITY_MACHINE ?? null,
 			ingest: deps.ingestToken ? "enabled" : "disabled",
+			// events each machine's collector spool discarded (size / age / rejected caps), cumulative
+			spool_dropped: Object.fromEntries(spoolDrops),
 			time: new Date().toISOString(),
 		}),
 	);
-	app.route("/ingest", createIngest(deps));
+	app.route("/ingest", createIngest({ ...deps, spoolDrops }));
 	app.route("/api", createApi(deps.db));
 
 	app.onError((err, c) => {

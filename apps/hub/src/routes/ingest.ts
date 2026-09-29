@@ -20,11 +20,21 @@ export interface IngestDeps {
 	/** Unset / empty → ingest disabled (503). */
 	ingestToken: string | undefined;
 	publish: Publish;
+	/** machine → cumulative events its collector spool has discarded (F05), shown on /healthz. */
+	spoolDrops?: Map<string, number>;
 }
+
+const MACHINE_HEADER = /^[A-Za-z0-9._:-]{1,64}$/;
+const COUNT_HEADER = /^\d{1,12}$/;
 
 // POST /ingest — `Authorization: Bearer $INGEST_TOKEN`, body = IngestEvent | IngestEvent[].
 // Never echoes the body back; errors carry zod path/message only.
-export function createIngest({ db, ingestToken, publish }: IngestDeps): Hono {
+export function createIngest({
+	db,
+	ingestToken,
+	publish,
+	spoolDrops,
+}: IngestDeps): Hono {
 	const ingest = new Hono();
 
 	ingest.post(
@@ -43,6 +53,18 @@ export function createIngest({ db, ingestToken, publish }: IngestDeps): Hono {
 			onError: (c) => c.json({ error: "payload too large" }, 413),
 		}),
 		async (c) => {
+			// Authenticated from here on. Collector-side drop counter (validated, never echoed).
+			const machine = c.req.header("x-agentcity-machine");
+			const dropped = c.req.header("x-agentcity-spool-dropped");
+			if (
+				spoolDrops &&
+				machine &&
+				dropped &&
+				MACHINE_HEADER.test(machine) &&
+				COUNT_HEADER.test(dropped)
+			) {
+				spoolDrops.set(machine, Number(dropped));
+			}
 			let raw: unknown;
 			try {
 				raw = await c.req.json();

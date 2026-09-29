@@ -17,7 +17,12 @@ import {
 	parseDistricts,
 	renderDistrictsDraft,
 } from "./districts.ts";
-import { findCheckouts, type LocalCheckout, probeCheckout } from "./local.ts";
+import {
+	findCheckouts,
+	type LocalCheckout,
+	type LocalScan,
+	probeCheckout,
+} from "./local.ts";
 import { dbEtagStore, deriveCi, mapCiRun, syncGithub } from "./sync.ts";
 
 const FAKE_TOKEN = `fake${"t".repeat(32)}`;
@@ -535,7 +540,11 @@ describe("syncGithub", () => {
 				error: "git rev-parse failed",
 			},
 		];
-		let scan = checkouts;
+		const asScan = (cs: LocalCheckout[]): LocalScan => ({
+			roots: [{ path: "/w", exists: true, complete: !cs.some((c) => c.error) }],
+			checkouts: cs.map((c) => ({ ...c, root: "/w" })),
+		});
+		let scan = asScan(checkouts);
 		const s = await syncGithub({
 			db,
 			client,
@@ -579,8 +588,20 @@ describe("syncGithub", () => {
 			db.query("SELECT role FROM machines WHERE id = 'cockpit'").get(),
 		).toEqual({ role: "cockpit" });
 
-		// checkout removed → its path and the orphaned local-only repo disappear; GitHub repos stay
-		scan = checkouts.filter((c) => c.path !== "/w/scratch");
+		// F07: the root had a probe error (/w/broken) → incomplete → a vanished checkout is NOT cleaned up
+		scan = asScan(checkouts.filter((c) => c.path !== "/w/scratch"));
+		const partial = await syncGithub({
+			db,
+			client,
+			districts,
+			now: NOW,
+			local: { machineId: "cockpit", roots: ["/w"], scan: async () => scan },
+		});
+		expect(partial.local?.incompleteRoots).toEqual(["/w"]);
+		expect(repoRow(db, "local/scratch")).not.toBeNull();
+
+		// complete scan of the root → its path and the orphaned local-only repo disappear; GitHub repos stay
+		scan = asScan(checkouts.filter((c) => c.path !== "/w/scratch" && !c.error));
 		await syncGithub({
 			db,
 			client,

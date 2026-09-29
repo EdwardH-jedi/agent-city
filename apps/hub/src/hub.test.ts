@@ -577,3 +577,75 @@ describe("security: /ws Origin", () => {
 		}
 	});
 });
+
+describe("audit F02 / F05 (hub side)", () => {
+	test("F02: token in cwd / branch / model / tool never reaches the DB (hub re-sanitizes)", async () => {
+		const gh = `ghp_${"Q".repeat(36)}`;
+		await post(
+			ctx,
+			ev({
+				type: "Stop",
+				cwd: `/tmp/${gh}`,
+				branch: gh,
+				model: gh,
+				tool: gh,
+				summary: `x ${gh}`,
+			}),
+		);
+		const dump = JSON.stringify([
+			ctx.db.query("SELECT * FROM sessions").all(),
+			ctx.db.query("SELECT * FROM events").all(),
+		]);
+		expect(dump).not.toContain(gh);
+	});
+
+	test("F02: an id carrying a secret is stored as a deterministic hash (retries still dedupe)", async () => {
+		const gh = `ghp_${"R".repeat(36)}`;
+		const e = ev({ id: `evt-${gh}`, session_id: `s-${gh}` });
+		await post(ctx, e);
+		const res = await post(ctx, e);
+		expect(await res.json()).toEqual({ accepted: 0, duplicates: 1 });
+		const dump = JSON.stringify(
+			ctx.db.query("SELECT id, session_id FROM events").all(),
+		);
+		expect(dump).not.toContain(gh);
+		expect(dump).toContain("redacted-");
+	});
+
+	test("F05: authenticated collectors report their drop counter → /healthz", async () => {
+		await ctx.app.request("/ingest", {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${TOKEN}`,
+				"content-type": "application/json",
+				"x-agentcity-machine": "forge",
+				"x-agentcity-spool-dropped": "42",
+			},
+			body: JSON.stringify(ev()),
+		});
+		// unauthenticated / malformed headers are ignored
+		await ctx.app.request("/ingest", {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"x-agentcity-machine": "evil",
+				"x-agentcity-spool-dropped": "999",
+			},
+			body: JSON.stringify(ev()),
+		});
+		await ctx.app.request("/ingest", {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${TOKEN}`,
+				"content-type": "application/json",
+				"x-agentcity-machine": "bad machine!",
+				"x-agentcity-spool-dropped": "-1",
+			},
+			body: JSON.stringify(ev()),
+		});
+		const health = (await (await ctx.app.request("/healthz")).json()) as {
+			spool_dropped: Record<string, number>;
+		};
+		expect(health.spool_dropped).toEqual({ forge: 42 });
+	});
+});

@@ -6,23 +6,28 @@ export interface SecretPattern {
 	re: RegExp;
 }
 
-/** Self-identifying token formats — masked wholesale wherever they appear. */
+/**
+ * Self-identifying token formats — masked wholesale wherever they appear. Prefixes are matched
+ * case-insensitively (GHP_…, XOXC-…); quantifiers are bounded so matching stays linear.
+ */
 export const TOKEN_PATTERNS: readonly SecretPattern[] = [
 	// ghp_ gho_ ghu_ ghs_ ghr_
-	{ name: "github token", re: /\bgh[pousr]_[A-Za-z0-9]{20,}/ },
-	{ name: "github fine-grained PAT", re: /\bgithub_pat_[A-Za-z0-9_]{20,}/ },
-	{ name: "anthropic key", re: /\bsk-ant-[A-Za-z0-9_-]{16,}/ },
-	{ name: "openai-style key", re: /\bsk-[A-Za-z0-9_-]{16,}/ },
-	{ name: "slack token", re: /\bxox[abprs]-[A-Za-z0-9-]{10,}/ },
-	{ name: "aws access key id", re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
-	{ name: "google api key", re: /\bAIza[0-9A-Za-z_-]{35}/ },
+	{ name: "github token", re: /\bgh[pousr]_[A-Za-z0-9]{20,255}/i },
+	{ name: "github fine-grained PAT", re: /\bgithub_pat_[A-Za-z0-9_]{20,255}/i },
+	{ name: "anthropic key", re: /\bsk-ant-[A-Za-z0-9_-]{16,255}/i },
+	{ name: "openai-style key", re: /\bsk-[A-Za-z0-9_-]{16,255}/i },
+	// xoxa- xoxb- xoxc- xoxd- xoxe- xoxp- xoxr- xoxs- …
+	{ name: "slack token", re: /\bxox[a-z]-[A-Za-z0-9-]{10,255}/i },
+	{ name: "aws access key id", re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/i },
+	{ name: "google api key", re: /\bAIza[0-9A-Za-z_-]{35}/i },
 	{
 		name: "jwt",
-		re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
+		re: /\beyJ[A-Za-z0-9_-]{8,2048}\.[A-Za-z0-9_-]{8,8192}\.[A-Za-z0-9_-]{8,2048}/i,
 	},
 	{
+		// No END marker (truncated / partial paste) → everything after BEGIN is hidden.
 		name: "private key",
-		re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?/,
+		re: /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]{0,40}PRIVATE KEY-----|[\s\S]*)/i,
 	},
 ];
 

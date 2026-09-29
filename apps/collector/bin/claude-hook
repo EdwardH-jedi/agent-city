@@ -1,7 +1,25 @@
 #!/bin/sh
 # Claude Code hook entry for Agent City. Point every hook `command` at this file's absolute path.
-# Never blocks, never prints to stdout, always exits 0. `--no-env-file` stops Bun from loading the
-# .env of whatever project Claude is working in; the collector reads this checkout's .env itself.
+# Never blocks, never prints to stdout, always exits 0.
+# - `--no-env-file` stops Bun from loading the .env of whatever project Claude is working in; the
+#   collector reads this checkout's .env itself.
+# - External deadline (F01): Bun is killed after AGENTCITY_HOOK_KILL_S (default 0.6s) even if it is
+#   stuck in synchronous work that its own 500ms timer can't interrupt. The event is spooled before
+#   any network I/O, so a kill never loses it once written.
 BUN="${AGENTCITY_BUN:-$(command -v bun 2>/dev/null || echo "$HOME/.bun/bin/bun")}"
-"$BUN" --no-env-file "$(dirname "$0")/../src/claude-hook.ts" 2>/dev/null
+KILL_AFTER="${AGENTCITY_HOOK_KILL_S:-0.6}"
+DIR="$(dirname "$0")"
+
+# A background job in non-interactive sh gets /dev/null as stdin, so hand the hook payload over on fd 3.
+exec 3<&0
+"$BUN" --no-env-file "$DIR/../src/claude-hook.ts" 0<&3 3<&- >/dev/null 2>&1 &
+pid=$!
+exec 3<&-
+
+# Killer: all fds on /dev/null so a lingering `sleep` can never hold Claude Code's stdout pipe open.
+( sleep "$KILL_AFTER" && kill -9 "$pid" ) </dev/null >/dev/null 2>&1 &
+killer=$!
+
+wait "$pid" 2>/dev/null
+kill "$killer" 2>/dev/null
 exit 0

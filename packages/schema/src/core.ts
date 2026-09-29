@@ -2,6 +2,8 @@
 // Runtime values here must not import types.ts; types are erased at build time.
 export {
 	COMMAND_MAX,
+	clip,
+	INPUT_MAX,
 	REDACTED,
 	redact,
 	redactObject,
@@ -9,5 +11,11 @@ export {
 	type ToolInputSummary,
 } from "./redact.ts";
 export { localRepoId, parseGithubRemote } from "./repo-slug.ts";
+export {
+	fnv1a64,
+	safeId,
+	safeText,
+	sanitizeEvent,
+} from "./sanitize.ts";
 export { endsAgent, nextStatus, SUBAGENT_TOOLS } from "./status.ts";
 export type { AgentKind, IngestEvent, Provider } from "./types.ts";

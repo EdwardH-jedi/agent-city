@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -118,7 +118,11 @@ test("hub unreachable → event lands in the spool, exit 0", async () => {
 		stdout: "pipe",
 	});
 	expect(await proc.exited).toBe(0);
-	const spooled = readFileSync(join(env.AGENTCITY_HOME, "spool.jsonl"), "utf8");
+	// spool-first: after the failed flush the event sits in a claimed spool.*.flushing file
+	const spooled = readdirSync(env.AGENTCITY_HOME)
+		.filter((f) => f.startsWith("spool") && !f.includes("rejected"))
+		.map((f) => readFileSync(join(env.AGENTCITY_HOME, f), "utf8"))
+		.join("");
 	expect(JSON.parse(spooled.trim())).toMatchObject({
 		session_id: "s-down",
 		type: "Stop",

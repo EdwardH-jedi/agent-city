@@ -13,6 +13,8 @@ const KEYS = [
 	"AGENTCITY_MACHINE",
 	"AGENTCITY_HOME",
 	"AGENTCITY_DEBUG",
+	"SPOOL_MAX_MB",
+	"SPOOL_MAX_AGE_DAYS",
 ] as const;
 type Key = (typeof KEYS)[number];
 
@@ -24,6 +26,7 @@ export interface CollectorConfig {
 	home: string;
 	hostname: string;
 	debug: boolean;
+	spoolLimits: { maxBytes: number; maxAgeMs: number };
 }
 
 /** Minimal KEY=VALUE parser (comments, `export `, single/double quotes). Returns only `keys`. */
@@ -49,6 +52,11 @@ export function parseEnvFile(
 	return out;
 }
 
+const positive = (v: string | undefined, fallback: number) => {
+	const n = Number(v);
+	return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
 /** process.env wins over the checkout's .env. */
 export function loadConfig(
 	env: Record<string, string | undefined> = process.env,
@@ -69,5 +77,9 @@ export function loadConfig(
 		home: get("AGENTCITY_HOME") ?? join(homedir(), ".agentcity"),
 		hostname: hostname(),
 		debug: !!get("AGENTCITY_DEBUG"),
+		spoolLimits: {
+			maxBytes: positive(get("SPOOL_MAX_MB"), 20) * 1024 * 1024,
+			maxAgeMs: positive(get("SPOOL_MAX_AGE_DAYS"), 7) * 86_400_000,
+		},
 	};
 }

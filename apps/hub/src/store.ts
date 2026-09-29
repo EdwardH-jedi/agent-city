@@ -9,11 +9,10 @@ import {
 	MachineRole,
 	nextStatus,
 	type Repo,
-	redact,
-	redactObject,
 	type Session,
 	type SessionStatus,
 	STALE_AFTER_MS,
+	sanitizeEvent,
 } from "@agent-city/schema";
 
 export interface IngestResult {
@@ -41,8 +40,11 @@ const utc = (ts: string): string => new Date(ts).toISOString();
  */
 export function ingestEvents(
 	db: Database,
-	batch: readonly IngestEvent[],
+	rawBatch: readonly IngestEvent[],
 ): IngestResult {
+	// Final redaction of every string field — collectors are not trusted (F02). Done first so the
+	// sanitized id is the dedupe key and the sanitized machine id the FK value.
+	const batch = rawBatch.map((e) => sanitizeEvent(e));
 	const upsertMachine = db.query(
 		`INSERT INTO machines (id, hostname, role, last_seen_at) VALUES ($id, $hostname, $role, $ts)
 		 ON CONFLICT(id) DO UPDATE SET
@@ -163,7 +165,7 @@ export function ingestEvents(
 				endAllAgents.run({ session_id: ev.session_id, ts });
 			}
 
-			// Defense in depth: collectors already redact; the hub re-applies before storing.
+			// Already sanitized above (sanitizeEvent on the whole batch).
 			insertEvent.run({
 				id: ev.id,
 				ts,
@@ -173,9 +175,9 @@ export function ingestEvents(
 				provider: ev.provider,
 				type: ev.type,
 				tool: ev.tool,
-				summary: ev.summary === null ? null : redact(ev.summary),
+				summary: ev.summary,
 				repo_id: repoId,
-				payload: JSON.stringify(redactObject(ev.payload_redacted)),
+				payload: JSON.stringify(ev.payload_redacted ?? {}),
 			});
 			result.accepted++;
 			const row = getEvent.get({ id: ev.id });

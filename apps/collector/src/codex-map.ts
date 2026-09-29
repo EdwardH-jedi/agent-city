@@ -11,10 +11,13 @@
 //   IGNORE list (high-volume noise)     → nothing
 //   anything else                       → codex.<type>[/<payload.type>] with an empty payload
 import {
+	clip,
 	type IngestEvent,
 	parseGithubRemote,
 	redact,
-	redactObject,
+	safeId,
+	safeText,
+	sanitizeEvent,
 	summarizeToolInput,
 	type ToolInputSummary,
 } from "@agent-city/schema/core";
@@ -80,12 +83,24 @@ const isObj = (v: unknown): v is Obj =>
 const str = (v: unknown): string | null =>
 	typeof v === "string" && v.length > 0 ? v : null;
 
-/** apply_patch input is a patch (file contents!) — keep only the first touched path. */
+/** apply_patch input is a patch (file contents!) — keep only the first touched path (first 4KB only). */
 function patchPath(input: string): string | null {
 	return (
-		/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m.exec(input)?.[1]?.trim() ??
-		null
+		/^\*\*\* (?:Update|Add|Delete) File: ([^\n]{1,1024})$/m
+			.exec(clip(input))?.[1]
+			?.trim() ?? null
 	);
+}
+
+/** Session context is persisted with offsets — sanitize it at construction (F02). */
+function safeSession(s: CodexSession): CodexSession {
+	return {
+		id: safeId(s.id),
+		cwd: safeText(s.cwd, 1024),
+		repo_id: safeText(s.repo_id, 256),
+		branch: safeText(s.branch, 256),
+		model: safeText(s.model, 128),
+	};
 }
 
 function toolView(p: Obj): { tool: string; view: ToolInputSummary } {
@@ -153,23 +168,23 @@ export function mapCodexLine(
 	): IngestEvent | null => {
 		const s = ctx.session;
 		if (!s) return null;
-		return {
+		return sanitizeEvent({
 			id: `codex:${s.id}:${offset}`,
 			ts,
 			machine_id: deps.machine,
 			session_id: s.id,
 			agent_id: null,
-			provider: "codex",
+			provider: "codex" as const,
 			type: evType,
 			tool,
 			summary: summary === null ? null : redact(summary),
 			repo_id: s.repo_id,
-			payload_redacted: redactObject({ record: key, ...payload }),
+			payload_redacted: { record: key, ...payload },
 			cwd: s.cwd,
 			branch: s.branch,
 			model: s.model,
 			hostname: deps.hostname,
-		};
+		});
 	};
 
 	if (type === "session_meta") {
@@ -178,13 +193,13 @@ export function mapCodexLine(
 		const cwd = str(p.cwd);
 		const git = cwd ? deps.git(cwd) : null;
 		const remote = isObj(p.git) ? str(p.git.repository_url) : null;
-		ctx.session = {
+		ctx.session = safeSession({
 			id,
 			cwd,
 			repo_id: git?.repo_id ?? (remote ? parseGithubRemote(remote) : null),
 			branch: git?.branch ?? null,
 			model: ctx.session?.model ?? null,
-		};
+		});
 		return build("SessionStart", null, "codex session start", {
 			originator: str(p.originator),
 			cli_version: str(p.cli_version),
@@ -198,13 +213,14 @@ export function mapCodexLine(
 	if (type === "turn_context") {
 		const model = str(p.model);
 		const cwd = str(p.cwd);
-		if (model) s.model = model;
-		if (cwd && cwd !== s.cwd) {
+		if (model) s.model = safeText(model, 128);
+		const safeCwd = safeText(cwd, 1024);
+		if (cwd && safeCwd !== s.cwd) {
 			const git = deps.git(cwd);
-			s.cwd = cwd;
+			s.cwd = safeCwd;
 			if (git) {
-				s.repo_id = git.repo_id;
-				s.branch = git.branch;
+				s.repo_id = safeText(git.repo_id, 256);
+				s.branch = safeText(git.branch, 256);
 			}
 		}
 		return build(

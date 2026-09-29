@@ -2,10 +2,11 @@
 // Whitelist only: prompt text, tool_input and tool_response are never copied — just the tool name,
 // a file path, the first 80 chars of a command (redacted) and lengths.
 import {
+	clip,
 	type IngestEvent,
 	redact,
-	redactObject,
 	SUBAGENT_TOOLS,
+	sanitizeEvent,
 	summarizeToolInput,
 } from "@agent-city/schema/core";
 import type { GitInfo } from "./git-info.ts";
@@ -34,13 +35,86 @@ const isObj = (v: unknown): v is Obj =>
 	typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | null =>
 	typeof v === "string" && v.length > 0 ? v : null;
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
+
+/** Hook input reduced to the fields we use; every string capped (F01), the prompt reduced to its length. */
+export interface ClaudeInput {
+	session_id: string | null;
+	hook_event_name: string | null;
+	tool_name: string | null;
+	tool_use_id: string | null;
+	cwd: string | null;
+	model: string | null;
+	source: string | null;
+	reason: string | null;
+	message: string | null;
+	notification_type: string | null;
+	permission_mode: string | null;
+	transcript_path: string | null;
+	agent_id: string | null;
+	agent_type: string | null;
+	prompt_length: number | null;
+	tool_input: {
+		command?: string;
+		file_path?: string;
+		path?: string;
+		notebook_path?: string;
+		subagent_type?: string;
+		description?: string;
+	} | null;
+}
+
+const FIELD_MAX = 4096;
+const pickStr = (v: unknown, max = FIELD_MAX): string | null =>
+	typeof v === "string" && v.length > 0 ? clip(v, max) : null;
+
+/**
+ * Copy only what the mapper needs out of the parsed hook JSON. The caller drops its reference to the
+ * full object right after, so prompt text / tool_input / tool_response never travel further.
+ */
+export function pickClaudeInput(raw: unknown): ClaudeInput | null {
+	if (!isObj(raw)) return null;
+	const ti = isObj(raw.tool_input) ? raw.tool_input : null;
+	const tool_input: ClaudeInput["tool_input"] = ti ? {} : null;
+	if (ti && tool_input) {
+		for (const k of [
+			"command",
+			"file_path",
+			"path",
+			"notebook_path",
+			"subagent_type",
+			"description",
+		] as const) {
+			const v = pickStr(ti[k]);
+			if (v !== null) tool_input[k] = v;
+		}
+	}
+	return {
+		session_id: pickStr(raw.session_id, 256),
+		hook_event_name: pickStr(raw.hook_event_name, 64),
+		tool_name: pickStr(raw.tool_name, 256),
+		tool_use_id: pickStr(raw.tool_use_id, 256),
+		cwd: pickStr(raw.cwd),
+		model: pickStr(raw.model, 256),
+		source: pickStr(raw.source, 64),
+		reason: pickStr(raw.reason, 64),
+		message: pickStr(raw.message),
+		notification_type: pickStr(raw.notification_type, 64),
+		permission_mode: pickStr(raw.permission_mode, 64),
+		transcript_path: pickStr(raw.transcript_path),
+		agent_id: pickStr(raw.agent_id, 256),
+		agent_type: pickStr(raw.agent_type, 128),
+		prompt_length: typeof raw.prompt === "string" ? raw.prompt.length : null,
+		tool_input,
+	};
+}
 
 export function mapClaudeHook(
-	input: unknown,
+	raw: unknown,
 	ctx: MapContext,
 ): IngestEvent | null {
-	if (!isObj(input)) return null;
+	// Accept either the raw hook JSON or an already-picked ClaudeInput (the hook picks early).
+	const input = isPicked(raw) ? raw : pickClaudeInput(raw);
+	if (!input) return null;
 	const sessionId = str(input.session_id);
 	if (!sessionId) return null;
 
@@ -49,7 +123,7 @@ export function mapClaudeHook(
 	const toolUseId = str(input.tool_use_id);
 	const cwd = str(input.cwd);
 	const git = cwd ? ctx.git(cwd) : null;
-	const toolInput = isObj(input.tool_input) ? input.tool_input : {};
+	const toolInput: Obj = input.tool_input ?? {};
 	const toolSummary = tool ? summarizeToolInput(tool, input.tool_input) : null;
 
 	// Subagents are derived from the Task/Agent call that spawns them: Pre creates, Post ends.
@@ -74,7 +148,7 @@ export function mapClaudeHook(
 			break;
 		case "UserPromptSubmit": {
 			// prompt body is never stored — only its length
-			const len = typeof input.prompt === "string" ? input.prompt.length : 0;
+			const len = input.prompt_length ?? 0;
 			payload.prompt_length = len;
 			summary = `prompt (${len} chars)`;
 			break;
@@ -112,7 +186,7 @@ export function mapClaudeHook(
 	payload.permission_mode = str(input.permission_mode);
 	payload.transcript_path = str(input.transcript_path);
 
-	return {
+	return sanitizeEvent({
 		id: toolUseId
 			? `cc:${sessionId}:${hook}:${toolUseId}`
 			: `cc:${ctx.newId()}`,
@@ -120,12 +194,12 @@ export function mapClaudeHook(
 		machine_id: ctx.machine,
 		session_id: sessionId,
 		agent_id: spawnsSubagent ? `sub:${toolUseId}` : null,
-		provider: "claude",
+		provider: "claude" as const,
 		type: hook,
 		tool,
 		summary: summary === null ? null : redact(summary),
 		repo_id: git?.repo_id ?? null,
-		payload_redacted: redactObject(payload),
+		payload_redacted: payload,
 		cwd,
 		branch: git?.branch ?? null,
 		model: str(input.model),
@@ -137,5 +211,14 @@ export function mapClaudeHook(
 					agent_label: subagentType ? clip(redact(subagentType), 60) : null,
 				}
 			: {}),
-	};
+	});
+}
+
+const PICKED = Symbol("picked");
+const isPicked = (v: unknown): v is ClaudeInput =>
+	isObj(v) && (v as Record<symbol, unknown>)[PICKED] === true;
+/** Mark a picked input so mapClaudeHook doesn't re-pick it. */
+export function markPicked(input: ClaudeInput): ClaudeInput {
+	Object.defineProperty(input, PICKED, { value: true });
+	return input;
 }

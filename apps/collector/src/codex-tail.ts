@@ -7,7 +7,11 @@
 // - a partial trailing line is never consumed; inode change / truncation → start over
 // - first sight of a file older than CODEX_BACKFILL_HOURS (default 2): only line 1 (session_meta)
 //   is read, then it's tailed from EOF — no flood of months-old history
-// - a bad line is skipped, never fatal; delivery = POST or spool, then state is saved
+// - a bad line is skipped, never fatal
+// - offsets are committed only after the events are delivered or durably spooled (F06): pollOnce
+//   works on copies and returns `commit()`; a failed delivery re-reads the same lines next tick
+//   (same deterministic ids → the hub dedupes)
+// - call_id → tool name survives across polls for the life of the process (F11)
 import {
 	closeSync,
 	type Dirent,
@@ -101,6 +105,25 @@ function readRange(path: string, from: number, max: number): Buffer {
 	}
 }
 
+/** Per-file call_id → tool maps, kept across polls (not persisted; a restart only loses names). */
+const CALLS = new WeakMap<TailState, Map<string, Map<string, string>>>();
+function callsFor(state: TailState, path: string): Map<string, string> {
+	let byFile = CALLS.get(state);
+	if (!byFile) {
+		byFile = new Map();
+		CALLS.set(state, byFile);
+	}
+	let calls = byFile.get(path);
+	if (!calls) {
+		calls = new Map();
+		byFile.set(path, calls);
+	}
+	return calls;
+}
+
+/** Events from one poll; `commit()` applies the new offsets to the state (call after delivery). */
+export type PollResult = IngestEvent[] & { commit(): void };
+
 export interface PollOptions {
 	root: string;
 	state: TailState;
@@ -110,9 +133,13 @@ export interface PollOptions {
 	deps: CodexMapDeps;
 }
 
-/** Read everything new, map to events, advance offsets in `state` (caller persists after delivery). */
-export function pollOnce(opts: PollOptions): IngestEvent[] {
+/**
+ * Read everything new and map it to events. `state` is NOT modified until the returned `commit()` is
+ * called — deliver first, then commit, then saveState.
+ */
+export function pollOnce(opts: PollOptions): PollResult {
 	const events: IngestEvent[] = [];
+	const next: Record<string, FileState> = {};
 	for (const path of listRolloutFiles(
 		opts.root,
 		opts.now - (opts.maxAgeMs ?? MAX_AGE_MS),
@@ -123,13 +150,19 @@ export function pollOnce(opts: PollOptions): IngestEvent[] {
 		} catch {
 			continue;
 		}
-		let file = opts.state.files[path];
-		if (file && (file.ino !== st.ino || st.size < file.offset))
+		const committed = opts.state.files[path];
+		let file: FileState | undefined = committed
+			? {
+					...committed,
+					session: committed.session ? { ...committed.session } : null,
+				}
+			: undefined;
+		const calls = callsFor(opts.state, path);
+		if (file && (file.ino !== st.ino || st.size < file.offset)) {
 			file = undefined; // rotated / truncated → start over
-		const ctx: CodexFileContext = {
-			session: file?.session ?? null,
-			calls: new Map(),
-		};
+			calls.clear();
+		}
+		const ctx: CodexFileContext = { session: file?.session ?? null, calls };
 
 		if (!file) {
 			file = { offset: 0, ino: st.ino, session: null };
@@ -144,12 +177,12 @@ export function pollOnce(opts: PollOptions): IngestEvent[] {
 				if (nl > 0) mapCodexLine(head.slice(0, nl), 0, ctx, opts.deps);
 				file.session = ctx.session;
 				file.offset = st.size;
-				opts.state.files[path] = file;
+				next[path] = file;
 				continue;
 			}
 		}
 		if (st.size <= file.offset) {
-			opts.state.files[path] = file;
+			next[path] = file;
 			continue;
 		}
 
@@ -172,12 +205,20 @@ export function pollOnce(opts: PollOptions): IngestEvent[] {
 		if (pos === 0 && buf.length === MAX_READ) pos = buf.length; // one giant line: skip, don't stall
 		file.offset += pos;
 		file.session = ctx.session;
-		opts.state.files[path] = file;
+		next[path] = file;
 	}
-	for (const p of Object.keys(opts.state.files)) {
-		if (!existsSync(p)) delete opts.state.files[p];
-	}
-	return events;
+	const gone = Object.keys(opts.state.files).filter((p) => !existsSync(p));
+	const state = opts.state;
+	return Object.defineProperty(events, "commit", {
+		enumerable: false,
+		value: () => {
+			Object.assign(state.files, next);
+			for (const p of gone) {
+				delete state.files[p];
+				CALLS.get(state)?.delete(p);
+			}
+		},
+	}) as PollResult;
 }
 
 if (import.meta.main) {
@@ -189,7 +230,7 @@ if (import.meta.main) {
 	mkdirSync(cfg.home, { recursive: true, mode: 0o700 });
 
 	const state = loadState(statePath);
-	const spool = new Spool(cfg.home);
+	const spool = new Spool(cfg.home, cfg.spoolLimits);
 	const transport = createTransport(cfg, 5_000);
 	const deps: CodexMapDeps = {
 		machine: cfg.machine,
@@ -216,6 +257,7 @@ if (import.meta.main) {
 			if (events.length) {
 				const outcome = await deliver(events, spool, transport);
 				console.log(`[codex-tail] ${events.length} events ${outcome}`);
+				if (outcome === "failed") return; // not durable → don't commit; re-read next tick
 			} else if (Date.now() - lastFlush > 5_000 && spool.pending()) {
 				// also drains what Claude hooks spooled while the hub was down
 				const r = await spool.flush(transport);
@@ -225,7 +267,8 @@ if (import.meta.main) {
 					);
 				lastFlush = Date.now();
 			}
-			saveState(statePath, state); // after delivery (sent or spooled)
+			events.commit(); // delivered or durably spooled
+			saveState(statePath, state);
 		} catch (err) {
 			console.error(`[codex-tail] ${(err as Error).message}`);
 		} finally {

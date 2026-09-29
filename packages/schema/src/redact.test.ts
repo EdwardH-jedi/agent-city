@@ -175,7 +175,8 @@ describe("regression 3 — token patterns", () => {
 
 	test("unterminated PEM block is masked to the end", () => {
 		const head = `${"-".repeat(5)}BEGIN ${["PRIVATE", "KEY"].join(" ")}${"-".repeat(5)}`;
-		expect(redact(`${head}\nMIIabc`)).toBe(`${REDACTED}\nMIIabc`);
+		// F03: no END marker → everything after BEGIN is hidden
+		expect(redact(`${head}\nMIIabc`)).toBe(REDACTED);
 	});
 });
 

@@ -299,9 +299,10 @@ describe("mapClaudeHook", () => {
 
 // ── spool / delivery ───────────────────────────────────────────────────────
 
-const ev = (id: string): IngestEvent => ({
+// Fresh timestamps: the spool drops events older than SPOOL_MAX_AGE_DAYS at flush time.
+const ev = (id: string, ts = new Date().toISOString()): IngestEvent => ({
 	id,
-	ts: "2026-06-01T00:00:00.000Z",
+	ts,
 	machine_id: "cockpit",
 	session_id: "s1",
 	agent_id: null,
@@ -338,8 +339,8 @@ describe("spool", () => {
 
 		up = true;
 		expect(await deliver([ev("c")], spool, t)).toBe("sent");
-		// older spooled batch first, then the new event
-		expect(received.slice(-2)).toEqual([["a", "b"], ["c"]]);
+		// each delivery claims its own spool file; recovery sends them oldest-first
+		expect(received.slice(-3).flat()).toEqual(["a", "b", "c"]);
 		expect(spool.pending()).toBe(false);
 	});
 
@@ -599,28 +600,63 @@ describe("pollOnce", () => {
 	});
 	const turn = rec("event_msg", { type: "task_complete" });
 
-	test("partial trailing line waits; restart with saved state → no duplicates", () => {
+	test("partial trailing line waits; committed state survives a restart → no duplicates", () => {
 		const { root, file } = setup();
 		writeFileSync(file, `${META}\n${turn}\n${turn.slice(0, 10)}`);
 		const state: TailState = { files: {} };
-		expect(pollOnce(opts(root, state)).map((e) => e.type)).toEqual([
-			"SessionStart",
-			"Stop",
-		]);
+		const first = pollOnce(opts(root, state));
+		expect(first.map((e) => e.type)).toEqual(["SessionStart", "Stop"]);
+		first.commit();
 
 		appendFileSync(file, `${turn.slice(10)}\n`);
 		const restarted: TailState = JSON.parse(JSON.stringify(state)); // as if loaded from disk
 		const next = pollOnce(opts(root, restarted));
 		expect(next.map((e) => e.type)).toEqual(["Stop"]);
 		expect(next[0]?.session_id).toBe("cx-1"); // session context survived the restart
-		expect(pollOnce(opts(root, restarted))).toEqual([]);
+		next.commit();
+		expect(pollOnce(opts(root, restarted))).toHaveLength(0);
+	});
+
+	test("F06: without commit (delivery failed) the same lines are read again; commit is not serialized", () => {
+		const { root, file } = setup();
+		writeFileSync(file, `${META}\n${turn}\n`);
+		const state: TailState = { files: {} };
+		const a = pollOnce(opts(root, state));
+		expect(state.files).toEqual({}); // nothing committed yet
+		const b = pollOnce(opts(root, state));
+		expect(b.map((e) => e.id)).toEqual(a.map((e) => e.id)); // same deterministic ids
+		b.commit();
+		expect(Object.values(state.files)[0]?.offset).toBeGreaterThan(0);
+		expect(JSON.stringify(state)).not.toContain("commit");
+		expect(pollOnce(opts(root, state))).toHaveLength(0);
+	});
+
+	test("F11: call_id → tool survives across polls", () => {
+		const { root, file } = setup();
+		const call = rec("response_item", {
+			type: "function_call",
+			name: "exec_command",
+			call_id: "c9",
+			arguments: JSON.stringify({ cmd: "true" }),
+		});
+		writeFileSync(file, `${META}\n${call}\n`);
+		const state: TailState = { files: {} };
+		pollOnce(opts(root, state)).commit();
+		appendFileSync(
+			file,
+			`${rec("response_item", { type: "function_call_output", call_id: "c9", output: "x" })}\n`,
+		);
+		const post = pollOnce(opts(root, state));
+		expect(post.map((e) => [e.type, e.tool])).toEqual([
+			["PostToolUse", "exec_command"],
+		]);
 	});
 
 	test("truncated file starts over", () => {
 		const { root, file } = setup();
 		writeFileSync(file, `${META}\n${turn}\n${turn}\n`);
 		const state: TailState = { files: {} };
-		pollOnce(opts(root, state));
+		pollOnce(opts(root, state)).commit();
 		truncateSync(file, 0);
 		writeFileSync(file, `${META}\n`);
 		expect(pollOnce(opts(root, state)).map((e) => e.type)).toEqual([
@@ -632,7 +668,9 @@ describe("pollOnce", () => {
 		const { root, file } = setup();
 		writeFileSync(file, `${META}\n${turn}\n${turn}\n`);
 		const state: TailState = { files: {} };
-		expect(pollOnce(opts(root, state, -1))).toEqual([]); // everything counts as old
+		const skipped = pollOnce(opts(root, state, -1));
+		expect(skipped).toHaveLength(0); // everything counts as old
+		skipped.commit();
 		appendFileSync(file, `${turn}\n`);
 		const e = pollOnce(opts(root, state, -1));
 		expect(e.map((x) => [x.type, x.session_id])).toEqual([["Stop", "cx-1"]]);
@@ -662,11 +700,14 @@ describe("mergeHooks", () => {
 		expect(merged.theme).toBe("dark");
 		expect(merged.hooks?.PreToolUse).toEqual([
 			existing.hooks.PreToolUse[0] as object,
-			{ matcher: "*", hooks: [{ type: "command", command: CMD, timeout: 5 }] },
+			{
+				matcher: "*",
+				hooks: [{ type: "command", async: true, timeout: 2, command: CMD }],
+			},
 		]);
 		expect(merged.hooks?.StopFailure).toEqual(existing.hooks.StopFailure);
 		expect(merged.hooks?.SessionStart).toEqual([
-			{ hooks: [{ type: "command", command: CMD, timeout: 5 }] },
+			{ hooks: [{ type: "command", async: true, timeout: 2, command: CMD }] },
 		]);
 		expect(existing.hooks.PreToolUse).toHaveLength(1); // input not mutated
 	});

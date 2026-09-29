@@ -21,7 +21,7 @@ import {
 	type TokenSource,
 } from "./client.ts";
 import { type Districts, loadDistricts } from "./districts.ts";
-import { expandRoots, type LocalCheckout, scanLocal } from "./local.ts";
+import { expandRoots, type LocalScan, scanLocal } from "./local.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const ACTIVE_WINDOW_DAYS = 90; // history + CI only for repos pushed within this window
@@ -148,6 +148,8 @@ export interface LocalSummary {
 	localOnly: { id: string; path: string; reason: string }[];
 	worktrees: number;
 	errors: number;
+	/** Roots missing or not fully scanned — their existing mappings were kept as-is (F07). */
+	incompleteRoots: string[];
 }
 
 export interface SyncSummary {
@@ -171,7 +173,7 @@ export interface LocalOptions {
 	machineId: string;
 	roots: readonly string[];
 	/** Injectable for tests. */
-	scan?: (roots: readonly string[]) => Promise<LocalCheckout[]>;
+	scan?: (roots: readonly string[]) => Promise<LocalScan>;
 }
 
 export interface SyncOptions {
@@ -374,7 +376,8 @@ async function mapLocal(
 	districts: Districts,
 	nowIso: string,
 ): Promise<LocalSummary> {
-	const checkouts = await (local.scan ?? scanLocal)(local.roots);
+	const scan = await (local.scan ?? scanLocal)(local.roots);
+	const checkouts = scan.checkouts;
 	const known = new Map(
 		db
 			.query<{ id: string }, []>("SELECT id FROM repos WHERE is_local_only = 0")
@@ -388,6 +391,7 @@ async function mapLocal(
 		localOnly: [],
 		worktrees: 0,
 		errors: 0,
+		incompleteRoots: scan.roots.filter((r) => !r.complete).map((r) => r.path),
 	};
 
 	const upsertMachine = db.query(
@@ -447,14 +451,23 @@ async function mapLocal(
 			});
 			seen.push(c.path);
 		}
-		// Complete scan → forget checkouts that disappeared, then local-only repos with no checkout.
-		const keep = seen.map((_, i) => `$p${i}`).join(", ");
-		db.query(
-			`DELETE FROM repo_paths WHERE machine_id = $m${seen.length ? ` AND path NOT IN (${keep})` : ""}`,
-		).run({
-			m: local.machineId,
-			...Object.fromEntries(seen.map((p, i) => [`p${i}`, p])),
-		});
+		// Forget checkouts that disappeared — but only under roots scanned completely (F07). Mappings
+		// under a missing root, a root with unreadable dirs or probe errors, or outside every root stay.
+		const complete = scan.roots.filter((r) => r.complete).map((r) => r.path);
+		const under = (p: string) =>
+			complete.some((r) => p === r || p.startsWith(`${r}/`));
+		const seenSet = new Set(seen);
+		const del = db.query(
+			"DELETE FROM repo_paths WHERE machine_id = $m AND path = $path",
+		);
+		for (const { path } of db
+			.query<{ path: string }, { m: string }>(
+				"SELECT path FROM repo_paths WHERE machine_id = $m",
+			)
+			.all({ m: local.machineId })) {
+			if (!seenSet.has(path) && under(path))
+				del.run({ m: local.machineId, path });
+		}
 		db.run(
 			"DELETE FROM repos WHERE is_local_only = 1 AND id NOT IN (SELECT repo_id FROM repo_paths)",
 		);
@@ -475,25 +488,23 @@ export async function runConfiguredSync(
 		etags: dbEtagStore(db),
 		minRemaining: Number(env.GITHUB_RATE_MIN || 200),
 	});
-	// A scan finding nothing triggers cleanup of this machine's repo_paths — so if no root exists at
-	// all (typo, unmounted disk) skip local mapping instead of wiping it.
+	// Every configured root is scanned; a missing / partially readable root keeps its old mappings.
 	const roots = expandRoots(env.REPO_ROOTS);
-	const existing = roots.filter((r) => existsSync(r));
 	const summary = await syncGithub({
 		db,
 		client,
 		districts: loadDistricts(),
 		local:
-			existing.length > 0
-				? { machineId: env.AGENTCITY_MACHINE || "cockpit", roots: existing }
+			roots.length > 0
+				? { machineId: env.AGENTCITY_MACHINE || "cockpit", roots }
 				: null,
 	});
-	for (const r of roots.filter((r) => !existing.includes(r))) {
+	for (const r of roots.filter((r) => !existsSync(r))) {
 		summary.warnings.push(`REPO_ROOTS entry does not exist: ${r}`);
 	}
-	if (roots.length > 0 && existing.length === 0) {
+	if (summary.local?.incompleteRoots.length) {
 		summary.warnings.push(
-			"no REPO_ROOTS directory exists — local mapping skipped, repo_paths left untouched",
+			`incomplete local scan, mappings kept for: ${summary.local.incompleteRoots.join(", ")}`,
 		);
 	}
 	return { ...summary, tokenSource: source };

@@ -2,7 +2,9 @@
 // block the agent.
 // - always exit 0, whatever happens (bad JSON, hub down, disk full, stdin never closed…)
 // - never print to stdout (Claude Code may interpret it); never log payload contents
-// - bounded: 500ms hard deadline, 200ms stdin, 300ms POST; on failure → spool
+// - bounded: bin/claude-hook kills us at 600ms no matter what (even a synchronous stall); internally
+//   a 500ms exit timer, 200ms stdin, and all work (spool append → POST) inside 450ms
+// - spool first, then POST (F04): the event is on disk before any network I/O
 // Imports stay zod-free (@agent-city/schema/core) to keep startup small.
 
 // Hard deadline: armed as the first statement of this module (the static imports below are hoisted
@@ -13,7 +15,7 @@ setTimeout(() => process.exit(0), HARD_DEADLINE_MS).unref();
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { mapClaudeHook } from "./claude-map.ts";
+import { mapClaudeHook, markPicked, pickClaudeInput } from "./claude-map.ts";
 import { loadConfig } from "./config.ts";
 import { gitInfo } from "./git-info.ts";
 import { createTransport, deliver, Spool } from "./spool.ts";
@@ -22,8 +24,8 @@ const STARTED = Date.now();
 const STDIN_TIMEOUT_MS = 200;
 const STDIN_MAX_BYTES = 1024 * 1024;
 const POST_TIMEOUT_MS = 300;
-/** Stop starting new work (spool flush chunks) after this; the watchdog is the backstop. */
-const WORK_DEADLINE_MS = 400;
+/** Everything (append + POST) must finish by then; the 500ms timer and the launcher are backstops. */
+const WORK_DEADLINE_MS = 450;
 
 /**
  * Read stdin until EOF, `timeoutMs`, or `maxBytes` — whichever comes first. Bytes past the cap are
@@ -72,8 +74,15 @@ function debug(msg: string): void {
 }
 
 async function main(): Promise<void> {
-	const raw = await readStdin(STDIN_TIMEOUT_MS, STDIN_MAX_BYTES);
-	const event = mapClaudeHook(JSON.parse(raw), {
+	// Keep only the fields we use, then drop every reference to the full input (prompt text,
+	// tool_input, tool_response) before doing anything else.
+	let raw: string | null = await readStdin(STDIN_TIMEOUT_MS, STDIN_MAX_BYTES);
+	let parsed: unknown = JSON.parse(raw);
+	raw = null;
+	const picked = pickClaudeInput(parsed);
+	parsed = null;
+	if (!picked) return;
+	const event = mapClaudeHook(markPicked(picked), {
 		machine: cfg.machine,
 		hostname: cfg.hostname,
 		now: () => new Date(),
@@ -83,7 +92,7 @@ async function main(): Promise<void> {
 	if (!event) return;
 	const outcome = await deliver(
 		[event],
-		new Spool(cfg.home),
+		new Spool(cfg.home, cfg.spoolLimits),
 		createTransport(cfg, POST_TIMEOUT_MS),
 		STARTED + WORK_DEADLINE_MS,
 	);

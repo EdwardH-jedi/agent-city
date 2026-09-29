@@ -14,7 +14,14 @@ interface HookCmd {
 	type: string;
 	command?: string;
 	timeout?: number;
+	async?: boolean;
 }
+
+/**
+ * Observation only → async (Claude Code doesn't wait for it) and a 2s timeout as a last resort; the
+ * launcher itself kills the hook at 0.6s.
+ */
+export const HOOK_ENTRY = { type: "command", async: true, timeout: 2 } as const;
 interface HookGroup {
 	matcher?: string;
 	hooks?: HookCmd[];
@@ -27,25 +34,39 @@ type Settings = Record<string, unknown> & {
 export function mergeHooks(
 	settings: Settings,
 	command: string,
-): { merged: Settings; added: string[] } {
+): { merged: Settings; added: string[]; updated: string[] } {
 	const merged: Settings = structuredClone(settings);
 	merged.hooks ??= {};
 	const hooks = merged.hooks;
 	const added: string[] = [];
+	const updated: string[] = [];
 	for (const event of CLAUDE_HOOK_EVENTS) {
 		hooks[event] ??= [];
 		const groups = hooks[event];
-		const present = groups.some((g) =>
-			(g.hooks ?? []).some((h) => h.command === command),
+		const ours = groups.flatMap((g) =>
+			(g.hooks ?? []).filter((h) => h.command === command),
 		);
-		if (present) continue;
+		if (ours.length > 0) {
+			// Already installed: bring our own entries up to the current settings (older installs had
+			// timeout 5 and no async). Other hooks are never touched.
+			let changed = false;
+			for (const h of ours) {
+				if (h.async !== HOOK_ENTRY.async || h.timeout !== HOOK_ENTRY.timeout) {
+					h.async = HOOK_ENTRY.async;
+					h.timeout = HOOK_ENTRY.timeout;
+					changed = true;
+				}
+			}
+			if (changed) updated.push(event);
+			continue;
+		}
 		groups.push({
 			...(TOOL_EVENTS.has(event) ? { matcher: "*" } : {}),
-			hooks: [{ type: "command", command, timeout: 5 }],
+			hooks: [{ ...HOOK_ENTRY, command }],
 		});
 		added.push(event);
 	}
-	return { merged, added };
+	return { merged, added, updated };
 }
 
 if (import.meta.main) {
@@ -72,7 +93,7 @@ if (import.meta.main) {
 	const current: Settings = existsSync(settingsPath)
 		? JSON.parse(readFileSync(settingsPath, "utf8"))
 		: {};
-	const { merged, added } = mergeHooks(current, HOOK_BIN);
+	const { merged, added, updated } = mergeHooks(current, HOOK_BIN);
 	mkdirSync(dirname(outPath), { recursive: true, mode: 0o700 });
 	writeFileSync(outPath, `${JSON.stringify(merged, null, 2)}\n`, {
 		mode: 0o600,
@@ -86,6 +107,10 @@ if (import.meta.main) {
 			? `adds         : ${added.join(", ")}`
 			: "adds         : nothing — already installed",
 	);
+	if (updated.length)
+		console.log(
+			`updates      : ${updated.join(", ")} (async: true, timeout: 2)`,
+		);
 	console.log(`\nreview:  diff -u ${settingsPath} ${outPath}`);
 	console.log(`backup:  cp ${settingsPath} ${settingsPath}.bak.$(date +%s)`);
 	console.log(`apply :  cp ${outPath} ${settingsPath}`);
