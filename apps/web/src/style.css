@@ -1,0 +1,229 @@
+/* Minimal styling for the Phase 0 data view. */
+:root {
+	--bg: #fafafa;
+	--fg: #1d1d1f;
+	--muted: #6e6e73;
+	--line: #e3e3e6;
+	--waiting-bg: #fff4d6;
+	--waiting-fg: #8a5a00;
+	--ok: #1f7a3a;
+	--bad: #b42318;
+	--run: #1d4ed8;
+	color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #141416;
+		--fg: #ececef;
+		--muted: #9a9aa2;
+		--line: #2c2c31;
+		--waiting-bg: #3a2c05;
+		--waiting-fg: #f5c451;
+		--ok: #4ade80;
+		--bad: #f87171;
+		--run: #60a5fa;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font:
+		13px / 1.4 system-ui,
+		-apple-system,
+		sans-serif;
+}
+.app {
+	padding: 12px 16px;
+}
+header {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+}
+h1 {
+	font-size: 18px;
+	margin: 0 0 8px;
+}
+h2 {
+	font-size: 14px;
+	margin: 0 0 6px;
+}
+h3 {
+	font-size: 12px;
+	margin: 12px 0 2px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--muted);
+}
+small,
+.muted {
+	color: var(--muted);
+	font-weight: normal;
+}
+.err {
+	color: var(--bad);
+}
+
+.grid {
+	display: grid;
+	grid-template-columns: minmax(340px, 1fr) minmax(460px, 1.3fr) minmax(
+			360px,
+			1.2fr
+		);
+	grid-template-areas: "repos sessions events";
+	gap: 16px;
+	align-items: start;
+}
+.repos {
+	grid-area: repos;
+}
+.sessions {
+	grid-area: sessions;
+}
+.stream {
+	grid-area: events;
+}
+/* laptop widths: repos | sessions, event stream on its own row */
+@media (max-width: 1500px) {
+	.grid {
+		grid-template-columns: minmax(340px, 1fr) minmax(460px, 1.4fr);
+		grid-template-areas:
+			"repos sessions"
+			"repos events";
+	}
+}
+@media (max-width: 900px) {
+	.grid {
+		grid-template-columns: 1fr;
+		grid-template-areas: "repos" "sessions" "events";
+	}
+}
+section {
+	min-width: 0;
+	overflow-x: auto;
+}
+
+table {
+	width: 100%;
+	border-collapse: collapse;
+}
+th,
+td {
+	text-align: left;
+	padding: 3px 6px;
+	border-bottom: 1px solid var(--line);
+	white-space: nowrap;
+}
+th {
+	font-weight: 600;
+	color: var(--muted);
+}
+/* long repo@branch cells wrap instead of pushing "last event" off-screen */
+td.wrap {
+	white-space: normal;
+	word-break: break-word;
+}
+td.num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+tr.has-live td {
+	font-weight: 600;
+}
+
+.tag {
+	margin-left: 6px;
+	padding: 0 4px;
+	border: 1px solid var(--line);
+	border-radius: 3px;
+	font-size: 11px;
+	color: var(--muted);
+}
+.ci-success {
+	color: var(--ok);
+}
+.ci-failure {
+	color: var(--bad);
+	font-weight: 600;
+}
+.ci-running {
+	color: var(--run);
+}
+.ci-none {
+	color: var(--muted);
+}
+
+.conn {
+	font-size: 12px;
+}
+.conn-open {
+	color: var(--ok);
+}
+.conn-connecting,
+.conn-reconnecting {
+	color: var(--bad);
+}
+
+.status {
+	font-weight: 600;
+}
+.status-active {
+	color: var(--ok);
+}
+.status-idle,
+.status-stale,
+.status-ended {
+	color: var(--muted);
+}
+tr.st-waiting td {
+	background: var(--waiting-bg);
+	color: var(--waiting-fg);
+	font-weight: 600;
+}
+.waiting-count {
+	margin-left: 8px;
+	padding: 1px 6px;
+	border-radius: 8px;
+	background: var(--waiting-bg);
+	color: var(--waiting-fg);
+	font-size: 12px;
+}
+
+.filters {
+	display: flex;
+	gap: 6px;
+	margin-bottom: 6px;
+}
+.events {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	max-height: 75vh;
+	overflow: auto;
+}
+.events li {
+	display: grid;
+	grid-template-columns: 56px 48px 120px 1fr auto;
+	gap: 6px;
+	padding: 2px 0;
+	border-bottom: 1px solid var(--line);
+}
+.events li > span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.prov-claude {
+	color: #c2410c;
+}
+.prov-codex {
+	color: var(--run);
+}
+.type {
+	font-weight: 600;
+}

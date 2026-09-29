@@ -13,6 +13,8 @@ export default defineConfig(({ mode }) => {
 			proxy: {
 				"/healthz": hubUrl,
 				"/api": hubUrl,
+				// live updates; the hub checks Origin (http://127.0.0.1:5173 is allowed)
+				"/ws": { target: hubUrl, ws: true },
 			},
 		},
 	};

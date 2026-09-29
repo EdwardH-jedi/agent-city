@@ -29,6 +29,7 @@
       "name": "@agent-city/web",
       "version": "0.0.0",
       "dependencies": {
+        "@agent-city/schema": "workspace:*",
         "react": "19.3.0",
         "react-dom": "19.3.0",
       },
