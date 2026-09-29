@@ -2,6 +2,7 @@
 // is a valid value of its type (booleans are 0/1 in SQLite; the hub converts at the boundary).
 // Timestamps are ISO-8601 UTC strings.
 import { z } from "zod";
+import { MAX_INGEST_BATCH } from "./limits.ts";
 
 const Ts = z.iso.datetime({ offset: true });
 
@@ -122,7 +123,7 @@ export const IngestEvent = Event.extend({
 });
 export type IngestEvent = z.infer<typeof IngestEvent>;
 
-export const IngestBatch = z.array(IngestEvent).min(1);
+export const IngestBatch = z.array(IngestEvent).min(1).max(MAX_INGEST_BATCH);
 export type IngestBatch = z.infer<typeof IngestBatch>;
 
 /** POST /ingest body: a single event or a batch. */

@@ -1,6 +1,16 @@
 // Minimal read-only GitHub client. REST: GET only. GraphQL: `query` operations only (the endpoint
 // is POST by protocol, so mutations are rejected before anything is sent).
 // The token never appears in logs, errors, or return values.
+import { createHash } from "node:crypto";
+import { safeText } from "@agent-city/schema";
+
+/**
+ * ETag cache namespace for a token (F16): first 12 hex chars of its SHA-256. A new token → new keys
+ * → no cached answer fetched with another token's access is ever reused. Never the token itself.
+ */
+export function tokenScope(token: string): string {
+	return createHash("sha256").update(token).digest("hex").slice(0, 12);
+}
 
 export type TokenSource = "env GITHUB_TOKEN" | "gh auth token";
 
@@ -67,6 +77,7 @@ export class GithubHttpError extends Error {
 	}
 }
 
+/** Keyed by `<tokenScope>:<url>` (the column is still called `url`). */
 export interface EtagStore {
 	get(url: string): { etag: string; body: string } | null;
 	put(url: string, etag: string, body: string): void;
@@ -107,6 +118,7 @@ export function createGithubClient(opts: ClientOptions): GithubClient {
 	const base = opts.baseUrl ?? "https://api.github.com";
 	const min = opts.minRemaining ?? 200;
 	const timeout = opts.timeoutMs ?? 15_000;
+	const scope = tokenScope(opts.token);
 	const rate: Record<Bucket, RateState> = {
 		graphql: { remaining: null, limit: null, resetAt: null },
 		core: { remaining: null, limit: null, resetAt: null },
@@ -164,10 +176,12 @@ export function createGithubClient(opts: ClientOptions): GithubClient {
 				if (body.errors.some((e) => e.type === "RATE_LIMITED")) {
 					throw new RateLimitLow("graphql", rate.graphql);
 				}
+				// Server text may reflect request input — redact + clip before it reaches an exception /
+				// log line (audit: suspected, not reproduced).
 				throw new Error(
 					`graphql: ${body.errors
 						.slice(0, 3)
-						.map((e) => e.message)
+						.map((e) => safeText(String(e?.message ?? "?"), 300))
 						.join("; ")}`,
 				);
 			}
@@ -186,7 +200,8 @@ export function createGithubClient(opts: ClientOptions): GithubClient {
 		async getDerived<T>(path: string, derive: (json: unknown) => T) {
 			guard("core");
 			const url = `${base}${path}`;
-			const cached = opts.etags.get(url);
+			const key = `${scope}:${url}`;
+			const cached = opts.etags.get(key);
 			const res = await f(url, {
 				method: "GET",
 				headers: cached
@@ -205,7 +220,7 @@ export function createGithubClient(opts: ClientOptions): GithubClient {
 			if (!res.ok) throw new GithubHttpError(res.status, `GET ${path}`);
 			const value = derive(await res.json());
 			const etag = res.headers.get("etag");
-			if (etag) opts.etags.put(url, etag, JSON.stringify(value));
+			if (etag) opts.etags.put(key, etag, JSON.stringify(value));
 			return { value, cached: false };
 		},
 	};

@@ -15,6 +15,9 @@ const KEYS = [
 	"AGENTCITY_DEBUG",
 	"SPOOL_MAX_MB",
 	"SPOOL_MAX_AGE_DAYS",
+	"CODEX_SESSIONS_DIR",
+	"CODEX_BACKFILL_HOURS",
+	"CODEX_BACKFILL_EVENT_FILTER",
 ] as const;
 type Key = (typeof KEYS)[number];
 
@@ -27,6 +30,14 @@ export interface CollectorConfig {
 	hostname: string;
 	debug: boolean;
 	spoolLimits: { maxBytes: number; maxAgeMs: number };
+	codex: {
+		/** CODEX_SESSIONS_DIR, default ~/.codex/sessions. */
+		sessionsDir: string;
+		/** CODEX_BACKFILL_HOURS (default 2): first-sight window, by file mtime. */
+		backfillMs: number;
+		/** CODEX_BACKFILL_EVENT_FILTER=1: also drop first-sight records older than the window (F14). */
+		eventFilter: boolean;
+	};
 }
 
 /** Minimal KEY=VALUE parser (comments, `export `, single/double quotes). Returns only `keys`. */
@@ -57,6 +68,12 @@ const positive = (v: string | undefined, fallback: number) => {
 	return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
+const nonNegative = (v: string | undefined, fallback: number) => {
+	if (v === undefined || v.trim() === "") return fallback;
+	const n = Number(v);
+	return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+
 /** process.env wins over the checkout's .env. */
 export function loadConfig(
 	env: Record<string, string | undefined> = process.env,
@@ -80,6 +97,12 @@ export function loadConfig(
 		spoolLimits: {
 			maxBytes: positive(get("SPOOL_MAX_MB"), 20) * 1024 * 1024,
 			maxAgeMs: positive(get("SPOOL_MAX_AGE_DAYS"), 7) * 86_400_000,
+		},
+		codex: {
+			sessionsDir:
+				get("CODEX_SESSIONS_DIR") ?? join(homedir(), ".codex", "sessions"),
+			backfillMs: nonNegative(get("CODEX_BACKFILL_HOURS"), 2) * 3_600_000,
+			eventFilter: get("CODEX_BACKFILL_EVENT_FILTER") === "1",
 		},
 	};
 }

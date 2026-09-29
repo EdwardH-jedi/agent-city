@@ -13,14 +13,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { IngestEvent } from "@agent-city/schema/core";
+import { type IngestEvent, MAX_INGEST_BATCH } from "@agent-city/schema/core";
 import { type MapContext, mapClaudeHook } from "./claude-map.ts";
 import { type CodexFileContext, mapCodexLine } from "./codex-map.ts";
 import { pollOnce, type TailState } from "./codex-tail.ts";
 import { loadConfig, parseEnvFile } from "./config.ts";
 import { gitInfo, originUrlFromConfig } from "./git-info.ts";
 import { mergeHooks } from "./install-hooks.ts";
-import { deliver, type PostResult, Spool, type Transport } from "./spool.ts";
+import {
+	CHUNK,
+	deliver,
+	type PostResult,
+	Spool,
+	type Transport,
+} from "./spool.ts";
 
 const FAKE = `ghp_${"k".repeat(36)}`;
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), `agentcity-${p}-`));
@@ -73,6 +79,29 @@ describe("config", () => {
 		expect(cfg.ingestToken).toBe("from-env");
 		expect(cfg.machine).toBe("cockpit");
 		expect(JSON.stringify(cfg)).not.toContain(FAKE);
+	});
+
+	test("F18: CODEX_* also come from the checkout .env (temp file), with defaults", () => {
+		const dir = tmp("cfg-codex");
+		const envPath = join(dir, ".env");
+		writeFileSync(
+			envPath,
+			"CODEX_SESSIONS_DIR=/tmp/codex-test\nCODEX_BACKFILL_HOURS=0\nCODEX_BACKFILL_EVENT_FILTER=1\n",
+		);
+		expect(loadConfig({}, envPath).codex).toEqual({
+			sessionsDir: "/tmp/codex-test",
+			backfillMs: 0, // 0 stays 0 (tail every first-seen file from EOF), as before
+			eventFilter: true,
+		});
+		const defaults = loadConfig({}, join(dir, "missing.env")).codex;
+		expect(defaults.backfillMs).toBe(2 * 3_600_000);
+		expect(defaults.eventFilter).toBe(false);
+		expect(defaults.sessionsDir.endsWith(join(".codex", "sessions"))).toBe(
+			true,
+		);
+		expect(
+			loadConfig({ CODEX_BACKFILL_HOURS: "nope" }, envPath).codex.backfillMs,
+		).toBe(2 * 3_600_000);
 	});
 });
 
@@ -391,6 +420,26 @@ describe("spool", () => {
 		expect(readdirSync(dir).filter((f) => f.startsWith("spool."))).toEqual([]);
 	});
 
+	test("F15: sends in chunks of the hub's batch cap (spool and unwritable-spool fallback)", async () => {
+		expect(CHUNK).toBe(MAX_INGEST_BATCH);
+		const events = Array.from({ length: 1100 }, (_, i) => ev(`c${i}`));
+
+		const spool = new Spool(tmp("spool-chunks"));
+		spool.append(events);
+		const viaSpool = fakeTransport(() => "ok");
+		await spool.flush(viaSpool.t);
+		expect(viaSpool.received.map((b) => b.length)).toEqual([500, 500, 100]);
+
+		// spool dir can't be created (parent is a file) → bounded direct POSTs, same chunking
+		const file = join(tmp("spool-blocked"), "not-a-dir");
+		writeFileSync(file, "");
+		const direct = fakeTransport(() => "ok");
+		expect(await deliver(events, new Spool(join(file, "x")), direct.t)).toBe(
+			"sent",
+		);
+		expect(direct.received.map((b) => b.length)).toEqual([500, 500, 100]);
+	});
+
 	test("empty spool → direct POST, nothing written", async () => {
 		const dir = tmp("spool-direct");
 		const { t, received } = fakeTransport(() => "ok");
@@ -698,6 +747,52 @@ describe("pollOnce", () => {
 		expect(after.map((e) => [e.type, e.tool])).toEqual([
 			["SessionStart", null],
 			["PostToolUse", null],
+		]);
+	});
+
+	test("F14: backfill is by file mtime — a fresh file is read in full by default", () => {
+		const { root, file } = setup();
+		const old = new Date(Date.now() - 4 * 3_600_000).toISOString();
+		const now = new Date().toISOString();
+		writeFileSync(
+			file,
+			`${rec("session_meta", { session_id: "cx-old", cwd: "/w/beta" }, old)}\n${rec("event_msg", { type: "task_complete" }, old)}\n${rec("event_msg", { type: "task_complete" }, now)}\n`,
+		);
+		const events = pollOnce({
+			...opts(root, { files: {} }),
+			backfillMs: 7_200_000,
+		});
+		expect(events.map((e) => e.ts)).toEqual([old, old, now]);
+	});
+
+	test("F14: with eventFilter, first-sight records older than the window are skipped (context kept)", () => {
+		const { root, file } = setup();
+		const old = new Date(Date.now() - 4 * 3_600_000).toISOString();
+		const now = new Date().toISOString();
+		writeFileSync(
+			file,
+			`${rec("session_meta", { session_id: "cx-old", cwd: "/w/beta" }, old)}\n${rec("event_msg", { type: "task_complete" }, old)}\n${rec("event_msg", { type: "task_complete" }, now)}\n`,
+		);
+		const state: TailState = { files: {} };
+		const o = {
+			...opts(root, state),
+			backfillMs: 7_200_000,
+			eventFilter: true,
+		};
+		const first = pollOnce(o);
+		expect(first.map((e) => [e.type, e.session_id, e.ts])).toEqual([
+			["Stop", "codex:cx-old", now],
+		]);
+		first.commit();
+		// the cutoff is persisted with the offsets → a restart keeps filtering the same way
+		const restarted: TailState = JSON.parse(JSON.stringify(state));
+		expect(Object.values(restarted.files)[0]?.min_ts).toBeString();
+		appendFileSync(
+			file,
+			`${rec("event_msg", { type: "task_complete" }, old)}\n${rec("event_msg", { type: "turn_aborted" }, now)}\n`,
+		);
+		expect(pollOnce({ ...o, state: restarted }).map((e) => e.summary)).toEqual([
+			"turn aborted",
 		]);
 	});
 

@@ -33,8 +33,11 @@ scripts/         repo tooling (check-secrets)
    `.env` is never committed and never created by an agent — only `.env.example` with blank secrets.
    Test fixtures build fake tokens at runtime and never contain real (private) repo names.
 4. **Hooks must never block.** `apps/collector/src/claude-hook.ts` always exits 0, never writes to
-   stdout, swallows every error, and is bounded (500 ms hard deadline, 200 ms stdin, 300 ms POST,
-   spool on failure). It imports only `@agent-city/schema/core` (zod-free) — keep it that way.
+   stdout, swallows every error, and is bounded: 200 ms stdin, event spooled **before** any network
+   I/O, POST only in the time left (≤ 300 ms, all work inside 450 ms), 500 ms self-exit timer — and
+   the launcher `apps/collector/bin/claude-hook` SIGKILLs it after `AGENTCITY_HOOK_KILL_S` (default
+   0.6 s) even when it is stuck in synchronous work. Hooks are installed `async: true`, `timeout: 2`.
+   It imports only `@agent-city/schema/core` (zod-free) — keep it that way.
 5. Hub binds to `127.0.0.1` by default and rejects foreign `Host` headers; `/ws` rejects foreign
    `Origin`s. Ingest requires `INGEST_TOKEN`. Don't widen the bind without auth on `/api` and `/ws`.
 6. Run `bun run check:secrets` before every commit.
@@ -48,9 +51,11 @@ bun run dev:hub          # hub only (runs from repo root so .env / DB_PATH resol
 bun run dev:web          # web only (Vite, proxies /healthz, /api, /ws to HUB_URL)
 bun run test             # bun test
 bun run lint             # biome check .
+bun run typecheck        # tsc --noEmit for schema, hub, collector, web
 bun run format           # biome format --write .
 bun run sync:github      # GitHub → repos (+ CI, local checkouts); prints a summary
 bun run districts:draft  # config/districts.draft.yaml (gitignored; never overwrites districts.yaml)
+bun run db:reset         # hub stopped: DB (+ -wal/-shm) → <db>.bak.<UTC stamp>, fresh migrated DB
 bun run collector:hooks  # print-only merge of the Claude hook into ~/.claude/settings.json
 bun run collector:codex  # resident Codex log tailer
 bun run check:secrets    # scan tracked/untracked files for token patterns
@@ -67,3 +72,7 @@ bun run check:secrets    # scan tracked/untracked files for token patterns
   without a github.com origin is `local/<dir>` — the rule lives in `packages/schema/src/repo-slug.ts`
   and is shared by the hub's local scan and the collectors.
 - Session status transitions come only from `packages/schema/src/status.ts`.
+- Session / agent ids come only from `packages/schema/src/ids.ts`: `claude:<raw>` / `codex:<raw>`,
+  main agent = session id, subagent = `<session_id>/sub:<tool_use_id>`. Changing the scheme needs
+  `bun run db:reset` (no migration rewrites ids).
+- Every env var the code reads is in both `.env.example` and the README table (a test enforces it).

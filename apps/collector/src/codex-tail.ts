@@ -5,8 +5,10 @@
 // - byte offsets + per-file session context persist in ~/.agentcity/codex-offsets.json, so a
 //   restart resumes without duplicates (event ids are also deterministic: codex:<session>:<offset>)
 // - a partial trailing line is never consumed; inode change / truncation → start over
-// - first sight of a file older than CODEX_BACKFILL_HOURS (default 2): only line 1 (session_meta)
-//   is read, then it's tailed from EOF — no flood of months-old history
+// - first sight of a file whose MTIME is older than CODEX_BACKFILL_HOURS (default 2): only line 1
+//   (session_meta) is read, then it's tailed from EOF — no flood of months-old history. A file with a
+//   fresh mtime is read in full, even records older than the window, unless
+//   CODEX_BACKFILL_EVENT_FILTER=1 (then those are skipped by their own timestamp; F14)
 // - a bad line is skipped, never fatal
 // - offsets are committed only after the events are delivered or durably spooled (F06): pollOnce
 //   works on copies and returns `commit()`; a failed delivery re-reads the same lines next tick
@@ -26,7 +28,6 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { IngestEvent } from "@agent-city/schema/core";
 import {
@@ -47,6 +48,8 @@ export interface FileState {
 	offset: number;
 	ino: number;
 	session: CodexSession | null;
+	/** Records older than this (ISO) are skipped — set on first sight with the event filter (F14). */
+	min_ts?: string;
 }
 export interface TailState {
 	files: Record<string, FileState>;
@@ -128,6 +131,11 @@ export interface PollOptions {
 	state: TailState;
 	now: number;
 	backfillMs: number;
+	/**
+	 * F14: the backfill window is by file mtime. With this on, a file first seen with a fresh mtime
+	 * also skips records whose own timestamp is older than the window (an old session resumed today).
+	 */
+	eventFilter?: boolean;
 	maxAgeMs?: number;
 	deps: CodexMapDeps;
 }
@@ -166,6 +174,8 @@ export function pollOnce(opts: PollOptions): PollResult {
 
 		if (!file) {
 			file = { offset: 0, ino: st.ino, session: null };
+			if (opts.eventFilter)
+				file.min_ts = new Date(opts.now - opts.backfillMs).toISOString();
 			if (st.mtimeMs < opts.now - opts.backfillMs) {
 				// old file: learn the session from line 1, then tail from EOF
 				const ctx: CodexFileContext = { session: null, calls: new Map() };
@@ -192,6 +202,7 @@ export function pollOnce(opts: PollOptions): PollResult {
 			session: file.session,
 			calls: new Map(restart ? [] : committedCalls.get(path)),
 		};
+		const minTs = file.min_ts ? Date.parse(file.min_ts) : null;
 
 		const buf = readRange(
 			path,
@@ -206,8 +217,9 @@ export function pollOnce(opts: PollOptions): PollResult {
 			const lineOffset = file.offset + pos;
 			pos = nl + 1;
 			if (!line) continue;
+			// mapped even when too old: session_meta / turn_context still update the context
 			const ev = mapCodexLine(line, lineOffset, ctx, opts.deps);
-			if (ev) events.push(ev);
+			if (ev && !(minTs !== null && Date.parse(ev.ts) < minTs)) events.push(ev);
 		}
 		if (pos === 0 && buf.length === MAX_READ) pos = buf.length; // one giant line: skip, don't stall
 		file.offset += pos;
@@ -232,9 +244,8 @@ export function pollOnce(opts: PollOptions): PollResult {
 
 if (import.meta.main) {
 	const cfg = loadConfig();
-	const root =
-		process.env.CODEX_SESSIONS_DIR || join(homedir(), ".codex", "sessions");
-	const backfillMs = Number(process.env.CODEX_BACKFILL_HOURS || 2) * 3_600_000;
+	const root = cfg.codex.sessionsDir;
+	const { backfillMs, eventFilter } = cfg.codex;
 	const statePath = join(cfg.home, "codex-offsets.json");
 	mkdirSync(cfg.home, { recursive: true, mode: 0o700 });
 
@@ -261,6 +272,7 @@ if (import.meta.main) {
 				state,
 				now: Date.now(),
 				backfillMs,
+				eventFilter,
 				deps,
 			});
 			if (events.length) {

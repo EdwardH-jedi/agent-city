@@ -75,12 +75,27 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `AGENTCITY_MACHINE`        | collector, hub | `cockpit` \| `forge` \| `spine`.                                                         |
 | `AGENTCITY_HOME`           | collector      | Spool / offsets / debug log dir (default `~/.agentcity`).                                |
 | `AGENTCITY_DEBUG`          | collector      | `1` → `~/.agentcity/hook.log` with timings + error messages (never payloads).            |
-| `CODEX_BACKFILL_HOURS`     | collector      | On first sight, Codex logs older than this are skipped (default 2).                      |
+| `SPOOL_MAX_MB`             | collector      | Cap on `spool.jsonl` + `spool.*.flushing` together (default 20); oldest dropped first.   |
+| `SPOOL_MAX_AGE_DAYS`       | collector      | Spooled events older than this are dropped (default 7). Drops show on `/healthz`.        |
 | `CODEX_SESSIONS_DIR`       | collector      | Codex log dir (default `~/.codex/sessions`).                                             |
+| `CODEX_BACKFILL_HOURS`     | collector      | First-sight window **by file mtime** (default 2; `0` = tail every new file from EOF).    |
+| `CODEX_BACKFILL_EVENT_FILTER` | collector   | `1` → on first sight also skip records whose own timestamp is older than that window.    |
+| `AGENTCITY_HOOK_KILL_S`    | hook launcher  | Seconds before `bin/claude-hook` SIGKILLs a stuck hook (default `0.6`). Process env only. |
+| `AGENTCITY_BUN`            | hook launcher  | Bun binary for the hook (default `command -v bun`, else `~/.bun/bin/bun`). Process env only. |
 
-The collector reads only `HUB_URL`, `INGEST_TOKEN` and `AGENTCITY_*` from this checkout's `.env`
-(process env wins). Hooks run with `bun --no-env-file`, so the `.env` of whatever project Claude is
-working in is never loaded.
+The collectors read only `HUB_URL`, `INGEST_TOKEN`, `AGENTCITY_*` (except the two launcher
+variables), `SPOOL_*` and `CODEX_*` from this checkout's `.env` — never the whole file; process env
+wins. Hooks run with `bun --no-env-file`, so the `.env` of whatever project Claude is working in is
+never loaded. `AGENTCITY_HOOK_KILL_S` / `AGENTCITY_BUN` are read by the shell launcher before Bun
+starts, so only the environment Claude Code runs hooks with applies to them (`.env` is not read).
+
+**Codex backfill (F14).** On first sight of a rollout log, the rule is the file's **mtime**, not the
+records' timestamps: a log last modified more than `CODEX_BACKFILL_HOURS` ago contributes only its
+session (line 1) and is tailed from EOF; a log modified recently is read from the start — including
+records older than the window, e.g. an old session resumed today. Set
+`CODEX_BACKFILL_EVENT_FILTER=1` to also skip those old records by their own timestamp (the session
+context is still learned from them). The cutoff is fixed when the file is first seen and kept with its
+offset, so records appended later are never affected.
 
 **GitHub token.** A fine-grained PAT only sees one resource owner: repos from organizations or where
 you are a collaborator won't sync. Today every repo is owned by the account, so nothing is missing; if
@@ -152,10 +167,27 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   (DNS-rebinding guard). `/ws` also rejects foreign `Origin`s; CORS echoes allowlisted origins only.
 - `/ingest` needs `Bearer $INGEST_TOKEN` (constant-time compare). `/api` and `/ws` are read-only and
   unauthenticated — fine on loopback, not for a network bind.
+- `/ingest` takes at most 500 events per request (`MAX_INGEST_BATCH`; more → 413) inside a 5 MiB
+  body; collectors send in chunks of exactly that size.
 - Collectors redact before spooling/sending: prompt text is never stored (length only); `tool_input`
-  is reduced to tool name + file path + first 80 chars of a command, all through `redact()`; the hub
-  re-applies redaction before storing.
-- Hooks never block: always exit 0, no stdout, 500 ms hard deadline, 300 ms POST, spool on failure.
+  is reduced to tool name + file path + first 80 chars of a command, all through `redact()`; every
+  string field of an event is sanitized, and the hub re-applies all of it before storing.
+- Hooks never block: always exit 0, no stdout. The event is written to the spool **before** any
+  network I/O; the POST gets only the time left (≤ 300 ms, all work inside 450 ms), the hook's own
+  timer exits at 500 ms, and the launcher `bin/claude-hook` SIGKILLs it after
+  `AGENTCITY_HOOK_KILL_S` (default 0.6 s) even if it is stuck in synchronous work. Hooks are
+  installed with `async: true`.
+- GitHub ETag cache entries are keyed by `sha256(token)[:12]` + URL, so a token change never reuses
+  an answer fetched with another token's access (the token itself is never stored). GraphQL
+  `errors[].message` text is redacted and clipped before it reaches an exception or a log line.
+
+**Known limits of redaction** (documented, not fixed — regex redaction can't tell these from normal
+text; don't paste secrets into commands in the first place):
+- A token used as the bare *username* of a URL (`https://<token>@host/…`) is kept — only
+  `user:password@` userinfo is masked.
+- Bare base64 of a token is kept (`TOKEN=<base64>` is masked by the key name; the value alone isn't).
+- A token split across a shell line continuation (`ghp_abc\` + newline + `def…`) is not recognised;
+  the fragments stay.
 
 ## Troubleshooting
 
@@ -164,7 +196,8 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
 | No Claude events                          | New session after applying hooks? `/hooks` in Claude Code lists them. Set `AGENTCITY_DEBUG=1` → `~/.agentcity/hook.log`. |
 | `~/.agentcity/spool*` keeps growing       | Hub down or unreachable (tunnel?), or `INGEST_TOKEN` mismatch → 401. `curl 127.0.0.1:4317/healthz` should show `ingest: enabled`. |
 | `spool.rejected.jsonl` has lines          | The hub refused that batch (400). Inspect a line; it is already redacted.                                 |
-| No Codex events                           | Is `collector:codex` running? On first run only logs newer than `CODEX_BACKFILL_HOURS` are read; offsets live in `~/.agentcity/codex-offsets.json` (delete to re-scan). |
+| No Codex events                           | Is `collector:codex` running? On first sight only logs *modified* within `CODEX_BACKFILL_HOURS` are read from the start (see *Codex backfill*); offsets live in `~/.agentcity/codex-offsets.json` (delete to re-scan). |
+| Sessions show raw ids / duplicates after upgrading | The id namespace changed (`claude:` / `codex:` prefixes). Stop the hub, `bun run db:reset`, start it again. |
 | Web shows `reconnecting…`                 | Hub not running, or `HUB_URL` in `.env` doesn't match the hub port.                                       |
 | `403 forbidden host` / `forbidden origin` | Reaching the hub by a non-loopback name. Use `127.0.0.1`/`localhost`, or set `HUB_HOST` / `HUB_ALLOWED_ORIGINS`. |
 | Sync `ABORTED: rate-limit`                | It resumes on the next cycle; lengthen the interval if it repeats.                                        |
@@ -201,4 +234,4 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   on any branch.
 - Configurable Host allowlist + auth on `/api` and `/ws` before any non-loopback bind.
 - launchd units for the hub, `collector:codex` and SSH tunnels.
-- Web: unit tests for the merge logic in `useHub.ts`.
+- Prune `github_etags` rows of tokens no longer in use (keys are token-scoped; old ones just sit).

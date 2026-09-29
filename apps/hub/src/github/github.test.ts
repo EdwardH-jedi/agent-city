@@ -11,6 +11,7 @@ import {
 	type EtagStore,
 	RateLimitLow,
 	resolveGithubToken,
+	tokenScope,
 } from "./client.ts";
 import {
 	DISTRICTS_DRAFT_PATH,
@@ -43,6 +44,7 @@ interface FakeRepo {
 	commits30?: number;
 	run?: { status: string; conclusion: string | null } | null; // null → no runs
 	actionsStatus?: number; // e.g. 403
+	etagVersion?: number; // bump to make the server's representation change (new ETag)
 }
 
 const REPOS: FakeRepo[] = [
@@ -83,9 +85,13 @@ const REPOS: FakeRepo[] = [
 ];
 
 interface FakeOpts {
+	/** Fixed page size; unset → honor the query's `repositories(first: N)` (default 3 if absent). */
 	pageSize?: number;
+	honorFirst?: boolean;
 	/** graphql rateLimit.remaining to report */
 	graphqlRemaining?: number;
+	/** GraphQL `errors` to return for every query (200 + errors, like GitHub does). */
+	graphqlErrors?: { type?: string; message: string }[];
 }
 
 function fakeGithub(repos: FakeRepo[], opts: FakeOpts = {}) {
@@ -95,7 +101,6 @@ function fakeGithub(repos: FakeRepo[], opts: FakeOpts = {}) {
 		headers: Headers;
 		body?: string;
 	}[] = [];
-	const pageSize = opts.pageSize ?? 3;
 	const nodeId = (r: FakeRepo) => `node:${r.name}`;
 	const json = (body: unknown, init: ResponseInit = {}) =>
 		new Response(JSON.stringify(body), {
@@ -120,7 +125,12 @@ function fakeGithub(repos: FakeRepo[], opts: FakeOpts = {}) {
 
 		if (url.endsWith("/graphql")) {
 			const { query, variables } = JSON.parse(String(init?.body));
+			if (opts.graphqlErrors)
+				return json({ data: null, errors: opts.graphqlErrors });
 			if (query.includes("viewer")) {
+				const first = /repositories\(first: (\d+)/.exec(query)?.[1];
+				const pageSize =
+					opts.honorFirst && first ? Number(first) : (opts.pageSize ?? 3);
 				const start = variables.cursor ? Number(variables.cursor) : 0;
 				const slice = repos.slice(start, start + pageSize);
 				const next = start + pageSize;
@@ -185,7 +195,9 @@ function fakeGithub(repos: FakeRepo[], opts: FakeOpts = {}) {
 				{ message: "Resource not accessible" },
 				{ status: r.actionsStatus, headers: rest },
 			);
-		const etag = `"etag-${r.name}"`;
+		const etag = r.etagVersion
+			? `"etag-${r.name}-v${r.etagVersion}"`
+			: `"etag-${r.name}"`;
 		if (headers.get("if-none-match") === etag) {
 			return new Response(null, { status: 304, headers: rest });
 		}
@@ -719,5 +731,201 @@ describe("local scan (temp git repos)", () => {
 			isWorktree: false,
 		});
 		expect(JSON.stringify([main, wt, bare])).not.toContain("p".repeat(12));
+	});
+});
+
+// ── Batch D fixtures (audit F16 / F17 / suspected error reflection) ────────
+
+const fleet = (n: number, activeFirst: number): FakeRepo[] =>
+	Array.from({ length: n }, (_, i) => ({
+		name: `octo-example/r${String(i).padStart(3, "0")}`,
+		// the first `activeFirst` repos are inside the 90-day window
+		pushedDaysAgo: i < activeFirst ? 1 + (i % 60) : 200 + i,
+		commits30: i % 7,
+		run: { status: "completed", conclusion: "success" },
+	}));
+
+describe("F16 ETag cache scoped by token", () => {
+	const TOKEN_B = `fake${"u".repeat(32)}`;
+	const path = "/repos/octo-example/alpha/actions/runs?per_page=1";
+
+	test("tokenScope: 12 hex chars, differs per token, never the token", () => {
+		const a = tokenScope(FAKE_TOKEN);
+		expect(a).toMatch(/^[0-9a-f]{12}$/);
+		expect(tokenScope(TOKEN_B)).not.toBe(a);
+		expect(tokenScope(FAKE_TOKEN)).toBe(a);
+		expect(FAKE_TOKEN).not.toContain(a);
+	});
+
+	test("token switch → no If-None-Match from the other token's cache; each keeps its own", async () => {
+		const gh = fakeGithub(REPOS);
+		const etags = memEtags();
+		const clientA = createGithubClient({
+			token: FAKE_TOKEN,
+			etags,
+			fetch: gh.fetch,
+		});
+		const clientB = createGithubClient({
+			token: TOKEN_B,
+			etags,
+			fetch: gh.fetch,
+		});
+		await clientA.getDerived(path, deriveCi);
+		const b = await clientB.getDerived(path, deriveCi);
+		expect(b).toMatchObject({ cached: false });
+		expect(gh.calls[1]?.headers.has("if-none-match")).toBe(false);
+		expect(etags.map.size).toBe(2);
+		for (const key of etags.map.keys()) {
+			expect(key).not.toContain(FAKE_TOKEN);
+			expect(key).not.toContain(TOKEN_B);
+		}
+		// switching back reuses A's entry
+		expect(await clientA.getDerived(path, deriveCi)).toMatchObject({
+			cached: true,
+		});
+		expect(gh.calls[2]?.headers.get("if-none-match")).toBe(
+			'"etag-octo-example/alpha"',
+		);
+	});
+
+	test("sync with a new token over the same DB: first CI round is uncached", async () => {
+		const { db, client } = setupSync();
+		await syncGithub({ db, client, districts, now: NOW });
+		const gh = fakeGithub(REPOS);
+		const other = createGithubClient({
+			token: TOKEN_B,
+			etags: dbEtagStore(db),
+			fetch: gh.fetch,
+		});
+		const s = await syncGithub({ db, client: other, districts, now: NOW });
+		expect(s.ciCached).toBe(0);
+		expect(gh.calls.filter((c) => c.headers.has("if-none-match"))).toHaveLength(
+			0,
+		);
+		const keys = db
+			.query<{ url: string }, []>("SELECT url FROM github_etags")
+			.all()
+			.map((r) => r.url);
+		expect(keys.some((k) => k.startsWith(`${tokenScope(FAKE_TOKEN)}:`))).toBe(
+			true,
+		);
+		expect(keys.some((k) => k.startsWith(`${tokenScope(TOKEN_B)}:`))).toBe(
+			true,
+		);
+	});
+});
+
+describe("F17 pagination / batching / ETag boundaries", () => {
+	test(">100 repos → 3 list pages of first:100; >50 active → history in batches of 50", async () => {
+		const repos = fleet(250, 120);
+		const db = openDb(":memory:");
+		const gh = fakeGithub(repos, { honorFirst: true });
+		const client = createGithubClient({
+			token: FAKE_TOKEN,
+			etags: dbEtagStore(db),
+			fetch: gh.fetch,
+		});
+		const s = await syncGithub({ db, client, districts, now: NOW });
+		expect(s.aborted).toBeNull();
+		expect(s.total).toBe(250);
+		expect(s.activeWindow).toBe(120);
+
+		const gql = gh.calls
+			.filter((c) => c.url.endsWith("/graphql"))
+			.map((c) => JSON.parse(c.body ?? "{}"));
+		const lists = gql.filter((b) => b.query.includes("viewer"));
+		expect(lists.map((b) => b.variables.cursor)).toEqual([null, "100", "200"]);
+		expect(lists[0]?.query).toContain("repositories(first: 100");
+		const history = gql.filter((b) => !b.query.includes("viewer"));
+		expect(history.map((b) => b.variables.ids.length)).toEqual([50, 50, 20]);
+		expect(new Set(history.flatMap((b) => b.variables.ids)).size).toBe(120);
+
+		// every active repo got its commit count (none left NULL), inactive → 0
+		expect(
+			db
+				.query<{ n: number }, []>(
+					"SELECT count(*) AS n FROM repos WHERE commits_30d IS NULL",
+				)
+				.get()?.n,
+		).toBe(0);
+		expect(repoRow(db, "octo-example/r008")?.commits_30d).toBe(1);
+		expect(repoRow(db, "octo-example/r200")?.commits_30d).toBe(0);
+		// CI only for the 120 active repos
+		expect(gh.calls.filter((c) => !c.url.endsWith("/graphql"))).toHaveLength(
+			120,
+		);
+	});
+
+	test("304, then the resource changes → 200 with a new ETag replaces the cached value", async () => {
+		const repo: FakeRepo = {
+			name: "octo-example/alpha",
+			pushedDaysAgo: 1,
+			run: { status: "completed", conclusion: "success" },
+		};
+		const gh = fakeGithub([repo]);
+		const etags = memEtags();
+		const client = createGithubClient({
+			token: FAKE_TOKEN,
+			etags,
+			fetch: gh.fetch,
+		});
+		const path = "/repos/octo-example/alpha/actions/runs?per_page=1";
+		expect(await client.getDerived(path, deriveCi)).toMatchObject({
+			cached: false,
+			value: { ci_status: "success" },
+		});
+		expect(await client.getDerived(path, deriveCi)).toMatchObject({
+			cached: true,
+			value: { ci_status: "success" },
+		});
+
+		repo.run = { status: "completed", conclusion: "failure" };
+		repo.etagVersion = 2;
+		const changed = await client.getDerived(path, deriveCi);
+		expect(changed).toMatchObject({
+			cached: false,
+			value: { ci_status: "failure" },
+		});
+		// the stale ETag was offered and refused
+		expect(gh.calls[2]?.headers.get("if-none-match")).toBe(
+			'"etag-octo-example/alpha"',
+		);
+		const entry = [...etags.map.values()][0];
+		expect(etags.map.size).toBe(1);
+		expect(entry?.etag).toBe('"etag-octo-example/alpha-v2"');
+		expect(JSON.parse(entry?.body ?? "{}").ci_status).toBe("failure");
+		// and the new representation is what a later 304 returns
+		expect(await client.getDerived(path, deriveCi)).toMatchObject({
+			cached: true,
+			value: { ci_status: "failure" },
+		});
+	});
+});
+
+describe("GraphQL error text is redacted before it reaches errors / logs", () => {
+	test("a reflected credential in errors[].message never survives", async () => {
+		const reflected = `ghp_${"R".repeat(36)}`; // synthetic, assembled at runtime
+		const gh = fakeGithub(REPOS, {
+			graphqlErrors: [
+				{ message: `Bad credentials for token ${reflected}` },
+				{ message: `authorization: Bearer ${reflected}` },
+			],
+		});
+		const db = openDb(":memory:");
+		const client = createGithubClient({
+			token: FAKE_TOKEN,
+			etags: dbEtagStore(db),
+			fetch: gh.fetch,
+		});
+		const err = (await client
+			.graphql("query { viewer { login } }")
+			.catch((e: Error) => e)) as Error;
+		expect(err.message).toStartWith("graphql: ");
+		expect(err.message).not.toContain(reflected);
+		expect(err.message).toContain("[REDACTED]");
+
+		const s = await syncGithub({ db, client, districts, now: NOW });
+		expect(s.aborted).toStartWith("error: graphql:");
+		expect(s.aborted).not.toContain(reflected);
 	});
 });

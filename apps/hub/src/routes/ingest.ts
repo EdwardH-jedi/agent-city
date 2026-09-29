@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { IngestBatch, IngestEvent } from "@agent-city/schema";
+import { IngestBatch, IngestEvent, MAX_INGEST_BATCH } from "@agent-city/schema";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ingestEvents } from "../store.ts";
@@ -70,6 +70,10 @@ export function createIngest({
 				raw = await c.req.json();
 			} catch {
 				return c.json({ error: "invalid JSON" }, 400);
+			}
+			// F15: too many events → 413 before validating any of them (collectors send ≤ this).
+			if (Array.isArray(raw) && raw.length > MAX_INGEST_BATCH) {
+				return c.json({ error: "batch too large", max: MAX_INGEST_BATCH }, 413);
 			}
 			// Validate each shape on its own so issues carry field paths (a union reports none).
 			const parsed = Array.isArray(raw)

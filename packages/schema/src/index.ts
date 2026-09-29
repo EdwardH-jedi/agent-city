@@ -5,6 +5,7 @@ export {
 	sessionId,
 	subagentId,
 } from "./ids.ts";
+export { MAX_INGEST_BATCH } from "./limits.ts";
 export {
 	COMMAND_MAX,
 	clip,

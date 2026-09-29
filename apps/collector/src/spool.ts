@@ -27,10 +27,11 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { IngestEvent } from "@agent-city/schema/core";
+import { type IngestEvent, MAX_INGEST_BATCH } from "@agent-city/schema/core";
 import type { CollectorConfig } from "./config.ts";
 
-export const CHUNK = 500;
+/** Events per POST — exactly the hub's batch cap (F15), so no chunk is ever refused for size. */
+export const CHUNK = MAX_INGEST_BATCH;
 /** A POST with less time than this left isn't worth starting. */
 const MIN_POST_MS = 30;
 

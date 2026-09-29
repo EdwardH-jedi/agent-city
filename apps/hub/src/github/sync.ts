@@ -12,6 +12,7 @@ import {
 	type CiStatus,
 	localRepoId,
 	MachineRole,
+	redact,
 	repoKey,
 } from "@agent-city/schema";
 import { openDb } from "../db.ts";
@@ -345,10 +346,12 @@ export async function syncGithub(opts: SyncOptions): Promise<SyncSummary> {
 			count,
 		}));
 	} catch (err) {
-		summary.aborted =
+		// printed and logged → redacted even though client errors already are
+		summary.aborted = redact(
 			err instanceof RateLimitLow
 				? `rate-limit (${err.bucket}): ${err.message}`
-				: `error: ${(err as Error).message}`;
+				: `error: ${(err as Error).message}`,
+		);
 	}
 
 	summary.total = repos.length;
@@ -568,7 +571,7 @@ if (import.meta.main) {
 		console.log(formatSummary(summary));
 		process.exit(summary.aborted ? 2 : 0);
 	} catch (err) {
-		console.error(`[sync:github] ${(err as Error).message}`);
+		console.error(`[sync:github] ${redact((err as Error).message)}`);
 		process.exit(1);
 	}
 }

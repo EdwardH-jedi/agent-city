@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { redact } from "@agent-city/schema";
 import { Hono } from "hono";
 import { openDb } from "./db.ts";
 import { runConfiguredSync } from "./github/sync.ts";
@@ -141,7 +142,7 @@ export function scheduleGithubSync(
 				`[github] ${s.total} repos, ${changed.size} changed, rate graphql ${s.rate.graphql.remaining ?? "?"} core ${s.rate.core.remaining ?? "?"}${s.aborted ? ` — aborted: ${s.aborted}` : ""}`,
 			);
 		} catch (err) {
-			console.error(`[github] sync failed: ${(err as Error).message}`);
+			console.error(`[github] sync failed: ${redact((err as Error).message)}`);
 		} finally {
 			running = false;
 		}

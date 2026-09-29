@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
+import { IngestBatch, MAX_INGEST_BATCH } from "@agent-city/schema";
 import { openDb } from "./db.ts";
 import { createApp, startHub } from "./index.ts";
 import type { BroadcastKind } from "./routes/ws.ts";
@@ -224,6 +225,22 @@ describe("POST /ingest — storage", () => {
 		expect(JSON.parse(row?.payload_redacted ?? "{}").api_key).toBe(
 			"[REDACTED]",
 		);
+	});
+
+	test("F15: 500 events per batch accepted; 501 → 413, nothing stored", async () => {
+		const batch = (n: number, tag: string) =>
+			Array.from({ length: n }, (_, i) => ev({ id: `${tag}-${i}` }));
+		const ok = await post(ctx, batch(MAX_INGEST_BATCH, "ok"));
+		expect(ok.status).toBe(200);
+		expect(await ok.json()).toEqual({ accepted: 500, duplicates: 0 });
+
+		const big = await post(ctx, batch(MAX_INGEST_BATCH + 1, "big"));
+		expect(big.status).toBe(413);
+		expect(await big.json()).toEqual({ error: "batch too large", max: 500 });
+		expect(count(ctx.db, "events")).toBe(500);
+		// the schema carries the same cap
+		expect(IngestBatch.safeParse(batch(501, "zod")).success).toBe(false);
+		expect(IngestBatch.safeParse(batch(500, "zod")).success).toBe(true);
 	});
 
 	test("broadcasts event + session after commit", async () => {
