@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../db.ts";
+import { ingestEvents, listReposByDistrict } from "../store.ts";
 import {
 	createGithubClient,
 	type EtagStore,
@@ -611,6 +612,36 @@ describe("syncGithub", () => {
 		});
 		expect(repoRow(db, "local/scratch")).toBeNull();
 		expect(repoRow(db, "octo-example/alpha")).not.toBeNull();
+	});
+
+	test("F13: sessions / events ingested under another casing before the first sync are re-pointed", async () => {
+		const { db, client } = setupSync();
+		ingestEvents(db, [
+			{
+				id: "pre-sync",
+				ts: daysAgo(0),
+				machine_id: "cockpit",
+				session_id: "case-s",
+				agent_id: null,
+				provider: "claude",
+				type: "UserPromptSubmit",
+				tool: null,
+				summary: null,
+				repo_id: "OCTO-EXAMPLE/Alpha",
+				payload_redacted: {},
+			},
+		]);
+		const s = await syncGithub({ db, client, districts, now: NOW });
+		expect(s.remappedRefs).toBe(2);
+		expect(
+			db
+				.query("SELECT repo_id FROM sessions UNION SELECT repo_id FROM events")
+				.all(),
+		).toEqual([{ repo_id: "octo-example/alpha" }]);
+		const games = listReposByDistrict(db).games ?? [];
+		expect(
+			games.find((r) => r.id === "octo-example/alpha")?.active_sessions,
+		).toBe(1);
 	});
 });
 

@@ -1,4 +1,11 @@
 export {
+	mainAgentId,
+	namespaceIds,
+	scopedAgentId,
+	sessionId,
+	subagentId,
+} from "./ids.ts";
+export {
 	COMMAND_MAX,
 	clip,
 	INPUT_MAX,
@@ -8,7 +15,12 @@ export {
 	summarizeToolInput,
 	type ToolInputSummary,
 } from "./redact.ts";
-export { localRepoId, parseGithubRemote } from "./repo-slug.ts";
+export {
+	localRepoId,
+	normalizeRepoId,
+	parseGithubRemote,
+	repoKey,
+} from "./repo-slug.ts";
 export {
 	fnv1a64,
 	safeId,

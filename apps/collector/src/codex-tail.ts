@@ -105,20 +105,19 @@ function readRange(path: string, from: number, max: number): Buffer {
 	}
 }
 
-/** Per-file call_id → tool maps, kept across polls (not persisted; a restart only loses names). */
+/**
+ * Committed per-file call_id → tool maps, kept across polls (F11; not persisted — a restart only
+ * loses names). A poll works on a copy that commit() swaps in, so a failed delivery re-reads its
+ * lines against the same map it started from.
+ */
 const CALLS = new WeakMap<TailState, Map<string, Map<string, string>>>();
-function callsFor(state: TailState, path: string): Map<string, string> {
+function callsOf(state: TailState): Map<string, Map<string, string>> {
 	let byFile = CALLS.get(state);
 	if (!byFile) {
 		byFile = new Map();
 		CALLS.set(state, byFile);
 	}
-	let calls = byFile.get(path);
-	if (!calls) {
-		calls = new Map();
-		byFile.set(path, calls);
-	}
-	return calls;
+	return byFile;
 }
 
 /** Events from one poll; `commit()` applies the new offsets to the state (call after delivery). */
@@ -140,6 +139,8 @@ export interface PollOptions {
 export function pollOnce(opts: PollOptions): PollResult {
 	const events: IngestEvent[] = [];
 	const next: Record<string, FileState> = {};
+	const committedCalls = callsOf(opts.state);
+	const nextCalls = new Map<string, Map<string, string>>();
 	for (const path of listRolloutFiles(
 		opts.root,
 		opts.now - (opts.maxAgeMs ?? MAX_AGE_MS),
@@ -157,17 +158,17 @@ export function pollOnce(opts: PollOptions): PollResult {
 					session: committed.session ? { ...committed.session } : null,
 				}
 			: undefined;
-		const calls = callsFor(opts.state, path);
+		let restart = false;
 		if (file && (file.ino !== st.ino || st.size < file.offset)) {
-			file = undefined; // rotated / truncated → start over
-			calls.clear();
+			file = undefined; // rotated / truncated → start over, forget its calls
+			restart = true;
 		}
-		const ctx: CodexFileContext = { session: file?.session ?? null, calls };
 
 		if (!file) {
 			file = { offset: 0, ino: st.ino, session: null };
 			if (st.mtimeMs < opts.now - opts.backfillMs) {
 				// old file: learn the session from line 1, then tail from EOF
+				const ctx: CodexFileContext = { session: null, calls: new Map() };
 				const head = readRange(
 					path,
 					0,
@@ -178,13 +179,19 @@ export function pollOnce(opts: PollOptions): PollResult {
 				file.session = ctx.session;
 				file.offset = st.size;
 				next[path] = file;
+				nextCalls.set(path, ctx.calls);
 				continue;
 			}
 		}
 		if (st.size <= file.offset) {
 			next[path] = file;
+			if (restart) nextCalls.set(path, new Map());
 			continue;
 		}
+		const ctx: CodexFileContext = {
+			session: file.session,
+			calls: new Map(restart ? [] : committedCalls.get(path)),
+		};
 
 		const buf = readRange(
 			path,
@@ -206,6 +213,7 @@ export function pollOnce(opts: PollOptions): PollResult {
 		file.offset += pos;
 		file.session = ctx.session;
 		next[path] = file;
+		nextCalls.set(path, ctx.calls);
 	}
 	const gone = Object.keys(opts.state.files).filter((p) => !existsSync(p));
 	const state = opts.state;
@@ -213,9 +221,10 @@ export function pollOnce(opts: PollOptions): PollResult {
 		enumerable: false,
 		value: () => {
 			Object.assign(state.files, next);
+			for (const [p, calls] of nextCalls) committedCalls.set(p, calls);
 			for (const p of gone) {
 				delete state.files[p];
-				CALLS.get(state)?.delete(p);
+				committedCalls.delete(p);
 			}
 		},
 	}) as PollResult;

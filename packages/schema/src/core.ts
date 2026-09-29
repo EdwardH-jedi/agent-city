@@ -1,5 +1,13 @@
 // zod-free entry for latency-sensitive callers (the Claude hook: zod adds ~10ms of startup).
 // Runtime values here must not import types.ts; types are erased at build time.
+
+export {
+	mainAgentId,
+	namespaceIds,
+	scopedAgentId,
+	sessionId,
+	subagentId,
+} from "./ids.ts";
 export {
 	COMMAND_MAX,
 	clip,
@@ -10,7 +18,12 @@ export {
 	summarizeToolInput,
 	type ToolInputSummary,
 } from "./redact.ts";
-export { localRepoId, parseGithubRemote } from "./repo-slug.ts";
+export {
+	localRepoId,
+	normalizeRepoId,
+	parseGithubRemote,
+	repoKey,
+} from "./repo-slug.ts";
 export {
 	fnv1a64,
 	safeId,

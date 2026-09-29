@@ -4,9 +4,13 @@
 import {
 	clip,
 	type IngestEvent,
+	mainAgentId,
+	sessionId as namespacedSession,
 	redact,
 	SUBAGENT_TOOLS,
+	safeId,
 	sanitizeEvent,
+	subagentId,
 	summarizeToolInput,
 } from "@agent-city/schema/core";
 import type { GitInfo } from "./git-info.ts";
@@ -115,8 +119,10 @@ export function mapClaudeHook(
 	// Accept either the raw hook JSON or an already-picked ClaudeInput (the hook picks early).
 	const input = isPicked(raw) ? raw : pickClaudeInput(raw);
 	if (!input) return null;
-	const sessionId = str(input.session_id);
-	if (!sessionId) return null;
+	const rawInput = str(input.session_id);
+	if (!rawInput) return null;
+	// sanitized before namespacing so an unsafe id still yields `claude:redacted-<hash>`
+	const rawSessionId = safeId(rawInput);
 
 	const hook = str(input.hook_event_name) ?? "unknown";
 	const tool = str(input.tool_name);
@@ -186,14 +192,18 @@ export function mapClaudeHook(
 	payload.permission_mode = str(input.permission_mode);
 	payload.transcript_path = str(input.transcript_path);
 
+	// F10: session = claude:<raw>, subagent = <session>/sub:<tool_use_id>. Event ids keep the raw
+	// session id so events spooled by an older collector still dedupe.
+	const session = namespacedSession("claude", rawSessionId);
 	return sanitizeEvent({
 		id: toolUseId
-			? `cc:${sessionId}:${hook}:${toolUseId}`
+			? `cc:${rawSessionId}:${hook}:${toolUseId}`
 			: `cc:${ctx.newId()}`,
 		ts: ctx.now().toISOString(),
 		machine_id: ctx.machine,
-		session_id: sessionId,
-		agent_id: spawnsSubagent ? `sub:${toolUseId}` : null,
+		session_id: session,
+		agent_id:
+			spawnsSubagent && toolUseId ? subagentId(session, toolUseId) : null,
 		provider: "claude" as const,
 		type: hook,
 		tool,
@@ -206,7 +216,7 @@ export function mapClaudeHook(
 		hostname: ctx.hostname,
 		...(spawnsSubagent
 			? {
-					parent_agent_id: sessionId,
+					parent_agent_id: mainAgentId(session),
 					agent_kind: "subagent" as const,
 					agent_label: subagentType ? clip(redact(subagentType), 60) : null,
 				}

@@ -305,7 +305,7 @@ describe("F04 spool before POST", () => {
 			);
 			expect(r.code).toBe(0);
 			expect(r.ms).toBeLessThan(700);
-			expect(spoolText(home)).toContain('"s-hang"');
+			expect(spoolText(home)).toContain('"claude:s-hang"');
 		} finally {
 			hang.stop(true);
 		}

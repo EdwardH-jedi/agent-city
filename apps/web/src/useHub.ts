@@ -3,6 +3,7 @@
 // in; live messages are merged by id so a message racing the snapshot is never lost or doubled.
 import type { Event, Provider, Repo, Session } from "@agent-city/schema";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EVENT_LIMIT, mergeEvents, mergeSessions } from "./merge.ts";
 
 export type RepoView = Repo & { active_sessions: number };
 export type Districts = Record<string, RepoView[]>;
@@ -12,7 +13,8 @@ export interface EventFilter {
 	provider: Provider | null;
 }
 
-export const EVENT_LIMIT = 200;
+export { EVENT_LIMIT };
+
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000];
 
 async function getJson<T>(path: string): Promise<T> {
@@ -31,33 +33,6 @@ const eventsPath = (f: EventFilter) => {
 const matches = (e: Event, f: EventFilter) =>
 	(!f.repo || e.repo_id === f.repo) &&
 	(!f.provider || e.provider === f.provider);
-
-/** Newest first, unique by id, capped. */
-function mergeEvents(a: readonly Event[], b: readonly Event[]): Event[] {
-	const byId = new Map<string, Event>();
-	for (const e of [...a, ...b]) byId.set(e.id, e);
-	return [...byId.values()]
-		.sort((x, y) => (x.ts < y.ts ? 1 : x.ts > y.ts ? -1 : 0))
-		.slice(0, EVENT_LIMIT);
-}
-
-/** Upsert by id; a copy that saw a later event (or a status change) wins. */
-function mergeSessions(
-	current: readonly Session[],
-	incoming: readonly Session[],
-): Session[] {
-	const byId = new Map(current.map((s) => [s.id, s]));
-	for (const s of incoming) {
-		const prev = byId.get(s.id);
-		if (
-			!prev ||
-			s.last_event_at >= prev.last_event_at ||
-			s.status !== prev.status
-		)
-			byId.set(s.id, s);
-	}
-	return [...byId.values()];
-}
 
 function upsertRepo(districts: Districts, repo: RepoView): Districts {
 	const next: Districts = {};

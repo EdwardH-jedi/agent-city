@@ -54,7 +54,8 @@ function post(
 	);
 }
 
-const session = (db: Database, id = "s1") =>
+// Test events carry raw session ids (like a pre-F10 collector); the hub namespaces them.
+const session = (db: Database, id = "claude:s1") =>
 	db
 		.query<Record<string, unknown>, [string]>(
 			"SELECT * FROM sessions WHERE id = ?",
@@ -167,7 +168,7 @@ describe("POST /ingest — storage", () => {
 		]);
 		expect(
 			ctx.db.query("SELECT id, kind, parent_agent_id FROM agents").all(),
-		).toEqual([{ id: "s1", kind: "main", parent_agent_id: null }]);
+		).toEqual([{ id: "claude:s1", kind: "main", parent_agent_id: null }]);
 	});
 
 	test("unknown machine id → role null", async () => {
@@ -278,8 +279,13 @@ describe("state transitions end-to-end", () => {
 			>("SELECT id, kind, parent_agent_id, ended_at FROM agents ORDER BY id")
 			.all();
 		expect(agents).toEqual([
-			{ id: "s1", kind: "main", parent_agent_id: null, ended_at: null },
-			{ id: "sub1", kind: "subagent", parent_agent_id: "s1", ended_at: t(5) },
+			{ id: "claude:s1", kind: "main", parent_agent_id: null, ended_at: null },
+			{
+				id: "claude:s1/sub1",
+				kind: "subagent",
+				parent_agent_id: "claude:s1",
+				ended_at: t(5),
+			},
 		]);
 
 		expect(await statusAfter({ type: "Stop", ts: t(6) })).toBe("idle");
@@ -310,9 +316,9 @@ describe("state transitions end-to-end", () => {
 		await post(ctx, ev({ agent_id: "sub9", parent_agent_id: "ghost" }));
 		expect(
 			ctx.db
-				.query("SELECT parent_agent_id FROM agents WHERE id = 'sub9'")
+				.query("SELECT parent_agent_id FROM agents WHERE id = 'claude:s1/sub9'")
 				.get(),
-		).toEqual({ parent_agent_id: "s1" });
+		).toEqual({ parent_agent_id: "claude:s1" });
 	});
 });
 
@@ -341,14 +347,18 @@ describe("read API", () => {
 		const body = (await (await ctx.app.request("/api/sessions")).json()) as {
 			sessions: { id: string }[];
 		};
-		expect(body.sessions.map((s) => s.id)).toEqual(["w", "x", "a"]);
+		expect(body.sessions.map((s) => s.id)).toEqual([
+			"claude:w",
+			"codex:x",
+			"claude:a",
+		]);
 	});
 
 	test("GET /api/sessions?status=waiting,active filters; unknown → 400", async () => {
 		const body = (await (
 			await ctx.app.request("/api/sessions?status=waiting,active")
 		).json()) as { sessions: { id: string }[] };
-		expect(body.sessions.map((s) => s.id)).toEqual(["w", "a"]);
+		expect(body.sessions.map((s) => s.id)).toEqual(["claude:w", "claude:a"]);
 		expect((await ctx.app.request("/api/sessions?status=busy")).status).toBe(
 			400,
 		);
@@ -362,11 +372,12 @@ describe("read API", () => {
 				}
 			).events.map((e) => e.session_id);
 
-		expect(await get("")).toEqual(["x", "a", "w"]);
-		expect(await get("?repo=o/one")).toEqual(["a", "w"]);
-		expect(await get("?provider=codex")).toEqual(["x"]);
-		expect(await get(`?since=${encodeURIComponent(t(1))}`)).toEqual(["x"]);
-		expect(await get("?limit=1")).toEqual(["x"]);
+		const [a, w, x] = ["claude:a", "claude:w", "codex:x"];
+		expect(await get("")).toEqual([x, a, w]);
+		expect(await get("?repo=o/one")).toEqual([a, w]);
+		expect(await get("?provider=codex")).toEqual([x]);
+		expect(await get(`?since=${encodeURIComponent(t(1))}`)).toEqual([x]);
+		expect(await get("?limit=1")).toEqual([x]);
 		for (const bad of [
 			"?since=nope",
 			"?limit=0",
@@ -430,7 +441,7 @@ describe("WebSocket /ws", () => {
 
 			expect(got.map((g) => [g.kind, g.data.id])).toEqual([
 				["event", "ws-1"],
-				["session", "ws-s"],
+				["session", "claude:ws-s"],
 			]);
 			expect((await fetch(`http://${base}/ws`)).status).toBe(426);
 		} finally {

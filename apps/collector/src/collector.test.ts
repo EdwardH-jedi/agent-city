@@ -168,7 +168,7 @@ describe("mapClaudeHook", () => {
 			id: "cc:fixed-id",
 			ts: "2026-06-01T00:00:00.000Z",
 			machine_id: "cockpit",
-			session_id: "s1",
+			session_id: "claude:s1",
 			provider: "claude",
 			type: "SessionStart",
 			repo_id: "octo-example/alpha",
@@ -240,8 +240,8 @@ describe("mapClaudeHook", () => {
 				},
 			});
 			expect(pre).toMatchObject({
-				agent_id: "sub:tu9",
-				parent_agent_id: "s1",
+				agent_id: "claude:s1/sub:tu9",
+				parent_agent_id: "claude:s1",
 				agent_kind: "subagent",
 				agent_label: "Explore",
 				summary: `${tool} → Explore: find x`,
@@ -256,7 +256,7 @@ describe("mapClaudeHook", () => {
 				tool_response: "SUB-RESULT-MARKER",
 			});
 			expect(post).toMatchObject({
-				agent_id: "sub:tu9",
+				agent_id: "claude:s1/sub:tu9",
 				agent_label: null,
 				type: "PostToolUse",
 				tool,
@@ -487,7 +487,7 @@ describe("mapCodexLine", () => {
 		]);
 		expect(events[0]).toMatchObject({
 			id: "codex:cx-1:0",
-			session_id: "cx-1",
+			session_id: "codex:cx-1",
 			provider: "codex",
 			repo_id: "octo-example/beta",
 			branch: "dev",
@@ -612,7 +612,9 @@ describe("pollOnce", () => {
 		const restarted: TailState = JSON.parse(JSON.stringify(state)); // as if loaded from disk
 		const next = pollOnce(opts(root, restarted));
 		expect(next.map((e) => e.type)).toEqual(["Stop"]);
-		expect(next[0]?.session_id).toBe("cx-1"); // session context survived the restart
+		expect(next[0]?.session_id).toBe("codex:cx-1"); // session context survived the restart
+		// the offsets file keeps the raw id → no double prefix after a restart
+		expect(Object.values(restarted.files)[0]?.session?.id).toBe("cx-1");
 		next.commit();
 		expect(pollOnce(opts(root, restarted))).toHaveLength(0);
 	});
@@ -652,6 +654,53 @@ describe("pollOnce", () => {
 		]);
 	});
 
+	test("F11: a failed delivery (no commit) re-reads the Post against the committed call map", () => {
+		const { root, file } = setup();
+		const call = rec("response_item", {
+			type: "function_call",
+			name: "exec_command",
+			call_id: "c7",
+			arguments: JSON.stringify({ cmd: "true" }),
+		});
+		writeFileSync(file, `${META}\n${call}\n`);
+		const state: TailState = { files: {} };
+		pollOnce(opts(root, state)).commit();
+		appendFileSync(
+			file,
+			`${rec("response_item", { type: "function_call_output", call_id: "c7", output: "x" })}\n`,
+		);
+		const failed = pollOnce(opts(root, state)); // delivery fails → no commit
+		expect(failed.map((e) => e.tool)).toEqual(["exec_command"]);
+		const retry = pollOnce(opts(root, state));
+		expect(retry.map((e) => [e.type, e.tool])).toEqual([
+			["PostToolUse", "exec_command"],
+		]);
+		expect(retry.map((e) => e.id)).toEqual(failed.map((e) => e.id));
+	});
+
+	test("F11: rotation / truncation forgets the file's calls", () => {
+		const { root, file } = setup();
+		const call = rec("response_item", {
+			type: "function_call",
+			name: "exec_command",
+			call_id: "c8",
+			arguments: JSON.stringify({ cmd: "true" }),
+		});
+		writeFileSync(file, `${META}\n${call}\n`);
+		const state: TailState = { files: {} };
+		pollOnce(opts(root, state)).commit();
+		truncateSync(file, 0);
+		writeFileSync(
+			file,
+			`${META}\n${rec("response_item", { type: "function_call_output", call_id: "c8", output: "x" })}\n`,
+		);
+		const after = pollOnce(opts(root, state));
+		expect(after.map((e) => [e.type, e.tool])).toEqual([
+			["SessionStart", null],
+			["PostToolUse", null],
+		]);
+	});
+
 	test("truncated file starts over", () => {
 		const { root, file } = setup();
 		writeFileSync(file, `${META}\n${turn}\n${turn}\n`);
@@ -673,7 +722,9 @@ describe("pollOnce", () => {
 		skipped.commit();
 		appendFileSync(file, `${turn}\n`);
 		const e = pollOnce(opts(root, state, -1));
-		expect(e.map((x) => [x.type, x.session_id])).toEqual([["Stop", "cx-1"]]);
+		expect(e.map((x) => [x.type, x.session_id])).toEqual([
+			["Stop", "codex:cx-1"],
+		]);
 	});
 });
 

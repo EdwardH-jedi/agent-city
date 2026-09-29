@@ -8,8 +8,14 @@
 //   4. local checkouts under REPO_ROOTS                  → repo_paths / local-only repos
 import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { type CiStatus, localRepoId, MachineRole } from "@agent-city/schema";
+import {
+	type CiStatus,
+	localRepoId,
+	MachineRole,
+	repoKey,
+} from "@agent-city/schema";
 import { openDb } from "../db.ts";
+import { remapRepoIds } from "../store.ts";
 import {
 	createGithubClient,
 	type EtagStore,
@@ -166,6 +172,8 @@ export interface SyncSummary {
 	rate: Record<"graphql" | "core", RateState>;
 	aborted: string | null;
 	changedRepoIds: string[];
+	/** Session / event / repo_path rows re-pointed to a canonical repo id (F13). */
+	remappedRefs: number;
 	warnings: string[];
 }
 
@@ -216,6 +224,7 @@ export async function syncGithub(opts: SyncOptions): Promise<SyncSummary> {
 		rate: client.rate,
 		aborted: null,
 		changedRepoIds: [],
+		remappedRefs: 0,
 		warnings: [...districts.warnings],
 	};
 
@@ -363,6 +372,13 @@ export async function syncGithub(opts: SyncOptions): Promise<SyncSummary> {
 		}
 	}
 
+	// F13: sessions / events recorded under another casing before these rows existed → canonical id.
+	try {
+		summary.remappedRefs = remapRepoIds(db);
+	} catch (err) {
+		summary.warnings.push(`repo id remap failed: ${(err as Error).message}`);
+	}
+
 	const after = snapshot(db);
 	summary.changedRepoIds = [...after]
 		.filter(([id, json]) => before.get(id) !== json)
@@ -382,7 +398,7 @@ async function mapLocal(
 		db
 			.query<{ id: string }, []>("SELECT id FROM repos WHERE is_local_only = 0")
 			.all()
-			.map((r) => [r.id.toLowerCase(), r.id]),
+			.map((r) => [repoKey(r.id), r.id]),
 	);
 
 	const result: LocalSummary = {
@@ -423,7 +439,7 @@ async function mapLocal(
 				continue;
 			}
 			if (c.isWorktree) result.worktrees++;
-			let repoId = c.slug ? known.get(c.slug.toLowerCase()) : undefined;
+			let repoId = c.slug ? known.get(repoKey(c.slug)) : undefined;
 			if (repoId) {
 				result.mapped++;
 			} else {
@@ -538,6 +554,8 @@ export function formatSummary(s: ConfiguredSummary): string {
 		`rate limit        : graphql ${rate(s.rate.graphql)} · core ${rate(s.rate.core)}`,
 		`changed rows      : ${s.changedRepoIds.length}`,
 	);
+	if (s.remappedRefs)
+		lines.push(`repo id remap     : ${s.remappedRefs} references`);
 	if (s.aborted) lines.push(`ABORTED           : ${s.aborted}`);
 	for (const w of s.warnings) lines.push(`warning           : ${w}`);
 	return lines.join("\n");

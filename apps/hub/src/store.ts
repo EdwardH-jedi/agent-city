@@ -7,7 +7,10 @@ import {
 	endsAgent,
 	type IngestEvent,
 	MachineRole,
+	mainAgentId,
+	namespaceIds,
 	nextStatus,
+	normalizeRepoId,
 	type Repo,
 	type Session,
 	type SessionStatus,
@@ -43,8 +46,9 @@ export function ingestEvents(
 	rawBatch: readonly IngestEvent[],
 ): IngestResult {
 	// Final redaction of every string field — collectors are not trusted (F02). Done first so the
-	// sanitized id is the dedupe key and the sanitized machine id the FK value.
-	const batch = rawBatch.map((e) => sanitizeEvent(e));
+	// sanitized id is the dedupe key and the sanitized machine id the FK value. Then the id namespace
+	// (F10) — idempotent, so it also upgrades events spooled by an older collector.
+	const batch = rawBatch.map((e) => namespaceIds(sanitizeEvent(e)));
 	const upsertMachine = db.query(
 		`INSERT INTO machines (id, hostname, role, last_seen_at) VALUES ($id, $hostname, $role, $ts)
 		 ON CONFLICT(id) DO UPDATE SET
@@ -60,32 +64,43 @@ export function ingestEvents(
 		`INSERT INTO sessions (id, provider, machine_id, repo_id, cwd, branch, model, status, started_at, last_event_at, ended_at)
 		 VALUES ($id, $provider, $machine_id, $repo_id, $cwd, $branch, $model, $status, $ts, $ts, $ended_at)
 		 ON CONFLICT(id) DO UPDATE SET
-		   -- only a newer (or same-instant) event may move status; late arrivals just fill gaps
+		   -- Only a newer (or same-instant) event may move status or overwrite metadata (F08); a late
+		   -- arrival only fills fields that are still NULL. SET expressions all see the old row.
 		   status        = CASE WHEN excluded.last_event_at >= last_event_at THEN excluded.status ELSE status END,
 		   ended_at      = CASE WHEN excluded.last_event_at >= last_event_at THEN excluded.ended_at ELSE ended_at END,
+		   repo_id = CASE WHEN excluded.last_event_at >= last_event_at
+		                  THEN coalesce(excluded.repo_id, repo_id) ELSE coalesce(repo_id, excluded.repo_id) END,
+		   cwd     = CASE WHEN excluded.last_event_at >= last_event_at
+		                  THEN coalesce(excluded.cwd, cwd) ELSE coalesce(cwd, excluded.cwd) END,
+		   branch  = CASE WHEN excluded.last_event_at >= last_event_at
+		                  THEN coalesce(excluded.branch, branch) ELSE coalesce(branch, excluded.branch) END,
+		   model   = CASE WHEN excluded.last_event_at >= last_event_at
+		                  THEN coalesce(excluded.model, model) ELSE coalesce(model, excluded.model) END,
 		   last_event_at = max(last_event_at, excluded.last_event_at),
-		   started_at    = min(started_at, excluded.started_at),
-		   repo_id = coalesce(excluded.repo_id, repo_id),
-		   cwd     = coalesce(excluded.cwd, cwd),
-		   branch  = coalesce(excluded.branch, branch),
-		   model   = coalesce(excluded.model, model)`,
+		   started_at    = min(started_at, excluded.started_at)`,
 	);
 	const upsertAgent = db.query(
 		`INSERT INTO agents (id, session_id, parent_agent_id, kind, label) VALUES ($id, $session_id, $parent, $kind, $label)
 		 ON CONFLICT(id) DO UPDATE SET label = coalesce(excluded.label, label)`,
 	);
-	// GitHub names are case-insensitive; collectors derive slugs from remote URLs → use the canonical row id.
-	const canonicalRepo = db.query<{ id: string }, { id: string }>(
-		"SELECT id FROM repos WHERE id = $id COLLATE NOCASE LIMIT 1",
-	);
-	const agentExists = db.query<{ one: number }, { id: string }>(
-		"SELECT 1 AS one FROM agents WHERE id = $id",
+	const resolveRepo = repoResolver(db);
+	// A parent must be an agent of the same session (F10: no cross-session references).
+	const agentInSession = db.query<
+		{ one: number },
+		{ id: string; session_id: string }
+	>("SELECT 1 AS one FROM agents WHERE id = $id AND session_id = $session_id");
+	const lastEventAt = db.query<{ last_event_at: string }, { id: string }>(
+		"SELECT last_event_at FROM sessions WHERE id = $id",
 	);
 	const endAgent = db.query(
 		"UPDATE agents SET ended_at = coalesce(ended_at, $ts) WHERE id = $id",
 	);
 	const endAllAgents = db.query(
 		"UPDATE agents SET ended_at = coalesce(ended_at, $ts) WHERE session_id = $session_id",
+	);
+	// Resume (F09): a newer event reopens the main agent a SessionEnd closed. Subagents stay ended.
+	const reopenAgent = db.query(
+		"UPDATE agents SET ended_at = NULL WHERE id = $id AND ended_at IS NOT NULL AND ended_at < $ts",
 	);
 	const getEvent = db.query<EventRow, { id: string }>(
 		"SELECT * FROM events WHERE id = $id",
@@ -111,12 +126,14 @@ export function ingestEvents(
 			}
 
 			const ts = utc(ev.ts);
-			const mainAgent = ev.session_id;
-			const repoId = ev.repo_id
-				? (canonicalRepo.get({ id: ev.repo_id })?.id ?? ev.repo_id)
-				: null;
+			const mainAgent = mainAgentId(ev.session_id);
+			const repoId = ev.repo_id ? resolveRepo(ev.repo_id) : null;
 			const agentId = ev.agent_id ?? mainAgent;
 			const status = nextStatus(ev.type);
+			// Decided before the upsert moves last_event_at: does this event supersede the session's
+			// current state? Agent end / reopen follow the same rule as status (F09).
+			const prevLast = lastEventAt.get({ id: ev.session_id })?.last_event_at;
+			const newest = prevLast === undefined || ts >= prevLast;
 
 			// FK order: machine → session → main agent → subagent → event.
 			upsertMachine.run({
@@ -149,7 +166,11 @@ export function ingestEvents(
 			if (agentId !== mainAgent) {
 				// Unknown parent → hang the subagent off the main agent instead of failing the batch.
 				const parent =
-					ev.parent_agent_id && agentExists.get({ id: ev.parent_agent_id })
+					ev.parent_agent_id &&
+					agentInSession.get({
+						id: ev.parent_agent_id,
+						session_id: ev.session_id,
+					})
 						? ev.parent_agent_id
 						: mainAgent;
 				upsertAgent.run({
@@ -161,8 +182,12 @@ export function ingestEvents(
 				});
 				if (endsAgent(ev.type, ev.tool)) endAgent.run({ id: agentId, ts });
 			}
-			if (status === "ended") {
+			// A late SessionEnd (older than what the session already saw) ends nothing; a newer
+			// non-end event after SessionEnd is a resume and reopens the main agent.
+			if (newest && status === "ended") {
 				endAllAgents.run({ session_id: ev.session_id, ts });
+			} else if (newest) {
+				reopenAgent.run({ id: mainAgent, ts });
 			}
 
 			// Already sanitized above (sanitizeEvent on the whole batch).
@@ -191,6 +216,85 @@ export function ingestEvents(
 	})();
 
 	return result;
+}
+
+/**
+ * Repo id → the one spelling the DB uses for it (F13). GitHub names are case-insensitive and
+ * collectors derive slugs from remote URLs, so: a repos row (GitHub row before a local-only one) →
+ * else the casing sessions already use → else the normalized input. When the incoming spelling
+ * differs from the resolved one, existing references to it are re-pointed too. Memoized per batch.
+ */
+function repoResolver(db: Database): (raw: string) => string {
+	const repoRow = db.query<{ id: string }, { id: string }>(
+		"SELECT id FROM repos WHERE id = $id COLLATE NOCASE ORDER BY is_local_only, id LIMIT 1",
+	);
+	const sessionRef = db.query<{ repo_id: string }, { id: string }>(
+		"SELECT repo_id FROM sessions WHERE repo_id = $id COLLATE NOCASE ORDER BY started_at LIMIT 1",
+	);
+	const memo = new Map<string, string>();
+	return (raw) => {
+		const id = normalizeRepoId(raw);
+		const hit = memo.get(id);
+		if (hit !== undefined) return hit;
+		const resolved =
+			repoRow.get({ id })?.id ?? sessionRef.get({ id })?.repo_id ?? id;
+		if (resolved !== id) repointRepo(db, id, resolved);
+		memo.set(id, resolved);
+		return resolved;
+	};
+}
+
+const REPO_REF_TABLES = ["sessions", "events", "repo_paths"] as const;
+
+/** Exact-match re-point (indexed on every table). Returns rows changed. */
+function repointRepo(db: Database, from: string, to: string): number {
+	let changed = 0;
+	for (const table of REPO_REF_TABLES) {
+		changed += db
+			.query(`UPDATE ${table} SET repo_id = $to WHERE repo_id = $from`)
+			.run({ from, to }).changes;
+	}
+	return changed;
+}
+
+/**
+ * Re-point every reference whose repo_id is only a case variant of a repos row to that row's id,
+ * and fold local-only rows into their GitHub twin (F13). Run after sync upserts repos: sessions /
+ * events ingested before the canonical row existed would otherwise never JOIN to it. Returns the
+ * number of reference rows changed.
+ */
+export function remapRepoIds(db: Database): number {
+	const canonical = db.query<{ id: string }, { id: string }>(
+		"SELECT id FROM repos WHERE id = $id COLLATE NOCASE ORDER BY is_local_only, id LIMIT 1",
+	);
+	let changed = 0;
+	db.transaction(() => {
+		const twins = db
+			.query<{ local: string; gh: string }, []>(
+				`SELECT l.id AS local, g.id AS gh FROM repos l
+				 JOIN repos g ON g.id = l.id COLLATE NOCASE AND g.id != l.id
+				 WHERE l.is_local_only = 1 AND g.is_local_only = 0`,
+			)
+			.all();
+		const dropRepo = db.query("DELETE FROM repos WHERE id = $id");
+		for (const { local, gh } of twins) {
+			changed += repointRepo(db, local, gh);
+			dropRepo.run({ id: local });
+		}
+		for (const table of REPO_REF_TABLES) {
+			const orphans = db
+				.query<{ repo_id: string }, []>(
+					`SELECT DISTINCT repo_id FROM ${table}
+					 WHERE repo_id IS NOT NULL AND repo_id NOT IN (SELECT id FROM repos)`,
+				)
+				.all();
+			for (const { repo_id } of orphans) {
+				const to = canonical.get({ id: repo_id })?.id;
+				if (to && to !== repo_id) changed += repointRepo(db, repo_id, to);
+			}
+		}
+	})();
+	return changed;
 }
 
 /** Apply applyStale() to every candidate session. Returns the sessions that changed. */

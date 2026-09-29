@@ -93,11 +93,20 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | ----------------------------- | -------------------------------------------------------------------------------- |
 | `dev` / `dev:hub` / `dev:web` | hub + web · hub only (from repo root) · Vite (proxies `/healthz`, `/api`, `/ws`) |
 | `test` · `lint` · `format`    | `bun test` · `biome check .` · `biome format --write .`                          |
+| `typecheck`                   | `tsc --noEmit` for schema, hub, collector and web.                               |
 | `sync:github`                 | One GitHub sync + summary (repos, private/archived/fork, CI, local mapping, rate). |
+| `db:reset`                    | Stop the hub first. Moves `DB_PATH` (+ `-wal`/`-shm`) to `<db>.bak.<UTC stamp>` and creates an empty, migrated DB. `--db <path>` overrides. |
 | `districts:draft`             | Writes `config/districts.draft.yaml` (all repos by district; gitignored).        |
 | `collector:hooks`             | Print-only merge of the Claude hook into `~/.claude/settings.json`.              |
 | `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s).                     |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
+
+**Ids.** Sessions are `claude:<session_id>` / `codex:<session_id>`; the main agent shares the session
+id; a subagent is `<session id>/sub:<tool_use_id>` (one function set in `packages/schema/src/ids.ts`,
+used by both collectors and the hub — the hub also upgrades events spooled by an older collector).
+A DB created before this namespace holds raw ids; run `bun run db:reset` once (nothing is deleted).
+Repo ids are compared case-insensitively (`repoKey`); references stored under another casing are
+re-pointed to the GitHub row at ingest and after every sync.
 
 Districts: edit `config/districts.yaml` (`district: [owner/name | name, …]`, case-insensitive; unlisted
 → `uncategorized`). `bun run districts:draft` gives a starting point.

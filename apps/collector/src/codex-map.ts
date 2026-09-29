@@ -18,6 +18,7 @@ import {
 	safeId,
 	safeText,
 	sanitizeEvent,
+	sessionId,
 	summarizeToolInput,
 	type ToolInputSummary,
 } from "@agent-city/schema/core";
@@ -168,11 +169,13 @@ export function mapCodexLine(
 	): IngestEvent | null => {
 		const s = ctx.session;
 		if (!s) return null;
+		// F10: s.id stays raw (it is persisted with the offsets); the session is codex:<raw>. The
+		// event id keeps its old shape so a re-read after an upgrade still dedupes.
 		return sanitizeEvent({
 			id: `codex:${s.id}:${offset}`,
 			ts,
 			machine_id: deps.machine,
-			session_id: s.id,
+			session_id: sessionId("codex", s.id),
 			agent_id: null,
 			provider: "codex" as const,
 			type: evType,

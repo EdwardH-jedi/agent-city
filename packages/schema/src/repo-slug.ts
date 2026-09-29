@@ -19,9 +19,26 @@ export function parseGithubRemote(url: string): string | null {
 	const u = url.trim();
 	for (const re of GITHUB_REMOTE) {
 		const m = re.exec(u);
-		if (m?.[1] && m[2]) return `${m[1]}/${m[2]}`;
+		if (m?.[1] && m[2]) return normalizeRepoId(`${m[1]}/${m[2]}`);
 	}
 	return null;
+}
+
+/**
+ * Canonical spelling of a repo id from any source (collector slug, sync, ingest): trimmed, no
+ * trailing `/` or `.git`. Casing is kept — GitHub's casing is the display form; compare with
+ * repoKey() (audit F13).
+ */
+export function normalizeRepoId(id: string): string {
+	return id
+		.trim()
+		.replace(/\/+$/, "")
+		.replace(/\.git$/i, "");
+}
+
+/** Case-insensitive identity of a repo id (GitHub owner/name are case-insensitive). */
+export function repoKey(id: string): string {
+	return normalizeRepoId(id).toLowerCase();
 }
 
 /** Id for a checkout without a GitHub origin: `local/<basename of the work tree>`. */

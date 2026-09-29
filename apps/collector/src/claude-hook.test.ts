@@ -92,7 +92,7 @@ test("bin/claude-hook → hub receives a whitelisted event with the bearer token
 		expect(got[0]?.auth).toBe("Bearer hook-test-token");
 		const event = (got[0]?.body as Record<string, unknown>[] | undefined)?.[0];
 		expect(event).toMatchObject({
-			session_id: "s-e2e",
+			session_id: "claude:s-e2e",
 			type: "UserPromptSubmit",
 			provider: "claude",
 			summary: "prompt (13 chars)",
@@ -124,7 +124,7 @@ test("hub unreachable → event lands in the spool, exit 0", async () => {
 		.map((f) => readFileSync(join(env.AGENTCITY_HOME, f), "utf8"))
 		.join("");
 	expect(JSON.parse(spooled.trim())).toMatchObject({
-		session_id: "s-down",
+		session_id: "claude:s-down",
 		type: "Stop",
 	});
 });
