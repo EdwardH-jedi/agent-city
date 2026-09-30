@@ -103,6 +103,9 @@ the bound review are.
   `max_infra_retries` (2) times.
 - An orphaned child from a previous hub process is terminated only if its pid still has the recorded
   start time. If termination cannot be confirmed, the task is `interrupted`, not `cancelled`.
+- Stopping the hub with Ctrl-C / SIGTERM terminates the running child first; the task is then
+  reconciled (`interrupted`, or resumed if no model stage had started) when the hub starts again.
+  A hard kill (SIGKILL, power loss) leaves that to the next start as well.
 - Cancel persists an intent. The task becomes `cancelled` only after the child's process group is
   confirmed gone (SIGTERM → grace → SIGKILL).
 - This is at-most-once *acceptance* of a result per attempt, not exactly-once execution: a provider

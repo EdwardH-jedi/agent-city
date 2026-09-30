@@ -238,7 +238,7 @@ if (import.meta.main) {
 	}
 
 	const db = openDb(dbPath);
-	const { server, publish } = startHub({
+	const { server, publish, stop } = startHub({
 		db,
 		ingestToken,
 		hostname,
@@ -252,6 +252,15 @@ if (import.meta.main) {
 	if (!ingestToken) {
 		console.warn("[hub] INGEST_TOKEN is not set — /ingest is disabled (503)");
 	}
+	// Ctrl-C / SIGTERM: stop the managed worker's child now instead of leaving it for the next
+	// start to reconcile. The task itself is still reconciled (interrupted) on the next start.
+	let stopping = false;
+	for (const sig of ["SIGINT", "SIGTERM"] as const)
+		process.on(sig, () => {
+			if (stopping) process.exit(1);
+			stopping = true;
+			void stop().finally(() => process.exit(0));
+		});
 	if (!managed) {
 		console.log(
 			managedPath
