@@ -11,7 +11,7 @@ Bun + TypeScript (strict) monorepo that watches Claude Code / Codex sessions acr
 ```
 apps/hub         Hono HTTP server on bun:sqlite (ingest, read API, ws, GitHub sync)  :4317
 apps/collector   per-machine agents: Claude Code hook (bin/claude-hook), Codex log tail, local spool
-apps/web         Vite + React 2D view (Phase 0); 3D city is Phase 1
+apps/web         Vite + React 2D view (Phase 0); 3D city comes last (docs/ARCHITECTURE.md)
 packages/schema  zod types, status machine, redaction + secret patterns, SQL migrations (shared)
 config/          districts.yaml (repo → district)
 scripts/         repo tooling (check-secrets)

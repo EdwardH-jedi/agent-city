@@ -4,7 +4,8 @@ A live map of my coding agents. Every Claude Code / Codex session on every machi
 local hub and drawn as a city: GitHub repos are buildings, grouped into districts
 (`games`, `school`, `client`, `infra`, `uncategorized`), and active agents walk between them.
 
-Phase 0 (this repo today) is the data layer plus a flat 2D view to verify it; the 3D city is Phase 1.
+Phase 0 (this repo today) is the data layer plus a flat 2D view to verify it; the 3D city comes last
+(see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 
 ## Machines
 
@@ -209,19 +210,25 @@ text; don't paste secrets into commands in the first place):
 - **Phase 0 — Data layer** ✅ schema + status machine + redaction; hub (ingest / API / ws / stale
   sweep, Host/Origin guard); GitHub sync (GraphQL + CI ETag + local mapping); Claude hook + spool;
   Codex tailer; 2D view.
-- **Phase 1 — Live city**: see Next.
+- **Phase 1 → 4 — Reliable monitor → Runner → Relay → 3D city**: see Next.
 
 ## Next
 
-**Phase 1**
-- R3F (react-three-fiber) city: districts as blocks, repos as buildings (height = commits_30d, CI
-  colour), agents as walkers; the 2D view stays as a debug panel.
-- Multi-machine for real: collectors on forge/spine through tunnels; collector-reported `repo_paths`
-  per machine; machine presence.
-- Evaluate GitHub webhooks (push / workflow_run) instead of polling — needs a public endpoint or a
-  relay; keep polling as the fallback.
-- Control plane in permission stages: read-only (today) → notify (e.g. waiting > N min) → act on local
-  agents with explicit per-action approval. No GitHub writes at any stage without a new decision.
+Decisions and their reasons are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the order is fixed:
+
+1. **Phase 1a — Monitor reliability.** Normalized event kinds (hook payloads:
+   [docs/hook-events.md](docs/hook-events.md)), then Run state and health signals (waiting, stalled,
+   failing, looping) and notifications (e.g. waiting > N min).
+2. **Phase 1b — Deploy, result screens, GitHub links.** Hub on spine behind `tailscale serve`
+   (Host allowlist + auth on `/api` and `/ws` first); collectors on forge/spine with
+   collector-reported `repo_paths` and machine presence; desktop + phone screens; issue / PR / CI
+   links, read-only. Evaluate GitHub webhooks (push / workflow_run) instead of polling — polling
+   stays as the fallback.
+3. **Phase 2 — Single Runner.** Acts on local agents only with explicit per-action approval, plus
+   recovery and isolation. No GitHub writes at any stage without a new decision.
+4. **Phase 3 — External Relay.** Propose + read-public-results only.
+5. **Phase 4 — 3D city.** R3F (react-three-fiber): districts as blocks, repos as buildings
+   (height = commits_30d, CI colour), agents as walkers; the 2D view stays as a debug panel.
 
 **Deferred from Phase 0**
 - Codex subagents (`spawn_agent`) as agent rows (no reliable end signal yet).
