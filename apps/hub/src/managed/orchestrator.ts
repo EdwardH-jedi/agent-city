@@ -58,7 +58,6 @@ import {
 import { runProcess, terminateRecorded } from "./proc.ts";
 import { approvalHashFor, gitCtx, liveConfigured } from "./service.ts";
 import {
-	bumpInfraRetries,
 	claimNext,
 	expiredLeases,
 	getRun,
@@ -68,11 +67,12 @@ import {
 	listArtifacts,
 	listRuns,
 	patchRun,
+	releaseForRetry,
 	renewLease,
 	repairsUsed,
 	StaleLeaseError,
+	seize,
 	setTaskState,
-	takeOver,
 	withFence,
 } from "./store.ts";
 
@@ -172,8 +172,11 @@ export class Orchestrator {
 	async reconcile(): Promise<void> {
 		const { db, config } = this.d;
 		for (const stale of expiredLeases(db, this.now())) {
-			const run = stale.current_run_id
-				? getRun(db, stale.current_run_id)
+			// Fence first: from here the old worker (if it is somehow still alive) can write nothing.
+			const seized = seize(db, stale, this.workerId, this.leaseUntil());
+			if (!seized) continue;
+			const run = seized.current_run_id
+				? getRun(db, seized.current_run_id)
 				: null;
 			const term =
 				run?.child_pid != null
@@ -185,57 +188,59 @@ export class Orchestrator {
 			const launched =
 				run?.proc_phase === "implement" || run?.proc_phase === "review";
 			const at = this.now();
-			const taken = takeOver(db, stale, (task) => {
-				const endRun = (state: "cancelled" | "unknown", detail: string) => {
-					if (run && run.state === "running")
-						patchRun(db, run.id, {
-							state,
-							failure_kind: state === "cancelled" ? "cancelled" : "interrupted",
-							failure_detail: detail,
-							ended_at: at,
-							...(term === "unconfirmed" ? {} : PROC_CLEARED),
+			try {
+				withFence(db, seized.id, seized.fence_token, (task) => {
+					const endRun = (state: "cancelled" | "unknown", detail: string) => {
+						if (run && run.state === "running")
+							patchRun(db, run.id, {
+								state,
+								failure_kind:
+									state === "cancelled" ? "cancelled" : "interrupted",
+								failure_detail: detail,
+								ended_at: at,
+								...(term === "unconfirmed" ? {} : PROC_CLEARED),
+							});
+					};
+					const stop = (detail: string) => {
+						endRun("unknown", detail);
+						const queued = task.state === "queued";
+						setTaskState(db, task, {
+							to: queued ? "blocked" : "interrupted",
+							failure_kind: queued ? "workspace_error" : "interrupted",
+							state_detail: detail,
+							release: true,
 						});
-				};
-				if (task.cancel_requested_at && term !== "unconfirmed") {
-					endRun("cancelled", "cancelled while no worker held the task");
-					setTaskState(db, task, {
-						to: "cancelled",
-						failure_kind: "cancelled",
-						state_detail: "cancelled; no owned process is running",
-					});
-				} else if (term === "unconfirmed") {
-					const detail = `the hub stopped and process ${run?.child_pid} could not be confirmed terminated`;
-					endRun("unknown", detail);
-					setTaskState(db, task, {
-						to: task.state === "queued" ? "blocked" : "interrupted",
-						failure_kind:
-							task.state === "queued" ? "workspace_error" : "interrupted",
-						state_detail: detail,
-					});
-				} else if (launched) {
-					const detail = `the hub stopped while the ${run?.proc_phase} stage of attempt ${run?.attempt_no} was running; its result is unknown and it is not re-run automatically`;
-					endRun("unknown", detail);
-					setTaskState(db, task, {
-						to: "interrupted",
-						failure_kind: "interrupted",
-						state_detail: detail,
-					});
-				} else if (task.infra_retries >= config.limits.max_infra_retries) {
-					const detail = `gave up after ${task.infra_retries} automatic retries of the ${task.state} step`;
-					endRun("unknown", detail);
-					setTaskState(db, task, {
-						to: task.state === "queued" ? "blocked" : "interrupted",
-						failure_kind:
-							task.state === "queued" ? "workspace_error" : "interrupted",
-						state_detail: detail,
-					});
-				} else {
-					// No model stage was launched: safe to resume this step. Bounded by infra_retries.
-					if (run) patchRun(db, run.id, PROC_CLEARED);
-					bumpInfraRetries(db, task);
-				}
-			});
-			if (taken) this.changed(stale.id);
+					};
+					if (task.cancel_requested_at && term !== "unconfirmed") {
+						endRun("cancelled", "cancelled while no worker held the task");
+						setTaskState(db, task, {
+							to: "cancelled",
+							failure_kind: "cancelled",
+							state_detail: "cancelled; no owned process is running",
+							release: true,
+						});
+					} else if (term === "unconfirmed")
+						stop(
+							`the hub stopped and process ${run?.child_pid} could not be confirmed terminated`,
+						);
+					else if (launched)
+						stop(
+							`the hub stopped while the ${run?.proc_phase} stage of attempt ${run?.attempt_no} was running; its result is unknown and it is not re-run automatically`,
+						);
+					else if (task.infra_retries >= config.limits.max_infra_retries)
+						stop(
+							`gave up after ${task.infra_retries} automatic retries of the ${task.state} step`,
+						);
+					else {
+						// No model stage was launched: safe to resume this step. Bounded by infra_retries.
+						if (run) patchRun(db, run.id, PROC_CLEARED);
+						releaseForRetry(db, task);
+					}
+				});
+			} catch (err) {
+				if (!(err instanceof StaleLeaseError)) throw err;
+			}
+			this.changed(stale.id);
 		}
 	}
 

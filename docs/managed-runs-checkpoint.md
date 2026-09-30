@@ -43,10 +43,10 @@ actual Git state (`git log`, `git status`), never from memory.
 ## Checkpoints
 
 - [x] A. Baseline, checkpoint file
-- [ ] B. Contracts + migration 006 + store
-- [ ] C. Process boundary, worktree + evidence
-- [ ] D. Orchestrator + fake adapters + deterministic loop
-- [ ] E. Claude / Codex CLI adapters + stub-executable tests
+- [x] B. Contracts + migration 006 + store
+- [x] C. Process boundary, worktree + evidence
+- [x] D. Orchestrator + fake adapters + deterministic loop
+- [x] E. Claude / Codex CLI adapters + stub-executable tests
 - [ ] F. API + UI
 - [ ] G. Fault-injection gates, docs, handoff
 

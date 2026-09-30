@@ -5,8 +5,10 @@ import type { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -62,6 +64,8 @@ export interface FixtureOptions {
 	limits?: Record<string, unknown>;
 	/** File-backed DB (restart tests). Default: in-memory. */
 	dbFile?: boolean;
+	/** Enable live mode against generated stub `claude` / `codex` executables (never the real CLIs). */
+	liveStubs?: { claudeTimeoutS?: number; codexTimeoutS?: number };
 }
 
 export interface Fixture {
@@ -105,7 +109,21 @@ export function makeFixture(opts: FixtureOptions = {}): Fixture {
 		artifacts_root: join(dir, "artifacts"),
 		git_executable: GIT,
 		repos: [{ id: repoId, path: repoPath, base_ref: "main", verification }],
-		live: opts.live ?? { enabled: false },
+		live: opts.liveStubs
+			? {
+					enabled: true,
+					claude: {
+						executable: writeStub(join(dir, "bin"), "claude", CLAUDE_STUB),
+						model: "stub-model",
+						timeout_s: opts.liveStubs.claudeTimeoutS ?? 30,
+					},
+					codex: {
+						executable: writeStub(join(dir, "bin"), "codex", CODEX_STUB),
+						model: "stub-review-model",
+						timeout_s: opts.liveStubs.codexTimeoutS ?? 30,
+					},
+				}
+			: (opts.live ?? { enabled: false }),
 		limits: { kill_grace_ms: 300, lease_ttl_ms: 3_000, ...opts.limits },
 	});
 	const dbPath = opts.dbFile ? join(dir, "hub.db") : ":memory:";
@@ -145,3 +163,199 @@ export function writeStub(dir: string, name: string, script: string): string {
 	chmodSync(exe, 0o755);
 	return exe;
 }
+
+// ── stub provider CLIs ───────────────────────────────────────────────────────
+// Behaviour is chosen by `<bin>/<name>.mode`; every invocation is appended to
+// `<bin>/<name>.calls.jsonl` (argv, stdin, env variable NAMES, cwd).
+
+const STUB_PRELUDE = `
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const dir = import.meta.dir;
+const args = process.argv.slice(2);
+const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8").trim() : "");
+const out = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\\n");
+const flag = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const hang = async (ignoreTerm: boolean) => {
+	if (ignoreTerm) process.on("SIGTERM", () => {});
+	const child = Bun.spawn(["/bin/sleep", "600"]);
+	writeFileSync(join(dir, NAME + ".pids"), process.pid + " " + child.pid);
+	await new Promise(() => setInterval(() => {}, 1000));
+};
+`;
+
+const CLAUDE_STUB = `const NAME = "claude";${STUB_PRELUDE}
+const mode = read("claude.mode") || "success";
+const stdin = args.includes("-p") ? await Bun.stdin.text() : "";
+appendFileSync(join(dir, "claude.calls.jsonl"), JSON.stringify({ argv: args, stdin, env: Object.keys(process.env).sort(), cwd: process.cwd() }) + "\\n");
+if (args[0] === "--version") { console.log("9.9.9 (stub claude)"); process.exit(0); }
+if (args[0] === "auth") {
+	console.log(JSON.stringify({ loggedIn: mode !== "logged_out", authMethod: "stub", subscriptionType: "stub", email: "stub@example.invalid" }, null, 2));
+	process.exit(mode === "logged_out" ? 1 : 0);
+}
+const session = flag("--session-id") ?? flag("--resume") ?? "none";
+const init = JSON.stringify({ type: "system", subtype: "init", session_id: session, ...(mode === "no_model" ? {} : { model: "stub-model-resolved" }) });
+const result = (extra: object) => out({ type: "result", session_id: session, usage: { input_tokens: 12, output_tokens: 34 }, total_cost_usd: 0, num_turns: 1, ...extra });
+const edit = () => {
+	mkdirSync("agentcity-sim", { recursive: true });
+	writeFileSync("agentcity-sim/verify.status", "pass\\n");
+	appendFileSync("live-change.md", "change by stub claude (" + (args.includes("--resume") ? "resume" : "new") + ")\\n");
+};
+switch (mode) {
+	case "nonzero":
+		console.error("stub claude: boom");
+		process.exit(3);
+	case "auth_error":
+		out(JSON.parse(init));
+		result({ subtype: "error_during_execution", is_error: true, result: "Not logged in · Please run /login" });
+		process.exit(1);
+	case "quota_error":
+		out(JSON.parse(init));
+		out({ type: "system", subtype: "api_retry", error: "rate_limit", attempt: 1 });
+		result({ subtype: "error_during_execution", is_error: true, result: "You have hit your usage limit" });
+		process.exit(1);
+	case "model_error":
+		out(JSON.parse(init));
+		out({ type: "system", subtype: "api_retry", error: "model_not_found", attempt: 1 });
+		result({ subtype: "error_during_execution", is_error: true, result: "model unavailable" });
+		process.exit(1);
+	case "invalid":
+		process.stdout.write("this is not json\\n{\\"type\\": \\"broken\\n");
+		process.exit(0);
+	case "hang":
+		await hang(false);
+		break;
+	case "hang_ignore_term":
+		await hang(true);
+		break;
+	case "big": {
+		out(JSON.parse(init));
+		const junk = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "x".repeat(4000) }] } });
+		for (let i = 0; i < 300; i++) process.stdout.write(junk + "\\n");
+		edit();
+		result({ subtype: "success", is_error: false, result: "done", structured_output: { contract: "agentcity.implementation/v1", status: "completed", summary: "big run" } });
+		break;
+	}
+	case "blocked":
+		out(JSON.parse(init));
+		result({ subtype: "success", is_error: false, result: "", structured_output: { contract: "agentcity.implementation/v1", status: "blocked", summary: "cannot do it" } });
+		break;
+	case "plain_text":
+		out(JSON.parse(init));
+		edit();
+		result({ subtype: "success", is_error: false, result: "I made the change." });
+		break;
+	default: {
+		// a line split across two writes, then stderr noise, a thinking block and a tool call
+		process.stdout.write(init.slice(0, 20));
+		await Bun.sleep(30);
+		process.stdout.write(init.slice(20) + "\\n");
+		console.error("stub claude: warning on stderr");
+		out({ type: "assistant", message: { content: [{ type: "thinking", thinking: "PRIVATE-REASONING-MARKER" }, { type: "tool_use", name: "Edit", input: {} }] } });
+		out({ type: "some_future_event", detail: 1 });
+		edit();
+		result({ subtype: "success", is_error: false, result: "done", modelUsage: { "stub-model-resolved": { inputTokens: 12 } }, structured_output: { contract: "agentcity.implementation/v1", status: "completed", summary: "Stub implementation complete." } });
+	}
+}
+`;
+
+const CODEX_STUB = `const NAME = "codex";${STUB_PRELUDE}
+const mode = read("codex.mode") || "success";
+const stdin = args[0] === "exec" ? await Bun.stdin.text() : "";
+appendFileSync(join(dir, "codex.calls.jsonl"), JSON.stringify({ argv: args, stdin, env: Object.keys(process.env).sort(), cwd: process.cwd() }) + "\\n");
+if (args[0] === "--version") { console.log("codex-cli 0.0.0-stub"); process.exit(0); }
+if (args[0] === "login") process.exit(mode === "logged_out" ? 1 : 0);
+const sha = /- commit: ([0-9a-f]{40})/.exec(stdin)?.[1] ?? "";
+const manifest = /- evidence manifest: ([0-9a-f]{64})/.exec(stdin)?.[1] ?? "";
+const outFile = flag("--output-last-message") ?? "";
+const verdict = (approve: boolean) => JSON.stringify({
+	contract: "agentcity.review/v1", audited_sha: sha, manifest_hash: manifest,
+	verdict: approve ? "approve" : "reject",
+	findings: approve ? [] : [{ severity: "major", title: "Stub reviewer finding", detail: "needs another pass", file: "live-change.md", line: 1, actionable: true }],
+	tests_executed: false, summary: approve ? "Stub review: approved." : "Stub review: rejected.",
+});
+out({ type: "thread.started", thread_id: "thread-stub-0001" });
+out({ type: "turn.started" });
+switch (mode) {
+	case "turn_failed":
+		out({ type: "turn.failed", error: { message: "stream error: usage limit reached" } });
+		process.exit(1);
+	case "nonzero":
+		console.error("stub codex: crashed");
+		process.exit(2);
+	case "hang":
+		await hang(false);
+		break;
+	case "garbage":
+		writeFileSync(outFile, "LGTM, ship it");
+		out({ type: "item.completed", item: { type: "agent_message", text: "LGTM, ship it" } });
+		break;
+	case "no_message":
+		break;
+	case "mutate":
+		writeFileSync("reviewer-edit.txt", "the reviewer wrote this\\n");
+		writeFileSync(outFile, verdict(true));
+		break;
+	case "claims_tests":
+		writeFileSync(outFile, JSON.stringify({ ...JSON.parse(verdict(true)), tests_executed: true }));
+		break;
+	case "reject":
+		writeFileSync(outFile, verdict(false));
+		break;
+	case "reject_once":
+		writeFileSync(outFile, verdict(existsSync(join(dir, "codex.rejected"))));
+		writeFileSync(join(dir, "codex.rejected"), "1");
+		break;
+	default:
+		out({ type: "item.completed", item: { type: "reasoning", text: "PRIVATE-REASONING-MARKER" } });
+		out({ type: "item.completed", item: { type: "agent_message", text: verdict(true) } });
+		writeFileSync(outFile, verdict(true));
+}
+out({ type: "turn.completed", usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 20 } });
+`;
+
+export const stubDir = (fx: Fixture) => join(fx.dir, "bin");
+
+export function setStubMode(
+	fx: Fixture,
+	name: "claude" | "codex",
+	mode: string,
+): void {
+	writeFileSync(join(stubDir(fx), `${name}.mode`), mode);
+}
+
+export interface StubCall {
+	argv: string[];
+	stdin: string;
+	env: string[];
+	cwd: string;
+}
+
+export function stubCalls(fx: Fixture, name: "claude" | "codex"): StubCall[] {
+	const file = join(stubDir(fx), `${name}.calls.jsonl`);
+	if (!existsSync(file)) return [];
+	return readFileSync(file, "utf8")
+		.split("\n")
+		.filter((l) => l.length > 0)
+		.map((l) => JSON.parse(l) as StubCall);
+}
+
+/** `<leader pid> <grandchild pid>` written by a hanging stub; null until it has started. */
+export function stubPids(
+	fx: Fixture,
+	name: "claude" | "codex",
+): [number, number] | null {
+	const file = join(stubDir(fx), `${name}.pids`);
+	if (!existsSync(file)) return null;
+	const [a, b] = readFileSync(file, "utf8").split(" ").map(Number);
+	return a && b ? [a, b] : null;
+}
+
+export const pidAlive = (pid: number): boolean => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+};

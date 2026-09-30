@@ -536,30 +536,34 @@ export function expiredLeases(db: Database, now: string): ManagedTask[] {
 }
 
 /**
- * Take a task away from a dead worker: run `fn` and move the fence, but only if nobody else touched
- * the task since `task` was read. Returns false when it changed (the caller re-reads next tick).
+ * Take a task away from a worker whose lease expired: move the fence and lease it to `worker`, but
+ * only if nobody touched the task since `task` was read (else null — re-read next tick). From this
+ * point the old worker can write nothing, so its leftovers can be stopped and judged safely.
  */
-export function takeOver(
+export function seize(
 	db: Database,
 	task: ManagedTask,
-	fn: (fresh: ManagedTask) => void,
-): boolean {
+	worker: string,
+	leaseUntil: string,
+): ManagedTask | null {
 	return tx(db, () => {
 		const r = taskRow(db, task.id);
 		if (!r || r.fence_token !== task.fence_token || r.rev !== task.rev)
-			return false;
-		fn(toTask(r));
+			return null;
 		update(db, "managed_tasks", task.id, {
 			fence_token: task.fence_token + 1,
-			lease_owner: null,
-			lease_until: null,
+			lease_owner: worker,
+			lease_until: leaseUntil,
 		});
-		return true;
+		return toTask(taskRow(db, task.id) as Row);
 	});
 }
 
-export function bumpInfraRetries(db: Database, task: ManagedTask): void {
+/** Inside withFence: give the task back without changing its state (bounded retry). */
+export function releaseForRetry(db: Database, task: ManagedTask): void {
 	update(db, "managed_tasks", task.id, {
+		lease_owner: null,
+		lease_until: null,
 		infra_retries: task.infra_retries + 1,
 	});
 }
