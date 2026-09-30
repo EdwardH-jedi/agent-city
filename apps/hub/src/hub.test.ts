@@ -77,7 +77,7 @@ describe("basics", () => {
 		expect(await res.json()).toMatchObject({ ok: true, ingest: "enabled" });
 	});
 
-	test("migrations: 7 tables, user_version 4, agents.ended_at", () => {
+	test("migrations: 7 tables, user_version 5, agents.ended_at, sessions.rev", () => {
 		const tables = ctx.db
 			.query<{ name: string }, []>(
 				"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -96,7 +96,15 @@ describe("basics", () => {
 		expect(
 			ctx.db.query<{ user_version: number }, []>("PRAGMA user_version").get()
 				?.user_version,
-		).toBe(4);
+		).toBe(5);
+		expect(
+			ctx.db
+				.query<{ name: string }, []>(
+					"SELECT name FROM pragma_table_info('sessions')",
+				)
+				.all()
+				.map((r) => r.name),
+		).toContain("rev");
 		const cols = ctx.db
 			.query<{ name: string }, []>(
 				"SELECT name FROM pragma_table_info('agents')",
@@ -272,7 +280,7 @@ describe("state transitions end-to-end", () => {
 		await statusAfter({
 			type: "PreToolUse",
 			ts: t(4),
-			agent_id: "sub1",
+			agent_id: "sub:1",
 			parent_agent_id: "s1",
 			agent_label: "Explore",
 		});
@@ -281,7 +289,7 @@ describe("state transitions end-to-end", () => {
 				type: "PostToolUse",
 				tool: "Task",
 				ts: t(5),
-				agent_id: "sub1",
+				agent_id: "sub:1",
 			}),
 		).toBe("active");
 		const agents = ctx.db
@@ -298,7 +306,7 @@ describe("state transitions end-to-end", () => {
 		expect(agents).toEqual([
 			{ id: "claude:s1", kind: "main", parent_agent_id: null, ended_at: null },
 			{
-				id: "claude:s1/sub1",
+				id: "claude:s1/sub:1",
 				kind: "subagent",
 				parent_agent_id: "claude:s1",
 				ended_at: t(5),
@@ -330,10 +338,12 @@ describe("state transitions end-to-end", () => {
 	});
 
 	test("unknown parent_agent_id falls back to the main agent", async () => {
-		await post(ctx, ev({ agent_id: "sub9", parent_agent_id: "ghost" }));
+		await post(ctx, ev({ agent_id: "sub:9", parent_agent_id: "ghost" }));
 		expect(
 			ctx.db
-				.query("SELECT parent_agent_id FROM agents WHERE id = 'claude:s1/sub9'")
+				.query(
+					"SELECT parent_agent_id FROM agents WHERE id = 'claude:s1/sub:9'",
+				)
 				.get(),
 		).toEqual({ parent_agent_id: "claude:s1" });
 	});

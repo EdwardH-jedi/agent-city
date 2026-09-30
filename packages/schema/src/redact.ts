@@ -95,6 +95,16 @@ export function clip(input: string, max = INPUT_MAX): string {
  * block scalars. Input is clipped to INPUT_MAX first. Idempotent on inputs ≤ INPUT_MAX.
  */
 export function redact(input: string): string {
+	const out = redactCore(input);
+	// A token split by a shell line continuation (`ghp_abc\<newline>def`) only matches once joined.
+	// Redact a joined copy too; if joining exposed anything, return that (joined) form.
+	if (!/\\\r?\n/.test(input)) return out;
+	const joined = clip(input).replace(/\\\r?\n[ \t]*/g, "");
+	const joinedOut = redactCore(joined);
+	return joinedOut !== joined ? joinedOut : out;
+}
+
+function redactCore(input: string): string {
 	let out = clip(input);
 	for (const re of TOKENS) out = out.replace(re, REDACTED);
 	out = out.replace(URL_USERINFO, `$1:${REDACTED}@`);

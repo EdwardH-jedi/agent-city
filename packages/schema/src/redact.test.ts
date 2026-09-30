@@ -333,3 +333,16 @@ describe("summarizeToolInput", () => {
 		expect(summarizeToolInput("Task", null)).toEqual({ tool: "Task" });
 	});
 });
+
+describe("re-audit: token split by a shell line continuation", () => {
+	test("masked after joining; idempotent; plain continuations untouched", () => {
+		const head = `ghp_${"Q".repeat(18)}`;
+		const tail = "R".repeat(18);
+		const out = redact(`${head}\\\n${tail}`);
+		expect(out).not.toContain(tail);
+		expect(out).not.toContain("ghp_");
+		expect(redact(out)).toBe(out);
+		const plain = "echo a \\\n  && echo b";
+		expect(redact(plain)).toBe(plain);
+	});
+});

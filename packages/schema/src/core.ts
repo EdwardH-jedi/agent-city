@@ -2,8 +2,10 @@
 // Runtime values here must not import types.ts; types are erased at build time.
 
 export {
+	isSafeRawId,
 	mainAgentId,
 	namespaceIds,
+	safeRawId,
 	scopedAgentId,
 	sessionId,
 	subagentId,

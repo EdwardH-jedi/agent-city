@@ -92,6 +92,9 @@ export function createIngest({
 			// Committed — now fan out.
 			for (const e of result.events) publish("event", e);
 			for (const s of result.sessions) publish("session", s);
+			// an ingest-time repo remap rewrote other rows too → clients re-fetch (N07)
+			if (result.remapped > 0)
+				publish("invalidate", { scope: ["sessions", "events"] });
 
 			return c.json({
 				accepted: result.accepted,

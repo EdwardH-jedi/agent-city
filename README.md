@@ -79,7 +79,7 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `SPOOL_MAX_AGE_DAYS`       | collector      | Spooled events older than this are dropped (default 7). Drops show on `/healthz`.        |
 | `CODEX_SESSIONS_DIR`       | collector      | Codex log dir (default `~/.codex/sessions`).                                             |
 | `CODEX_BACKFILL_HOURS`     | collector      | First-sight window **by file mtime** (default 2; `0` = tail every new file from EOF).    |
-| `CODEX_BACKFILL_EVENT_FILTER` | collector   | `1` → on first sight also skip records whose own timestamp is older than that window.    |
+| `CODEX_BACKFILL_EVENT_FILTER` | collector   | `1` → during a file's initial backfill (until its first EOF) skip records older than that window. |
 | `AGENTCITY_HOOK_KILL_S`    | hook launcher  | Seconds before `bin/claude-hook` SIGKILLs a stuck hook (default `0.6`). Process env only. |
 | `AGENTCITY_BUN`            | hook launcher  | Bun binary for the hook (default `command -v bun`, else `~/.bun/bin/bun`). Process env only. |
 
@@ -93,9 +93,10 @@ starts, so only the environment Claude Code runs hooks with applies to them (`.e
 records' timestamps: a log last modified more than `CODEX_BACKFILL_HOURS` ago contributes only its
 session (line 1) and is tailed from EOF; a log modified recently is read from the start — including
 records older than the window, e.g. an old session resumed today. Set
-`CODEX_BACKFILL_EVENT_FILTER=1` to also skip those old records by their own timestamp (the session
-context is still learned from them). The cutoff is fixed when the file is first seen and kept with its
-offset, so records appended later are never affected.
+`CODEX_BACKFILL_EVENT_FILTER=1` to also skip those old records by their own timestamp during that
+**initial backfill only** (the session context is still learned from them). The filter is dropped the
+first time the tailer reaches the file's end — that is persisted with the offset — so everything
+appended afterwards is always collected, whatever its timestamp.
 
 **GitHub token.** A fine-grained PAT only sees one resource owner: repos from organizations or where
 you are a collaborator won't sync. Today every repo is owned by the account, so nothing is missing; if
@@ -186,8 +187,6 @@ text; don't paste secrets into commands in the first place):
 - A token used as the bare *username* of a URL (`https://<token>@host/…`) is kept — only
   `user:password@` userinfo is masked.
 - Bare base64 of a token is kept (`TOKEN=<base64>` is masked by the key name; the value alone isn't).
-- A token split across a shell line continuation (`ghp_abc\` + newline + `def…`) is not recognised;
-  the fragments stay.
 
 ## Troubleshooting
 

@@ -188,6 +188,7 @@ export function pollOnce(opts: PollOptions): PollResult {
 				if (nl > 0) mapCodexLine(head.slice(0, nl), 0, ctx, opts.deps);
 				file.session = ctx.session;
 				file.offset = st.size;
+				delete file.min_ts; // at EOF already: nothing left to filter (N06)
 				next[path] = file;
 				nextCalls.set(path, ctx.calls);
 				continue;
@@ -224,6 +225,9 @@ export function pollOnce(opts: PollOptions): PollResult {
 		if (pos === 0 && buf.length === MAX_READ) pos = buf.length; // one giant line: skip, don't stall
 		file.offset += pos;
 		file.session = ctx.session;
+		// N06: the timestamp filter only covers the initial backfill — the first time we reach EOF it
+		// is dropped (and that is persisted with the offsets), so later appends are always collected.
+		if (file.min_ts && file.offset >= st.size) delete file.min_ts;
 		next[path] = file;
 		nextCalls.set(path, ctx.calls);
 	}

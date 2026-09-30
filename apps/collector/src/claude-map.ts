@@ -8,7 +8,6 @@ import {
 	sessionId as namespacedSession,
 	redact,
 	SUBAGENT_TOOLS,
-	safeId,
 	sanitizeEvent,
 	subagentId,
 	summarizeToolInput,
@@ -121,8 +120,6 @@ export function mapClaudeHook(
 	if (!input) return null;
 	const rawInput = str(input.session_id);
 	if (!rawInput) return null;
-	// sanitized before namespacing so an unsafe id still yields `claude:redacted-<hash>`
-	const rawSessionId = safeId(rawInput);
 
 	const hook = str(input.hook_event_name) ?? "unknown";
 	const tool = str(input.tool_name);
@@ -192,13 +189,12 @@ export function mapClaudeHook(
 	payload.permission_mode = str(input.permission_mode);
 	payload.transcript_path = str(input.transcript_path);
 
-	// F10: session = claude:<raw>, subagent = <session>/sub:<tool_use_id>. Event ids keep the raw
-	// session id so events spooled by an older collector still dedupe.
-	const session = namespacedSession("claude", rawSessionId);
+	// Ids (re-audit N03/N04): the EVENT id keeps the exact 1f4f025 recipe — raw session id, then
+	// sanitizeEvent hashes the whole id if unsafe — so events spooled before the upgrade still dedupe.
+	// The SESSION / subagent ids use the final namespace (unsafe raw parts hashed, then prefixed).
+	const session = namespacedSession("claude", rawInput);
 	return sanitizeEvent({
-		id: toolUseId
-			? `cc:${rawSessionId}:${hook}:${toolUseId}`
-			: `cc:${ctx.newId()}`,
+		id: toolUseId ? `cc:${rawInput}:${hook}:${toolUseId}` : `cc:${ctx.newId()}`,
 		ts: ctx.now().toISOString(),
 		machine_id: ctx.machine,
 		session_id: session,

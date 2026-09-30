@@ -1,0 +1,34 @@
+{
+	"commit": "1f4f025",
+	"claude": {
+		"safe-uuid": "cc:0b1c2d3e-4f50-6172-8394-a5b6c7d8e9f0:PreToolUse:toolu_01GoldenAAAA",
+		"space": "redacted-ddc59bf95b450849",
+		"slash": "cc:a/sub:x:PreToolUse:toolu_01GoldenAAAA",
+		"colon": "cc:claude:prefixed:raw:PreToolUse:toolu_01GoldenAAAA",
+		"control-char": "redacted-205dfe0468bca303",
+		"token-shaped": "redacted-8067f6b3ca2bdc49",
+		"over-128": "redacted-b5535e8eb83e260a",
+		"over-256-clipped": "redacted-830c5d29a08fbd29",
+		"task-pre": "cc:0b1c2d3e-task:PreToolUse:toolu_task_1",
+		"task-post": "cc:0b1c2d3e-task:PostToolUse:toolu_task_1",
+		"unsafe-tool-use-id": "redacted-a81db4389620224b",
+		"no-tool-use-id": "cc:golden-fixed-id"
+	},
+	"codex": {
+		"codex-safe": [
+			"codex:019a0b1c-2d3e-7f40-8152-637485960a1b:0",
+			"codex:019a0b1c-2d3e-7f40-8152-637485960a1b:129",
+			"codex:019a0b1c-2d3e-7f40-8152-637485960a1b:302"
+		],
+		"codex-slash-colon": [
+			"codex:redacted-2848521398ec394c:0",
+			"codex:redacted-2848521398ec394c:109",
+			"codex:redacted-2848521398ec394c:282"
+		],
+		"codex-token-shaped": [
+			"codex:redacted-dd6d0b0f8cc85333:0",
+			"codex:redacted-dd6d0b0f8cc85333:135",
+			"codex:redacted-dd6d0b0f8cc85333:308"
+		]
+	}
+}

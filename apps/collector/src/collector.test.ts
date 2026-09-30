@@ -784,16 +784,45 @@ describe("pollOnce", () => {
 			["Stop", "codex:cx-old", now],
 		]);
 		first.commit();
-		// the cutoff is persisted with the offsets → a restart keeps filtering the same way
+		// N06: the filter only covers the initial backfill — reaching EOF drops it (persisted)
 		const restarted: TailState = JSON.parse(JSON.stringify(state));
-		expect(Object.values(restarted.files)[0]?.min_ts).toBeString();
+		expect(Object.values(restarted.files)[0]?.min_ts).toBeUndefined();
 		appendFileSync(
 			file,
 			`${rec("event_msg", { type: "task_complete" }, old)}\n${rec("event_msg", { type: "turn_aborted" }, now)}\n`,
 		);
+		// appended after the backfill → always collected, even with an old timestamp
 		expect(pollOnce({ ...o, state: restarted }).map((e) => e.summary)).toEqual([
+			"turn complete",
 			"turn aborted",
 		]);
+	});
+
+	test("N06: the filter stays on until the first EOF (partial line), then drops", () => {
+		const { root, file } = setup();
+		const old = new Date(Date.now() - 4 * 3_600_000).toISOString();
+		const oldStop = rec("event_msg", { type: "task_complete" }, old);
+		writeFileSync(
+			file,
+			`${rec("session_meta", { session_id: "cx-n06", cwd: "/w/beta" }, old)}\n${oldStop}\n${oldStop.slice(0, 20)}`,
+		);
+		const state: TailState = { files: {} };
+		const o = {
+			...opts(root, state),
+			backfillMs: 7_200_000,
+			eventFilter: true,
+		};
+		const a = pollOnce(o);
+		expect(a).toHaveLength(0); // old records filtered; trailing partial line → not at EOF yet
+		a.commit();
+		expect(Object.values(state.files)[0]?.min_ts).toBeString();
+		appendFileSync(file, `${oldStop.slice(20)}\n`);
+		const b = pollOnce(o); // completes the backfill: still filtered, then EOF drops the filter
+		expect(b).toHaveLength(0);
+		b.commit();
+		expect(Object.values(state.files)[0]?.min_ts).toBeUndefined();
+		appendFileSync(file, `${oldStop}\n`);
+		expect(pollOnce(o).map((e) => e.type)).toEqual(["Stop"]);
 	});
 
 	test("truncated file starts over", () => {

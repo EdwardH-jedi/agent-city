@@ -72,7 +72,14 @@ bun run check:secrets    # scan tracked/untracked files for token patterns
   without a github.com origin is `local/<dir>` — the rule lives in `packages/schema/src/repo-slug.ts`
   and is shared by the hub's local scan and the collectors.
 - Session status transitions come only from `packages/schema/src/status.ts`.
-- Session / agent ids come only from `packages/schema/src/ids.ts`: `claude:<raw>` / `codex:<raw>`,
-  main agent = session id, subagent = `<session_id>/sub:<tool_use_id>`. Changing the scheme needs
-  `bun run db:reset` (no migration rewrites ids).
+- Session / agent ids come only from `packages/schema/src/ids.ts` (final scheme): a raw id is used
+  verbatim only if it matches `[A-Za-z0-9._-]{1,128}` and holds no secret, else it becomes
+  `redacted-<hash>`; session = `<provider>:<raw part>`, main agent = session id, subagent =
+  `<session_id>/sub:<raw part of tool_use_id>`; an agent id naming another session falls to the main
+  agent. Event ids keep the 1f4f025 recipe (`cc:<raw>:<hook>:<tool_use_id>`, `codex:<raw>:<offset>`,
+  golden test). Changing any of this needs `bun run db:reset` (no migration rewrites ids).
+- Repo ids: `.git` is stripped only while parsing a remote URL; `local/<dir>` keeps the folder name
+  verbatim. Collector, sync and hub all use `packages/schema/src/repo-slug.ts`.
+- `sessions.rev` is bumped on every write to a session row; clients merge by rev (higher wins,
+  equal keeps). Bulk rewrites (repo remap) publish `{kind:"invalidate", scope:[…]}` on `/ws`.
 - Every env var the code reads is in both `.env.example` and the README table (a test enforces it).

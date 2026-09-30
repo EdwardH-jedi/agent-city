@@ -126,18 +126,24 @@ export function scheduleGithubSync(
 	db: Database,
 	publish: Publish,
 	intervalMin: number,
+	runSync: (
+		db: Database,
+	) => ReturnType<typeof runConfiguredSync> = runConfiguredSync,
 ): () => void {
 	let running = false;
 	const run = async () => {
 		if (running) return;
 		running = true;
 		try {
-			const s = await runConfiguredSync(db);
+			const s = await runSync(db);
 			const changed = new Set(s.changedRepoIds);
 			for (const list of Object.values(listReposByDistrict(db))) {
 				for (const repo of list)
 					if (changed.has(repo.id)) publish("repo", repo);
 			}
+			// sync re-pointed sessions/events to canonical repo ids → clients re-fetch (N07)
+			if (s.remappedRefs > 0)
+				publish("invalidate", { scope: ["sessions", "events"] });
 			console.log(
 				`[github] ${s.total} repos, ${changed.size} changed, rate graphql ${s.rate.graphql.remaining ?? "?"} core ${s.rate.core.remaining ?? "?"}${s.aborted ? ` — aborted: ${s.aborted}` : ""}`,
 			);

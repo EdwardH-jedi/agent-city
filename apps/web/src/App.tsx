@@ -7,6 +7,7 @@ import type {
 	SessionStatus,
 } from "@agent-city/schema";
 import { useEffect, useMemo, useState } from "react";
+import { liveCountByRepo } from "./merge.ts";
 import {
 	type Conn,
 	EVENT_LIMIT,
@@ -46,13 +47,7 @@ export function App() {
 	const now = useNow(5_000);
 
 	// live session counts per repo, computed from the session list so they update in real time
-	const liveByRepo = useMemo(() => {
-		const m = new Map<string, number>();
-		for (const s of sessions)
-			if (s.repo_id && LIVE.has(s.status))
-				m.set(s.repo_id, (m.get(s.repo_id) ?? 0) + 1);
-		return m;
-	}, [sessions]);
+	const liveByRepo = useMemo(() => liveCountByRepo(sessions), [sessions]);
 
 	const repoIds = useMemo(
 		() =>

@@ -51,8 +51,10 @@ describe("row schemas", () => {
 			started_at: TS,
 			last_event_at: TS,
 			ended_at: null,
+			rev: 1,
 		};
 		expect(Session.safeParse(base).success).toBe(true);
+		expect(Session.safeParse({ ...base, rev: -1 }).success).toBe(false);
 		expect(Session.safeParse({ ...base, status: "busy" }).success).toBe(false);
 		expect(Session.safeParse({ ...base, provider: "gpt" }).success).toBe(false);
 		expect(

@@ -73,6 +73,8 @@ export const Session = z.object({
 	started_at: Ts,
 	last_event_at: Ts,
 	ended_at: Ts.nullable(),
+	/** Version: +1 on every write to the row (re-audit N05); clients keep the higher rev. */
+	rev: z.number().int().nonnegative(),
 });
 export type Session = z.infer<typeof Session>;
 

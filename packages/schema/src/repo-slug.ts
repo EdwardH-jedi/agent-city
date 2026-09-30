@@ -26,14 +26,12 @@ export function parseGithubRemote(url: string): string | null {
 
 /**
  * Canonical spelling of a repo id from any source (collector slug, sync, ingest): trimmed, no
- * trailing `/` or `.git`. Casing is kept — GitHub's casing is the display form; compare with
- * repoKey() (audit F13).
+ * trailing `/`. Casing is kept — GitHub's casing is the display form; compare with repoKey().
+ * `.git` is NOT stripped here (re-audit N02): that only happens while parsing a remote URL
+ * (parseGithubRemote), so a local checkout folder named `foo.git` stays `local/foo.git` everywhere.
  */
 export function normalizeRepoId(id: string): string {
-	return id
-		.trim()
-		.replace(/\/+$/, "")
-		.replace(/\.git$/i, "");
+	return id.trim().replace(/\/+$/, "");
 }
 
 /** Case-insensitive identity of a repo id (GitHub owner/name are case-insensitive). */
@@ -41,7 +39,7 @@ export function repoKey(id: string): string {
 	return normalizeRepoId(id).toLowerCase();
 }
 
-/** Id for a checkout without a GitHub origin: `local/<basename of the work tree>`. */
+/** Id for a checkout without a GitHub origin: `local/<basename of the work tree>`, verbatim. */
 export function localRepoId(toplevel: string): string {
 	const base =
 		toplevel

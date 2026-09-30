@@ -1,6 +1,8 @@
 export {
+	isSafeRawId,
 	mainAgentId,
 	namespaceIds,
+	safeRawId,
 	scopedAgentId,
 	sessionId,
 	subagentId,

@@ -1,8 +1,11 @@
 // GET /ws — Bun-native WebSocket pub/sub. Every client subscribes to one topic; the hub publishes
-// `{kind, data}` JSON on event / session / repo changes. Server → client only.
+// `{kind, data}` JSON on event / session / repo changes, and `{kind:"invalidate", scope:[…]}` when
+// existing rows were rewritten in bulk (repo remap) so clients re-fetch those snapshots (N07).
+// Server → client only.
 import type { WebSocketHandler } from "bun";
 
-export type BroadcastKind = "event" | "session" | "repo";
+export type BroadcastKind = "event" | "session" | "repo" | "invalidate";
+export type InvalidateScope = "sessions" | "events" | "repos";
 export type Publish = (kind: BroadcastKind, data: unknown) => void;
 
 export const WS_TOPIC = "city";
@@ -25,7 +28,11 @@ export function createBroadcaster(): Broadcaster {
 			server = s;
 		},
 		publish(kind, data) {
-			server?.publish(WS_TOPIC, JSON.stringify({ kind, data }));
+			const msg =
+				kind === "invalidate"
+					? { kind, scope: (data as { scope: InvalidateScope[] }).scope }
+					: { kind, data };
+			server?.publish(WS_TOPIC, JSON.stringify(msg));
 		},
 	};
 }

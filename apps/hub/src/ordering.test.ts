@@ -285,7 +285,7 @@ describe("F13 repo id canonicalization", () => {
 	test("ingest resolves to the repos row, then to the casing sessions already use", () => {
 		const db = openDb(":memory:");
 		ingestEvents(db, [
-			ev("a", "PreToolUse", 1, { session_id: "s1", repo_id: "Octo/Beta.git" }),
+			ev("a", "PreToolUse", 1, { session_id: "s1", repo_id: "Octo/Beta" }),
 		]);
 		ingestEvents(db, [
 			ev("b", "PreToolUse", 2, { session_id: "s2", repo_id: "octo/beta" }),

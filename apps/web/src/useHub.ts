@@ -3,7 +3,12 @@
 // in; live messages are merged by id so a message racing the snapshot is never lost or doubled.
 import type { Event, Provider, Repo, Session } from "@agent-city/schema";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EVENT_LIMIT, mergeEvents, mergeSessions } from "./merge.ts";
+import {
+	EVENT_LIMIT,
+	mergeEvents,
+	mergeSessions,
+	parseHubMessage,
+} from "./merge.ts";
 
 export type RepoView = Repo & { active_sessions: number };
 export type Districts = Record<string, RepoView[]>;
@@ -63,6 +68,11 @@ export function useHub(filter: EventFilter) {
 		);
 	}, []);
 
+	const loadSessions = useCallback(async () => {
+		const s = await getJson<{ sessions: Session[] }>("/api/sessions");
+		setSessions((cur) => mergeSessions(cur, s.sessions));
+	}, []);
+
 	const loadSnapshot = useCallback(async () => {
 		try {
 			const [r, s] = await Promise.all([
@@ -100,13 +110,18 @@ export function useHub(filter: EventFilter) {
 				void loadSnapshot(); // fill whatever happened while we were away
 			};
 			ws.onmessage = (m) => {
-				let msg: { kind: string; data: unknown };
-				try {
-					msg = JSON.parse(String(m.data));
-				} catch {
-					return;
-				}
-				if (msg.kind === "event") {
+				const msg = parseHubMessage(String(m.data));
+				if (!msg) return;
+				if (msg.kind === "invalidate") {
+					// rows were rewritten in bulk (repo remap): re-fetch those snapshots (N07)
+					if (msg.scope.includes("sessions"))
+						loadSessions().catch((err: Error) => setError(err.message));
+					if (msg.scope.includes("events"))
+						loadEvents(filterRef.current).catch((err: Error) =>
+							setError(err.message),
+						);
+					if (msg.scope.includes("repos")) void loadSnapshot();
+				} else if (msg.kind === "event") {
 					const e = msg.data as Event;
 					if (matches(e, filterRef.current))
 						setEvents((cur) => mergeEvents([e], cur));
@@ -131,7 +146,7 @@ export function useHub(filter: EventFilter) {
 			clearTimeout(timer);
 			ws?.close();
 		};
-	}, [loadSnapshot]);
+	}, [loadSnapshot, loadSessions, loadEvents]);
 
 	return { districts, sessions, events, conn, error };
 }

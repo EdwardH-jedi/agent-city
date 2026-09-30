@@ -13,8 +13,10 @@ describe("F10 id namespace", () => {
 		expect(sessionId("claude", "abc")).toBe("claude:abc");
 		expect(sessionId("codex", "abc")).toBe("codex:abc");
 		expect(sessionId("claude", "claude:abc")).toBe("claude:abc");
-		// another provider's prefix is part of the raw id, not a namespace
-		expect(sessionId("codex", "claude:abc")).toBe("codex:claude:abc");
+		// another provider's prefix is part of the raw id; `:` is reserved → the raw id is hashed
+		expect(sessionId("codex", "claude:abc")).toMatch(
+			/^codex:redacted-[0-9a-f]{16}$/,
+		);
 	});
 
 	test("main agent = session; subagent = <session>/sub:<tool_use_id>", () => {
@@ -72,15 +74,18 @@ describe("F10 id namespace", () => {
 describe("F13 repo id normalization", () => {
 	test.each([
 		["octo/alpha", "octo/alpha"],
-		["  Octo/Alpha.git ", "Octo/Alpha"],
+		["  Octo/Alpha ", "Octo/Alpha"],
 		["octo/alpha/", "octo/alpha"],
-		["octo/alpha.GIT", "octo/alpha"],
+		// N02: `.git` is only stripped while parsing a remote URL, never here
+		["local/foo.git", "local/foo.git"],
+		["octo/alpha.GIT", "octo/alpha.GIT"],
 	])("normalizeRepoId(%p) → %p", (raw, want) => {
 		expect(normalizeRepoId(raw)).toBe(want);
 	});
 
-	test("repoKey is case-insensitive; parseGithubRemote goes through the normalizer", () => {
-		expect(repoKey("Octo/Alpha.git")).toBe(repoKey("octo/alpha"));
+	test("repoKey is case-insensitive; parseGithubRemote strips .git from the URL", () => {
+		expect(repoKey("Octo/Alpha")).toBe(repoKey("octo/alpha"));
+		expect(repoKey("local/foo.git")).not.toBe(repoKey("local/foo"));
 		expect(parseGithubRemote("https://github.com/Octo/Alpha.git")).toBe(
 			normalizeRepoId("Octo/Alpha"),
 		);
