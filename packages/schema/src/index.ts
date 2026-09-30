@@ -8,6 +8,16 @@ export {
 	subagentId,
 } from "./ids.ts";
 export { MAX_INGEST_BATCH } from "./limits.ts";
+export * from "./managed.ts";
+export {
+	ACTIVE_TASK_STATES,
+	canTransition,
+	isActiveTaskState,
+	isTerminalTaskState,
+	outcomeStateFor,
+	RUNNABLE_TASK_STATES,
+	TERMINAL_TASK_STATES,
+} from "./managed-status.ts";
 export {
 	COMMAND_MAX,
 	clip,
