@@ -54,6 +54,18 @@ const VERIFY_SH = `#!/bin/sh
 grep -qs '^pass$' agentcity-sim/verify.status src/agentcity-sim/verify.status || exit 1
 `;
 
+/** Create a tiny git repository (README, src/app.txt, verify.sh) at `repoPath`; returns its HEAD. */
+export function initFixtureRepo(repoPath: string): string {
+	mkdirSync(join(repoPath, "src"), { recursive: true });
+	writeFileSync(join(repoPath, "README.md"), "# fixture\n");
+	writeFileSync(join(repoPath, "src", "app.txt"), "v1\n");
+	writeFileSync(join(repoPath, "verify.sh"), VERIFY_SH);
+	fixtureGit(repoPath, "init", "--quiet", "-b", "main");
+	fixtureGit(repoPath, "add", "-A");
+	fixtureGit(repoPath, "commit", "--quiet", "-m", "fixture base");
+	return fixtureGit(repoPath, "rev-parse", "HEAD");
+}
+
 export interface FixtureOptions {
 	/** `status` (default): /bin/sh verify.sh. `none`: no verification configured. Or explicit argv lists. */
 	verification?:
@@ -82,14 +94,7 @@ export interface Fixture {
 export function makeFixture(opts: FixtureOptions = {}): Fixture {
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "agentcity-managed-")));
 	const repoPath = join(dir, "repo");
-	mkdirSync(join(repoPath, "src"), { recursive: true });
-	writeFileSync(join(repoPath, "README.md"), "# fixture\n");
-	writeFileSync(join(repoPath, "src", "app.txt"), "v1\n");
-	writeFileSync(join(repoPath, "verify.sh"), VERIFY_SH);
-	fixtureGit(repoPath, "init", "--quiet", "-b", "main");
-	fixtureGit(repoPath, "add", "-A");
-	fixtureGit(repoPath, "commit", "--quiet", "-m", "fixture base");
-	const baseSha = fixtureGit(repoPath, "rev-parse", "HEAD");
+	const baseSha = initFixtureRepo(repoPath);
 
 	const verification =
 		opts.verification === "none"

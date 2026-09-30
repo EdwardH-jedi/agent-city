@@ -3,8 +3,13 @@ import { redact } from "@agent-city/schema";
 import { Hono } from "hono";
 import { openDb } from "./db.ts";
 import { runConfiguredSync } from "./github/sync.ts";
+import { loadManagedConfig, type ManagedConfig } from "./managed/config.ts";
+import { Orchestrator } from "./managed/orchestrator.ts";
+import type { ManagedDeps } from "./managed/service.ts";
+import { createAdapters, startWorker } from "./managed/worker.ts";
 import { createApi } from "./routes/api.ts";
 import { createIngest } from "./routes/ingest.ts";
+import { createManagedApi, managedDisabled } from "./routes/managed.ts";
 import { createBroadcaster, type Publish, websocket } from "./routes/ws.ts";
 import {
 	checkWsRequest,
@@ -22,6 +27,12 @@ export interface AppDeps {
 	publish: Publish;
 	/** Host/Origin allowlists; defaults to a 127.0.0.1-bound hub. */
 	security?: SecurityConfig;
+	/** Managed runs. Absent → /api/managed answers 503 and nothing can be started. */
+	managed?: {
+		deps: ManagedDeps;
+		token: string | undefined;
+		poke?: () => void;
+	};
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -44,6 +55,12 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	app.route("/ingest", createIngest({ ...deps, spoolDrops }));
+	app.route(
+		"/api/managed",
+		deps.managed
+			? createManagedApi({ ...deps.managed, security })
+			: managedDisabled("MANAGED_CONFIG is not set"),
+	);
 	app.route("/api", createApi(deps.db));
 
 	app.onError((err, c) => {
@@ -62,6 +79,9 @@ export interface HubOptions {
 	staleSweepMs?: number;
 	/** Extra exact origins allowed for CORS and /ws (HUB_ALLOWED_ORIGINS). */
 	extraOrigins?: readonly string[];
+	/** Managed runs: trusted config + API token. Absent → no worker, /api/managed is 503. */
+	managed?: { config: ManagedConfig; token: string | undefined };
+	managedIdleMs?: number;
 }
 
 /** Serve HTTP + /ws and run the stale sweep (once now, then every `staleSweepMs`). */
@@ -71,11 +91,38 @@ export function startHub(opts: HubOptions) {
 		hubHost: opts.hostname,
 		extraOrigins: opts.extraOrigins ?? [],
 	};
+	// One in-hub worker for managed tasks. Only task ids are broadcast; content stays behind the token.
+	const managedDeps: ManagedDeps | null = opts.managed
+		? {
+				db: opts.db,
+				config: opts.managed.config,
+				onChange: (taskId) =>
+					broadcaster.publish("managed", { task_id: taskId }),
+			}
+		: null;
+	const worker = managedDeps
+		? startWorker(
+				new Orchestrator({
+					db: opts.db,
+					config: managedDeps.config,
+					adapters: createAdapters(managedDeps.config),
+					onChange: managedDeps.onChange,
+				}),
+				opts.managedIdleMs,
+			)
+		: null;
 	const app = createApp({
 		db: opts.db,
 		ingestToken: opts.ingestToken,
 		publish: broadcaster.publish,
 		security,
+		managed: managedDeps
+			? {
+					deps: managedDeps,
+					token: opts.managed?.token,
+					poke: () => worker?.poke(),
+				}
+			: undefined,
 	});
 
 	const server = Bun.serve({
@@ -111,9 +158,16 @@ export function startHub(opts: HubOptions) {
 	return {
 		server,
 		publish: broadcaster.publish,
-		stop() {
+		/** Without a managed worker this stops synchronously; with one, after its child is stopped. */
+		stop(): Promise<void> {
 			clearInterval(timer);
-			server.stop(true);
+			if (!worker) {
+				server.stop(true);
+				return Promise.resolve();
+			}
+			return worker.stop().then(() => {
+				server.stop(true);
+			});
 		},
 	};
 }
@@ -169,6 +223,20 @@ if (import.meta.main) {
 		.map((o) => o.trim())
 		.filter(Boolean);
 
+	// Managed runs are off unless a trusted config file is named. Its contents are never logged.
+	const managedPath = process.env.MANAGED_CONFIG || undefined;
+	const managedToken = process.env.MANAGED_TOKEN || undefined;
+	let managed: HubOptions["managed"];
+	if (managedPath) {
+		try {
+			managed = { config: loadManagedConfig(managedPath), token: managedToken };
+		} catch (err) {
+			console.error(
+				`[managed] config not loaded — managed runs disabled: ${redact((err as Error).message)}`,
+			);
+		}
+	}
+
 	const db = openDb(dbPath);
 	const { server, publish } = startHub({
 		db,
@@ -176,12 +244,28 @@ if (import.meta.main) {
 		hostname,
 		port,
 		extraOrigins,
+		managed,
 	});
 	console.log(
 		`[hub] listening on http://${server.hostname}:${server.port} (db: ${dbPath})`,
 	);
 	if (!ingestToken) {
 		console.warn("[hub] INGEST_TOKEN is not set — /ingest is disabled (503)");
+	}
+	if (!managed) {
+		console.log(
+			managedPath
+				? "[managed] disabled (the config could not be loaded, see above)"
+				: "[managed] disabled (MANAGED_CONFIG is not set)",
+		);
+	} else {
+		console.log(
+			`[managed] ${managed.config.repos.length} allowed repo(s), live execution ${managed.config.live.enabled ? "ENABLED" : "off (simulated only)"}`,
+		);
+		if (!managedToken)
+			console.warn(
+				"[managed] MANAGED_TOKEN is not set — /api/managed is disabled (503)",
+			);
 	}
 	if (syncMin > 0) {
 		scheduleGithubSync(db, publish, syncMin);

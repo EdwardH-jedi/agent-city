@@ -11,7 +11,7 @@ const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const digest = (s: string) => createHash("sha256").update(s).digest();
 
 /** Constant-time compare; hashing first makes the inputs equal-length. */
-function tokenMatches(given: string, expected: string): boolean {
+export function tokenMatches(given: string, expected: string): boolean {
 	return timingSafeEqual(digest(given), digest(expected));
 }
 

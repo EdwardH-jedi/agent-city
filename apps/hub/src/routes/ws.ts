@@ -1,10 +1,17 @@
 // GET /ws — Bun-native WebSocket pub/sub. Every client subscribes to one topic; the hub publishes
 // `{kind, data}` JSON on event / session / repo changes, and `{kind:"invalidate", scope:[…]}` when
 // existing rows were rewritten in bulk (repo remap) so clients re-fetch those snapshots (N07).
+// `managed` carries only `{task_id}` — /ws is unauthenticated on loopback, so task content is
+// fetched through the token-protected /api/managed instead of being broadcast.
 // Server → client only.
 import type { WebSocketHandler } from "bun";
 
-export type BroadcastKind = "event" | "session" | "repo" | "invalidate";
+export type BroadcastKind =
+	| "event"
+	| "session"
+	| "repo"
+	| "invalidate"
+	| "managed";
 export type InvalidateScope = "sessions" | "events" | "repos";
 export type Publish = (kind: BroadcastKind, data: unknown) => void;
 

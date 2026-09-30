@@ -54,6 +54,8 @@ export function useHub(filter: EventFilter) {
 	const [events, setEvents] = useState<Event[]>([]);
 	const [conn, setConn] = useState<Conn>("connecting");
 	const [error, setError] = useState<string | null>(null);
+	// bumped on every (re)connect and on every `managed` frame → the Tasks view re-fetches
+	const [managedSeq, setManagedSeq] = useState(0);
 	const filterRef = useRef(filter);
 	filterRef.current = filter;
 
@@ -107,6 +109,7 @@ export function useHub(filter: EventFilter) {
 			ws.onopen = () => {
 				attempt = 0;
 				setConn("open");
+				setManagedSeq((n) => n + 1);
 				void loadSnapshot(); // fill whatever happened while we were away
 			};
 			ws.onmessage = (m) => {
@@ -121,6 +124,8 @@ export function useHub(filter: EventFilter) {
 							setError(err.message),
 						);
 					if (msg.scope.includes("repos")) void loadSnapshot();
+				} else if (msg.kind === "managed") {
+					setManagedSeq((n) => n + 1);
 				} else if (msg.kind === "event") {
 					const e = msg.data as Event;
 					if (matches(e, filterRef.current))
@@ -148,5 +153,5 @@ export function useHub(filter: EventFilter) {
 		};
 	}, [loadSnapshot, loadSessions, loadEvents]);
 
-	return { districts, sessions, events, conn, error };
+	return { districts, sessions, events, conn, error, managedSeq };
 }

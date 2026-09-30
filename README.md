@@ -20,11 +20,12 @@ Set the role per machine with `AGENTCITY_MACHINE`.
 ## Layout
 
 ```
-apps/hub          Hono + bun:sqlite — /healthz, /ingest, /api/*, /ws, GitHub sync, stale sweep
+apps/hub          Hono + bun:sqlite — /healthz, /ingest, /api/*, /ws, GitHub sync, stale sweep,
+                  managed runs (src/managed: orchestrator, worktrees, evidence, CLI adapters)
 apps/collector    Claude Code hook (bin/claude-hook), Codex log tailer, local spool
-apps/web          Vite + React 2D view (repos · live sessions · event stream)
+apps/web          Vite + React 2D view (repos · live sessions · event stream) + Managed tasks tab
 packages/schema   zod types, status machine, redaction, secret patterns, SQL migrations
-config/           districts.yaml (repo → district)
+config/           districts.yaml (repo → district), managed.example.yaml
 scripts/          check-secrets.ts
 ```
 
@@ -71,6 +72,8 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `HUB_HOST` / `HUB_PORT`    | hub            | Bind address (default `127.0.0.1:4317`). Also the only non-loopback Host accepted.       |
 | `HUB_ALLOWED_ORIGINS`      | hub            | Extra exact browser origins for CORS and `/ws`. Loopback origins are always allowed.     |
 | `DB_PATH`                  | hub            | SQLite file (default `./data/agentcity.db`, gitignored).                                 |
+| `MANAGED_CONFIG`           | hub            | Path to your managed-runs config (YAML). Empty → managed runs off, `/api/managed` → 503. |
+| `MANAGED_TOKEN`            | hub, web UI    | Bearer token for `/api/managed` (it can start processes). Empty → 503. Not `INGEST_TOKEN`. |
 | `INGEST_TOKEN`             | hub, collector | Shared secret for `POST /ingest`. Unset on the hub → ingest disabled (503).              |
 | `HUB_URL`                  | collector, web | Where collectors POST and the Vite proxy points.                                         |
 | `AGENTCITY_MACHINE`        | collector, hub | `cockpit` \| `forge` \| `spine`.                                                         |
@@ -116,6 +119,8 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `districts:draft`             | Writes `config/districts.draft.yaml` (all repos by district; gitignored).        |
 | `collector:hooks`             | Print-only merge of the Claude hook into `~/.claude/settings.json`.              |
 | `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s).                     |
+| `managed:demo`                | Deterministic managed-pipeline demo on a throwaway fixture repo (simulated, no model). `--init [dir]` creates a fixture + config for the web UI. |
+| `managed:preflight`           | Check the configured live providers (executable, version, login) without calling a model. |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
 
 **Ids.** Sessions are `claude:<session_id>` / `codex:<session_id>`; the main agent shares the session
@@ -162,6 +167,23 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   (today only loopback + `HUB_HOST` pass), put TLS in front, and require auth on `/api` and `/ws`.
 - Back up `data/agentcity.db` (SQLite `.backup`) nightly.
 
+## Managed runs (v0.1)
+
+Besides *observing* sessions, the hub can run one **managed task** at a time for an explicitly
+allowed local repository: isolated worktree → implementation → trusted verification → review of the
+exact candidate → at most one automatic repair → a result a person can inspect. Observed sessions,
+managed runs and simulated runs are three different things and are labelled as such everywhere.
+
+It is off by default (`MANAGED_CONFIG` empty). The default and every test use **simulated** adapters;
+the real Claude / Codex CLI adapters exist, are stub-tested, and have **not** been run live.
+Runbook, state machine, security limits and the live-smoke checklist:
+[docs/managed-runs.md](docs/managed-runs.md).
+
+```sh
+bun run managed:demo            # prints the outcome of 8 simulated scenarios, leaves nothing behind
+bun run managed:demo --init     # fixture repo + config under ~/.agentcity/managed-demo for the UI
+```
+
 ## Security model
 
 - GitHub is read-only: REST `GET` only; GraphQL is `query`-only (mutations are rejected before sending).
@@ -169,6 +191,10 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   (DNS-rebinding guard). `/ws` also rejects foreign `Origin`s; CORS echoes allowlisted origins only.
 - `/ingest` needs `Bearer $INGEST_TOKEN` (constant-time compare). `/api` and `/ws` are read-only and
   unauthenticated — fine on loopback, not for a network bind.
+- `/api/managed` (managed tasks) can start processes, so it is **not** covered by "loopback is
+  enough": every route needs `Bearer $MANAGED_TOKEN`, mutations need a JSON body and an allowed
+  `Origin`, and `/ws` only ever broadcasts a managed task's id. A managed worktree is Git isolation,
+  not a sandbox — see [docs/managed-runs.md](docs/managed-runs.md#security-and-host-access).
 - `/ingest` takes at most 500 events per request (`MAX_INGEST_BATCH`; more → 413) inside a 5 MiB
   body; collectors send in chunks of exactly that size.
 - Collectors redact before spooling/sending: prompt text is never stored (length only); `tool_input`

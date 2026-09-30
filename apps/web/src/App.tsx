@@ -1,5 +1,6 @@
 // Phase 0 2D view: repos by district · live sessions (waiting pinned) · event stream.
 // Data validation only — the 3D city comes in Phase 1.
+// A second tab holds managed tasks (Tasks.tsx); the telemetry view stays the default.
 import type {
 	Event,
 	Provider,
@@ -8,6 +9,7 @@ import type {
 } from "@agent-city/schema";
 import { useEffect, useMemo, useState } from "react";
 import { liveCountByRepo } from "./merge.ts";
+import { Tasks } from "./Tasks.tsx";
 import {
 	type Conn,
 	EVENT_LIMIT,
@@ -43,7 +45,15 @@ export function App() {
 		repo: null,
 		provider: null,
 	});
-	const { districts, sessions, events, conn, error } = useHub(filter);
+	const { districts, sessions, events, conn, error, managedSeq } =
+		useHub(filter);
+	const [view, setView] = useState<"city" | "tasks">(() =>
+		location.hash === "#tasks" ? "tasks" : "city",
+	);
+	const show = (v: "city" | "tasks") => {
+		history.replaceState(null, "", v === "tasks" ? "#tasks" : "#");
+		setView(v);
+	};
 	const now = useNow(5_000);
 
 	// live session counts per repo, computed from the session list so they update in real time
@@ -62,20 +72,40 @@ export function App() {
 		<div className="app">
 			<header>
 				<h1>Agent City</h1>
+				<nav className="tabs">
+					<button
+						type="button"
+						className={view === "city" ? "on" : undefined}
+						onClick={() => show("city")}
+					>
+						Observed sessions
+					</button>
+					<button
+						type="button"
+						className={view === "tasks" ? "on" : undefined}
+						onClick={() => show("tasks")}
+					>
+						Managed tasks
+					</button>
+				</nav>
 				<ConnBadge conn={conn} />
 				{error && <span className="err">{error}</span>}
 			</header>
-			<div className="grid">
-				<Repos districts={districts} liveByRepo={liveByRepo} />
-				<Sessions sessions={sessions} now={now} />
-				<Events
-					events={events}
-					filter={filter}
-					setFilter={setFilter}
-					repoIds={repoIds}
-					now={now}
-				/>
-			</div>
+			{view === "tasks" ? (
+				<Tasks managedSeq={managedSeq} />
+			) : (
+				<div className="grid">
+					<Repos districts={districts} liveByRepo={liveByRepo} />
+					<Sessions sessions={sessions} now={now} />
+					<Events
+						events={events}
+						filter={filter}
+						setFilter={setFilter}
+						repoIds={repoIds}
+						now={now}
+					/>
+				</div>
+			)}
 		</div>
 	);
 }

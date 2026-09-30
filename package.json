@@ -19,6 +19,8 @@
 		"districts:draft": "bun apps/hub/src/github/districts-draft.ts",
 		"collector:codex": "bun --no-env-file apps/collector/src/codex-tail.ts",
 		"collector:hooks": "bun --no-env-file apps/collector/src/install-hooks.ts",
+		"managed:demo": "bun --no-env-file apps/hub/src/managed/demo.ts",
+		"managed:preflight": "bun apps/hub/src/managed/preflight-cli.ts",
 		"check:secrets": "bun scripts/check-secrets.ts"
 	},
 	"devDependencies": {

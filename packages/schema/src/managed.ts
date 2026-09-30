@@ -11,6 +11,13 @@ export const IMPLEMENTATION_CONTRACT = "agentcity.implementation/v1";
 export const REVIEW_CONTRACT = "agentcity.review/v1";
 export const EVIDENCE_CONTRACT = "agentcity.evidence/v1";
 
+/**
+ * Has the live path (real Claude implement + real Codex review) ever been run end to end and
+ * checked by a person? It has not: the CLI adapters are only tested against stub executables.
+ * While this is false the UI labels every live result "integration not live-verified".
+ */
+export const LIVE_INTEGRATION_VERIFIED = false;
+
 /** Automatic repair cycles per lineage. Default 1 in this milestone; never above the max. */
 export const DEFAULT_REPAIR_LIMIT = 1;
 export const MAX_REPAIR_LIMIT = 3;

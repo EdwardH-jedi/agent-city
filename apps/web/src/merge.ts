@@ -41,6 +41,8 @@ export type HubMessage =
 	| { kind: "event"; data: Event }
 	| { kind: "session"; data: Session }
 	| { kind: "repo"; data: unknown }
+	// a managed task changed; only its id is broadcast (content is behind the managed token)
+	| { kind: "managed"; data: { task_id: string } }
 	| { kind: "invalidate"; scope: Scope[] };
 
 /** Parse one /ws frame; unknown or malformed frames → null. */
@@ -56,6 +58,12 @@ export function parseHubMessage(raw: string): HubMessage | null {
 			? SCOPES.filter((s) => (m.scope as unknown[]).includes(s))
 			: [];
 		return { kind: "invalidate", scope };
+	}
+	if (m?.kind === "managed") {
+		const id = (m.data as { task_id?: unknown } | undefined)?.task_id;
+		return typeof id === "string"
+			? { kind: "managed", data: { task_id: id } }
+			: null;
 	}
 	if (m?.kind === "event" || m?.kind === "session" || m?.kind === "repo")
 		return m as HubMessage;

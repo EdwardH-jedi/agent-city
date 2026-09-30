@@ -33,7 +33,7 @@ actual Git state (`git log`, `git status`), never from memory.
    `content-type: application/json` and an allowed `Origin` when one is sent.
 7. Live adapters (Claude implement, Codex review) exist but are off unless `live.enabled: true` in
    the config **and** a provider block is configured. Tests use stub executables only.
-8. Crash recovery: an expired lease is reconciled. If a model process had been launched
+8. Crash recovery: an expired lease is reconciled (fence first, then stop leftovers). If a model process had been launched
    (`proc_phase` implement/review) the attempt becomes `unknown` and the task `interrupted`; only a
    person can re-run it. Pre-launch and verification phases are retried at most 2 times.
 9. User-authored task text (title, objective, acceptance criteria) is stored after `redact()`.
@@ -47,8 +47,8 @@ actual Git state (`git log`, `git status`), never from memory.
 - [x] C. Process boundary, worktree + evidence
 - [x] D. Orchestrator + fake adapters + deterministic loop
 - [x] E. Claude / Codex CLI adapters + stub-executable tests
-- [ ] F. API + UI
-- [ ] G. Fault-injection gates, docs, handoff
+- [x] F. API + UI
+- [x] G. Fault-injection gates, docs, handoff (runbook: docs/managed-runs.md)
 
 ## Verification commands
 
@@ -56,6 +56,12 @@ actual Git state (`git log`, `git status`), never from memory.
 bun test && bun run lint && bun run typecheck && bun run check:secrets
 (cd apps/web && bunx vite build)
 ```
+
+## Remaining / next
+
+- Live smoke (one task, by a person) — see docs/managed-runs.md "Enabling a one-task live smoke".
+  Until then `LIVE_INTEGRATION_VERIFIED` stays false.
+- Not done: OS-level isolation (ARCHITECTURE #7), worktree cleanup, automated browser test of the UI.
 
 ## Blockers
 

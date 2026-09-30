@@ -12,6 +12,7 @@ import {
 	EMPTY_META,
 	type ImplementResult,
 } from "./adapters/types.ts";
+import { parseManagedConfig } from "./config.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import { processStarted } from "./proc.ts";
 import {
@@ -523,6 +524,16 @@ describe("default development and test paths make zero real model calls", () => 
 			process.env.PATH = savedPath;
 		}
 		expect(existsSync(marker)).toBe(false);
+	});
+
+	test("the example config is valid and ships with live execution off", async () => {
+		const text = await Bun.file(
+			join(import.meta.dir, "../../../../config/managed.example.yaml"),
+		).text();
+		const cfg = parseManagedConfig(Bun.YAML.parse(text));
+		expect(cfg.live).toEqual({ enabled: false });
+		expect(createAdapters(cfg).implementer("live")).toBeNull();
+		expect(cfg.repos[0]?.verification[0]?.argv[0]).toMatch(/^\//);
 	});
 
 	test("no package script invokes a model", async () => {

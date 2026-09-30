@@ -1,0 +1,47 @@
+# Managed runs — trusted local configuration. Copy it OUTSIDE the repo (e.g.
+# ~/.agentcity/managed.yaml), edit it, and point MANAGED_CONFIG at the copy.
+# Everything that can become a process comes from this file: nothing in a task, a repository file
+# or a model's output is ever executed as a command.
+
+# Where worktrees and evidence go. Must not overlap any repo below. Preserved after a run.
+workspace_root: ~/.agentcity/managed/workspaces
+artifacts_root: ~/.agentcity/managed/artifacts
+
+# Absolute path of git (default /usr/bin/git).
+git_executable: /usr/bin/git
+
+# The allowlist. A task can only target a repo listed here.
+# Do not list the Agent City checkout you are developing in; use a disposable repo to try it out
+# (`bun run managed:demo --init` creates one and a ready-made config).
+repos:
+  - id: local/my-sandbox          # owner/name, or local/<dir> for a checkout without a GitHub origin
+    path: /absolute/path/to/my-sandbox
+    base_ref: main                # resolved to a commit when a task is created
+    # Trusted verification commands: argv arrays (no shell), absolute argv[0], run in the worktree.
+    # A candidate can only become human-ready if at least one is configured and all exit 0.
+    verification:
+      - name: test
+        argv: ["/opt/homebrew/bin/bun", "test"]
+        timeout_s: 300
+
+# Live execution (real Claude implement + real Codex review). OFF by default.
+# Turning it on uses your CLI logins and your subscription quota. Read docs/managed-runs.md first.
+live:
+  enabled: false
+  # claude:
+  #   executable: /absolute/path/to/claude
+  #   model: opus
+  #   timeout_s: 1800
+  #   tools: [Read, Edit, Write, Glob, Grep]   # no Bash: verification is run by Agent City
+  # codex:
+  #   executable: /absolute/path/to/codex
+  #   model: <a model your Codex login can use>
+  #   timeout_s: 900
+
+# Optional limits (defaults shown).
+# limits:
+#   max_log_bytes: 262144
+#   max_diff_bytes: 1048576
+#   kill_grace_ms: 2000
+#   lease_ttl_ms: 30000
+#   max_infra_retries: 2
