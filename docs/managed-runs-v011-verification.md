@@ -80,3 +80,11 @@ Tests: `H` = `apps/hub/src/managed/hardening.test.ts`, `P` = `provider-hardening
 | `bun run test:unit` + `bun run test:integration` | 164 + 344 = 508 = `bun test` | 0.04 s + 60 s |
 | `.github/workflows/ci.yml` | written; **NOT RUN** on hosted CI (not pushed) | — |
 | `bunx playwright-core install --help` | confirms `--with-deps` and `chromium-headless-shell` used by the workflow | — |
+
+## Phase 5 (optional) — accepted items
+
+| Item | Regression test | Fix | Result |
+| --- | --- | --- | --- |
+| A Observed-sessions races | `apps/web/src/merge.test.ts` "late responses cannot roll the observed view back" (4) + browser check "late answer for an old repo filter" | `merge.ts` `mergeEventSnapshot` (current filter at apply time), `mergeDistricts`/`upsertRepo` (per-repo version), frame shape checks; `useHub.ts` latest-request-wins; `App.tsx` repo filter keeps seen ids (found by the browser check) | PASS |
+| B Collector spool fallback | `apps/collector/src/spool-fallback.test.ts` (7; 6 red before the fix) | `spool.ts` `deliver`: a refusal is never `sent`; parked durably → `rejected`, not parkable → `failed` (tailer offsets do not advance); `flush`: a reject file that cannot be written keeps the chunk queued | PASS |
+| (found) `ps lstart` locale/TZ | `proc.test.ts` "TZ / locale … do not change the recorded start time" | `proc.ts` `PS_ENV` (`LC_ALL=C TZ=UTC`) for every start-time read | PASS |

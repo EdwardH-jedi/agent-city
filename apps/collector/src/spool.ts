@@ -322,7 +322,13 @@ export class Spool {
 					: "ok";
 				if (r === "failed") break;
 				if (r === "rejected") {
-					this.reject(chunkLines);
+					// parked durably, or not at all: if the reject file can't be written the chunk
+					// stays queued (counted neither sent nor rejected) and is retried later
+					try {
+						this.reject(chunkLines);
+					} catch {
+						break;
+					}
 					result.rejected += events.length;
 				} else {
 					result.sent += events.length;
@@ -380,14 +386,18 @@ function keepNewest(path: string, maxBytes: number): { dropped: number } {
 	}
 }
 
-export type DeliverOutcome = "sent" | "spooled" | "failed";
+export type DeliverOutcome = "sent" | "spooled" | "rejected" | "failed";
 
 /**
  * Deliver new events, spool-first (F04): append durably, then flush within `deadline`.
- *   sent    — everything queued reached the hub
- *   spooled — durable on disk, will be retried
- *   failed  — neither durable nor delivered (spool unwritable AND POST failed)
- * If the spool can't be written, one bounded direct POST is the fallback.
+ *   sent     — everything reached the hub
+ *   spooled  — durable on disk, will be retried
+ *   rejected — (spool unwritable) the hub refused some events and they were parked durably in
+ *              spool.rejected.jsonl; the rest reached the hub. Safe to advance offsets.
+ *   failed   — not durable anywhere: not delivered, or refused and could not be parked.
+ *              Callers must NOT advance offsets.
+ * If the spool can't be written, one bounded direct POST per chunk is the fallback; a refusal is
+ * never counted as sent.
  */
 export async function deliver(
 	events: readonly IngestEvent[],
@@ -399,11 +409,21 @@ export async function deliver(
 	try {
 		spool.append(events);
 	} catch {
+		let parked = false;
 		for (let i = 0; i < events.length; i += CHUNK) {
-			const r = await transport.post(events.slice(i, i + CHUNK), { deadline });
+			const chunk = events.slice(i, i + CHUNK);
+			const r = await transport.post(chunk, { deadline });
 			if (r === "failed") return "failed";
+			if (r === "rejected") {
+				try {
+					spool.reject(chunk.map((e) => JSON.stringify(e)));
+					parked = true;
+				} catch {
+					return "failed"; // refused and not durable anywhere
+				}
+			}
 		}
-		return "sent";
+		return parked ? "rejected" : "sent";
 	}
 	const r = await spool.flush(transport, deadline);
 	return r.remaining ? "spooled" : "sent";
