@@ -106,3 +106,44 @@ Tests: `H` = `apps/hub/src/managed/hardening.test.ts`, `P` = `provider-hardening
 
 Leftover processes after the run: none. Temporary files left on purpose: `agentcity-browser-evidence-*`
 screenshot directories (synthetic data) and `ac011-*` log directories under `$TMPDIR`.
+
+## Corrective patch (C1–C5)
+
+An independent review of `923854d..e9c810a` reported five defects that the green runs above did not
+catch. Each was reproduced red against the starting implementation (tests in
+`apps/hub/src/managed/corrective.test.ts`, run with `env -i` + disposable HOME / AGENTCITY_HOME /
+TMPDIR; stubs only, no real provider binary, login or model), fixed, and committed separately.
+
+| ID | Defect | Red before the fix (observed) | Fix | Regression | Result |
+| --- | --- | --- | --- | --- | --- |
+| C1 | `--version` / `--help` / auth check exits 0 while an escaped descendant holds its pipes: quarantine opens, but preflight passes and the prompt launches | claude: 4 calls (rest of preflight + `-p` prompt) instead of 1/2/3; codex: 4 (incl. `exec --json`); a result-ignoring adapter could still launch; `checkExecutable` ok on exit 0 + unresolved | `cli.ts settled`/`cleanExit` (exit 0 never outweighs an unresolved child) for version/help/auth; `orchestrator.ts launchRefusal` at the common `ctx.run` boundary (unconfirmed child, open quarantine, lost claim → `refusedRun`); stop after preflight when a child is unconfirmed | C1, 8 cases: both providers × 3 checks, Run refused 409 + later ticks launch nothing, boundary test, unit | PASS — `807e46a` |
+| C2 | oversized `turn.failed` dropped, then approval + exit 0 accepted; Claude success accepted after an oversized / unparseable record | all 5 cases ended `human_ready` | `cli.ts protocolLoss`: in JSONL mode a dropped (line bound) or non-JSON stdout line fails the stage closed (`provider_output_invalid`); blank lines, unknown event types, stderr and capture truncation stay permitted | C2, 6 cases incl. a control (unknown events, stderr, 4 KiB capture cap over 1.2 MB valid output → still `human_ready`) | PASS — `1a4cd28` |
+| C3 | diff prefixes (`+`/`-`/` `) hide YAML secret blocks and `\`-continued tokens from redaction | on real fixture commits, leaked on all three surfaces (stored `diff.patch`, reviewer stdin, artifact API): old/new/added YAML block bodies, both continuation fragments, the added split token | `evidence.ts redactDiff`: per file, old (context + removed) and new (context + added) versions analysed without prefixes, mapped back line by line; divergent context lines masked whole; `redactLog` unchanged | C3, 3 cases: end to end over three surfaces; real `git diff` incl. a deleted file; divergent context | PASS — `c3323d5` |
+| C4 | a FIFO in place of an artifact / the last-message file blocks `open()` and freezes the hub | isolated probes hit the external 5 s / 45 s deadlines; hub child process answered no request within 3 s | `SAFE_READ_FLAGS` = `O_RDONLY\|O_NOFOLLOW\|O_NONBLOCK`, fstat-on-descriptor regular-file check, descriptor always closed; `readFileBounded` reports `rejected` (symlink / FIFO / non-regular), Codex refuses such a file instead of falling back to the streamed message | C4, 5 cases: reader probes + whole pipeline + hub in child processes with an external SIGKILL deadline (409, `/healthz` and the task view keep answering); symlink/missing/regular control | PASS — `004775b` |
+| C5 | diff bytes replaced + row hash/length updated coherently → artifact API 200 although the manifest binds the review to the original | both tamper cases → HTTP 200 | `evidence.ts checkRunEvidence` (non-throwing, verified buffers by id); `service.ts readTaskArtifact`: for a run with a manifest, the run's evidence must verify as a unit and every review of the run must name the run's candidate + manifest; the verified buffer is served | C5, 3 cases: file+row → 409; file+manifest+run hash → 409 via the review binding; untampered control → 200 | PASS — `ed72ca6` |
+
+Earlier claims this corrects: P1.1 ("Cancel/Run/claim blocked") did not cover further launches inside
+the same claim after a preflight check; P1.4 ("409 on tamper") covered bytes that differ from their
+row, not a file replaced together with its row; P2.6 (multiline redaction) covered logs, not the
+prefixed lines of a stored diff; P2.7 ("bounded … files") did not cover a FIFO in place of a file.
+C5 is local tampering (write access to the artifacts directory and the hub DB), not a remote or
+unauthenticated path. The C4 regression for the Codex FIFO case first asserted state `blocked`; the
+schema maps `provider_output_invalid` to `failed` (`outcomeStateFor`) — the expectation was
+corrected, the assertions on failure kind and on zero valid reviews were not changed.
+
+### Verification after the patch (code `ed72ca6`, `env -i`, disposable HOME / AGENTCITY_HOME / TMPDIR)
+
+| Command | Result | Duration |
+| --- | --- | --- |
+| `bun run verify` (lint → typecheck incl. e2e → `bun test` → check:secrets → build:web → managed:demo → test:browser) | PASS (exit 0) | 120 s |
+| … `bun test` | 566 pass / 0 fail, 29 files (541 + 25 corrective) | 91 s |
+| … `managed:demo` | 8/8 scenarios as expected | — |
+| … `test:browser` | 24/24 checks | — |
+| `bun run test:lifecycle` ×5 (now incl. `corrective.test.ts`) | 85/85 each run, 5/5 runs | 56 s each |
+| hosted CI (`.github/workflows/ci.yml`) | NOT RUN (never pushed) | — |
+| live provider preflight / model call | NOT RUN (not authorized) | — |
+
+Leftover processes after the runs: none. The red C4 runs were killed at their external deadline, so
+their disposable fixture directories may remain under that run's TMPDIR (outside the repository).
+Still true and unchanged: worktrees are Git isolation, not a sandbox; everything above ran against
+local stub executables; live provider behaviour is unverified (`LIVE_INTEGRATION_VERIFIED = false`).

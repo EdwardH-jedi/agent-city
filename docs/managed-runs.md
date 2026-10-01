@@ -23,7 +23,7 @@ Three things that must not be confused:
 | Claude CLI implementer | implemented, **stub-tested**; flags checked against `claude --help` 2.1.285; **not live-tested** |
 | Codex CLI reviewer | implemented, **stub-tested**; flags taken from the docs only (`codex` is not installed here); **not live-tested** |
 | API + web UI | implemented; API tested; automated browser gate (`bun run test:browser`, 20 checks) on a disposable hub |
-| v0.1.1 hardening | quarantine, per-stage approval revalidation, cancel/finalize ordering, verified evidence bytes, capability + positive auth gates, multiline redaction, bounded processes/parsing — all tested with fakes/stubs |
+| v0.1.1 hardening | quarantine, per-stage approval revalidation, cancel/finalize ordering, verified evidence bytes, capability + positive auth gates, multiline redaction, bounded processes/parsing — all tested with fakes/stubs; corrective patch C1–C5 (see below) likewise stub-tested only |
 | Live end-to-end run with real models | **never run**. `LIVE_INTEGRATION_VERIFIED` is `false`. |
 
 Nothing in this document or the code should be read as "the live pipeline works". Only simulated
@@ -167,15 +167,39 @@ the bound review are.
   is deliberately no dismiss button. **Consequence:** such a quarantine never releases after a
   restart, and while it is open no managed task can run at all (permanent fail-closed lockout).
   Whether to keep that, or to define a documented out-of-band procedure for an operator who has
-  verified the process is gone, is an open decision for review.
+  verified the process is gone, is an open decision for review. A restart is not evidence that an
+  escaped descendant stopped.
+- This applies to **every** process launched for a task, the no-model checks included (`--version`,
+  `--help`, `auth status` / `login status`): an exit code 0 never counts while something the check
+  started is unresolved. All launches go through one boundary that refuses to start anything while
+  the claim holds an unconfirmed child, the task has an open quarantine, or the worker no longer
+  holds the task — so after such a check no further check, prompt, verification or review starts.
+- Provider protocol (v0.1.1): with `stream-json` / `--json`, every stdout line is treated as a
+  protocol record. A record over the 1 MiB line bound (dropped) or a stdout line that is not a JSON
+  object makes the stage fail closed (`provider_output_invalid`): the lost record might have been
+  the failure, so a later success or approval is not trusted. Blank lines, unknown event types and
+  stderr output are tolerated; a capped *log capture* (stdout/stderr/transcript truncation) is
+  diagnostic only and does not fail a stage.
 - Evidence integrity (v0.1.1): reviews and artifact views use one verified read of the full stored
   bytes (size + sha256 + manifest links). Changed, truncated, missing or symlinked evidence blocks the
-  review (`evidence_invalid`) and the artifact API answers `409 artifact_integrity`.
+  review (`evidence_invalid`) and the artifact API answers `409 artifact_integrity`. For an attempt
+  with an evidence manifest, the artifact API checks the attempt's evidence **as a unit** against
+  that manifest, and requires every review of the attempt to name the same candidate + manifest;
+  the bytes it returns are the verified buffer. So a file replaced together with its DB row (local
+  tampering by someone with write access to the artifacts directory and the hub DB) is refused
+  with 409, not served. Attempts without a manifest are checked against their row only.
 - Artifacts are read by `(task id, artifact id)`; the stored path is canonicalized and must be a
-  regular file under `artifacts_root`.
+  regular file under `artifacts_root`. Evidence files and the reviewer's last-message file are
+  opened non-blocking without following symlinks and checked as regular files on the open
+  descriptor: a FIFO, device or symlink in their place is refused at once (artifact → 409, review →
+  `provider_output_invalid`) instead of blocking the hub's event loop.
 - Stored text: the task's title/objective/criteria (redacted), review findings and summaries
   (redacted), redacted bounded logs and diffs. Not stored: provider transcripts, tool input, model
-  reasoning — adapter logs keep event kinds, tool names and the final result text only.
+  reasoning — adapter logs keep event kinds, tool names and the final result text only. The stored
+  diff is redacted diff-aware: per file, the old version (context + removed lines) and the new one
+  (context + added lines) are each checked without the `+`/`-`/` ` prefixes, so a secret YAML block
+  or a `\`-continued token is masked whether it was added, removed or split across unchanged and
+  changed lines. The reviewer gets exactly these stored bytes.
 - Known gaps: redaction is pattern-based (see README); a secret the implementer writes into a file
   is in the candidate commit even though the stored diff is redacted; verification commands are
   whatever you configured and run unsandboxed; with a running Claude collector hook, a live managed
@@ -213,6 +237,9 @@ Unverified assumptions a live smoke must check:
   --output-schema --output-last-message -`, `exec resume <id>`), the JSONL event names, the exact
   `codex login status` output, and whether the strict JSON Schema is accepted. None of it has been
   run against a real binary.
+- Both: that nothing but JSON records (and blank lines) is written to stdout in JSONL mode. Any
+  other stdout line fails the stage closed by design; if a real CLI does print such lines, live
+  runs fail as `provider_output_invalid` — never approve — and this rule needs revisiting.
 - Failure classification (auth / quota / model) is a text heuristic on top of structured categories.
 
 ## Verification
@@ -243,6 +270,7 @@ Where the required gates are tested:
 | v0.1.1 lifecycle / evidence (P1) | `managed/hardening.test.ts` |
 | v0.1.1 provider / process / privacy (P2) | `managed/provider-hardening.test.ts` |
 | v0.1.1 browser regressions (P3) | `apps/web/e2e/browser-gate.ts` |
+| v0.1.1 corrective patch (C1–C5: preflight quarantine, protocol loss, diff redaction, FIFO reads, manifest-bound artifact API) | `managed/corrective.test.ts` |
 
 ## Not in v0.1.1
 

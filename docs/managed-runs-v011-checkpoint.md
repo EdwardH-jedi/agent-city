@@ -30,11 +30,23 @@ Resume from this file + `git log` / `git diff`, never from memory.
 - [~] Phase 5 — optional: A (observed-sessions races) ✔, B (collector spool fallback) ✔, D (state-machine table) ✔, E (read-only diagnostics) ✔, C (task navigation) ✔; extra
   finding fixed: `ps lstart` compared under fixed locale/TZ. All optional items done.
 
+- [x] Corrective patch (after an independent review of `923854d..e9c810a`) — five reported defects,
+  each reproduced red first, fixed, committed separately; tests `apps/hub/src/managed/corrective.test.ts`
+  (25 cases, also in `test:lifecycle`). Results and the earlier claims they correct:
+  [managed-runs-v011-verification.md](managed-runs-v011-verification.md#corrective-patch-c1c5).
+  - C1 `807e46a` an unresolved preflight child (`--version`/`--help`/auth) stops every later launch
+  - C2 `1a4cd28` a dropped (oversized) or unparseable protocol record never permits success
+  - C3 `c3323d5` diff-aware redaction of the stored diff (`redactDiff`)
+  - C4 `004775b` nonblocking no-follow opens for evidence / last-message reads (FIFO freeze)
+  - C5 `ed72ca6` the artifact API checks the run's manifest + review binding, serves verified bytes
+
 ## State at stop
 
-- HEAD `6996fde` + a docs commit; all mandatory phases and optional A–E done; `bun run verify` green.
+- Code at `ed72ca6` (+ a docs commit for this patch); `bun run verify` green on it. The earlier
+  "HEAD `6996fde` + a docs commit" was itself two docs commits (`7ae8f4d`, `e9c810a`).
 - Not done / blocked: hosted CI run (not pushed), any live provider check (forbidden here), OS-level
-  isolation (out of scope).
+  isolation (out of scope). Still disclosed, unchanged by design: a `[pipe]` quarantine cannot be
+  released after a hub restart (a restart is no evidence the escaped descendant stopped).
 
 ## Temporary resources
 
@@ -43,4 +55,5 @@ Resume from this file + `git log` / `git diff`, never from memory.
 
 ## Next command
 
-`cd ../agent-city-v011 && bun run verify` — then an independent review of `923854d..HEAD`
+`cd ../agent-city-v011 && bun run verify` — then an independent review of the corrective patch
+`e9c810a..HEAD` (and, as before, `923854d..HEAD` for the whole hardening branch)
