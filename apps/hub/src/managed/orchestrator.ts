@@ -18,7 +18,6 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-	EvidenceManifest,
 	type FailureKind,
 	type Finding,
 	type ManagedRun,
@@ -37,10 +36,11 @@ import type {
 import { findRepo, type ManagedConfig, sha256Hex } from "./config.ts";
 import {
 	buildManifest,
-	readArtifact,
+	EvidenceError,
 	redactLog,
 	runVerification,
 	type VerificationRun,
+	verifyRunEvidence,
 	writeArtifact,
 } from "./evidence.ts";
 import {
@@ -55,7 +55,12 @@ import {
 	treeOf,
 	validateRepo,
 } from "./git.ts";
-import { runProcess, terminateRecorded } from "./proc.ts";
+import {
+	hostProcessOps,
+	type ProcessOps,
+	resolveRecorded,
+	runProcess,
+} from "./proc.ts";
 import { approvalHashFor, gitCtx, liveConfigured } from "./service.ts";
 import {
 	claimNext,
@@ -65,9 +70,13 @@ import {
 	insertReview,
 	insertRun,
 	listArtifacts,
+	listQuarantine,
 	listRuns,
+	noteQuarantineCheck,
+	openQuarantine,
 	patchRun,
 	releaseForRetry,
+	releaseQuarantine,
 	renewLease,
 	repairsUsed,
 	StaleLeaseError,
@@ -85,6 +94,26 @@ export interface OrchestratorDeps {
 	/** Lease renewal + cancel polling interval. Default: a third of the lease TTL. */
 	heartbeatMs?: number;
 	onChange?: (taskId: string) => void;
+	/** Process inspection/termination. Default: the host (tests inject failing variants). */
+	processOps?: ProcessOps;
+	/** Deterministic test boundaries (awaited at named points). Never set in production. */
+	hooks?: OrchestratorHooks;
+}
+
+export interface OrchestratorHooks {
+	at?(
+		point: "before_review" | "before_finalize",
+		taskId: string,
+	): Promise<void> | void;
+}
+
+function deepFreeze<T>(v: T): T {
+	if (v && typeof v === "object" && !Object.isFrozen(v)) {
+		Object.freeze(v);
+		for (const k of Object.keys(v))
+			deepFreeze((v as Record<string, unknown>)[k]);
+	}
+	return v;
 }
 
 /** One claimed task as seen by the worker that holds it. */
@@ -114,8 +143,15 @@ export class Orchestrator {
 	private current: AbortController | null = null;
 	private running: Promise<void> | null = null;
 
-	constructor(private readonly d: OrchestratorDeps) {
-		this.workerId = d.workerId ?? `worker-${randomUUID()}`;
+	private readonly d: OrchestratorDeps;
+	private readonly ops: ProcessOps;
+
+	constructor(deps: OrchestratorDeps) {
+		// The effective configuration is an immutable snapshot taken once: the policy that approvals
+		// are checked against is exactly the policy that is executed.
+		this.d = { ...deps, config: deepFreeze(structuredClone(deps.config)) };
+		this.ops = deps.processOps ?? hostProcessOps;
+		this.workerId = deps.workerId ?? `worker-${randomUUID()}`;
 	}
 
 	private now(): string {
@@ -143,6 +179,7 @@ export class Orchestrator {
 
 	/** Reconcile dead leases, then claim and drive at most one task. true = a task was worked on. */
 	async tick(): Promise<boolean> {
+		await this.resolveQuarantines();
 		await this.reconcile();
 		const task = claimNext(this.d.db, this.workerId, this.leaseUntil());
 		if (!task) return false;
@@ -162,6 +199,27 @@ export class Orchestrator {
 		await this.running?.catch(() => {});
 	}
 
+	// ── quarantine ─────────────────────────────────────────────────────────────
+
+	/**
+	 * Re-check every unresolved child. A quarantine is released only on objective evidence (the
+	 * process and its group are gone, or were terminated here); an inspection failure or an
+	 * unverifiable identity keeps it. Releasing the last one completes a pending cancel.
+	 */
+	async resolveQuarantines(): Promise<void> {
+		const { db, config } = this.d;
+		for (const q of listQuarantine(db, { open: true })) {
+			const res = await resolveRecorded(
+				{ pid: q.pid, started: q.started },
+				config.limits.kill_grace_ms,
+				this.ops,
+			);
+			if (res.resolved) releaseQuarantine(db, q, res.evidence, this.now());
+			else noteQuarantineCheck(db, q.id, res.reason, this.now());
+			this.changed(q.task_id);
+		}
+	}
+
 	// ── reconciliation ─────────────────────────────────────────────────────────
 
 	/**
@@ -178,13 +236,25 @@ export class Orchestrator {
 			const run = seized.current_run_id
 				? getRun(db, seized.current_run_id)
 				: null;
-			const term =
-				run?.child_pid != null
-					? await terminateRecorded(
-							{ pid: run.child_pid, started: run.child_started },
-							config.limits.kill_grace_ms,
-						)
-					: "gone";
+			let term: "gone" | "unconfirmed" = "gone";
+			if (run?.child_pid != null) {
+				const res = await resolveRecorded(
+					{ pid: run.child_pid, started: run.child_started },
+					config.limits.kill_grace_ms,
+					this.ops,
+				);
+				if (!res.resolved) {
+					term = "unconfirmed";
+					openQuarantine(db, {
+						task_id: seized.id,
+						run_id: run.id,
+						pid: run.child_pid,
+						started: run.child_started,
+						reason: `after a hub restart: ${res.reason}`,
+						now: this.now(),
+					});
+				}
+			}
 			const launched =
 				run?.proc_phase === "implement" || run?.proc_phase === "review";
 			const at = this.now();
@@ -278,7 +348,7 @@ export class Orchestrator {
 					t.lease_owner !== this.workerId
 				)
 					return;
-				if (t.cancel_requested_at) {
+				if (t.cancel_requested_at || claim.unconfirmed.length > 0) {
 					this.finishCancel(t, claim);
 					return;
 				}
@@ -347,13 +417,26 @@ export class Orchestrator {
 					maxOutputBytes: o.maxOutputBytes ?? config.limits.max_log_bytes,
 					killGraceMs: config.limits.kill_grace_ms,
 					signal: claim.signal,
+					processOps: this.ops,
 					// Throws when the lease is gone → runProcess kills the child it just started.
 					onSpawn: (id) =>
 						record({ child_pid: id.pid, child_started: id.started }),
 				});
 				if (r.pid !== null) {
-					if (!r.terminationConfirmed) claim.unconfirmed.push(r.pid);
-					else
+					if (!r.terminationConfirmed || r.unresolved) {
+						claim.unconfirmed.push(r.pid);
+						// Persist immediately and unfenced: safety data outlives this worker's lease.
+						const current = getRun(db, run.id);
+						openQuarantine(db, {
+							task_id: claim.id,
+							run_id: run.id,
+							pid: r.pid,
+							started:
+								current?.child_pid === r.pid ? current.child_started : null,
+							reason: r.unresolved ?? "termination could not be confirmed",
+							now: this.now(),
+						});
+					} else
 						try {
 							record({ child_pid: null, child_started: null });
 						} catch (err) {
@@ -377,6 +460,7 @@ export class Orchestrator {
 		const { db } = this.d;
 		withFence(db, t.id, claim.fence, (fresh) => {
 			alsoWrite?.();
+			if (this.cancelWins(fresh, runId)) return;
 			if (runId)
 				patchRun(db, runId, {
 					state: "failed",
@@ -395,6 +479,53 @@ export class Orchestrator {
 		this.changed(t.id);
 	}
 
+	/**
+	 * Linearization point of cancel vs completion: the transaction that would commit a final state.
+	 * A cancel request already recorded by then wins (nothing of ours is running at this point — an
+	 * unconfirmed child would have sent the task to finishCancel first). Evidence written in the same
+	 * transaction stays. Returns true when the task was cancelled instead.
+	 */
+	private cancelWins(fresh: ManagedTask, runId: string | null): boolean {
+		if (!fresh.cancel_requested_at) return false;
+		const { db } = this.d;
+		const detail =
+			"cancelled: the cancel request was acknowledged before the attempt completed";
+		const run = runId ? getRun(db, runId) : null;
+		if (run && run.state === "running")
+			patchRun(db, run.id, {
+				state: "cancelled",
+				phase: run.phase,
+				failure_kind: "cancelled",
+				failure_detail: detail,
+				ended_at: this.now(),
+				...PROC_CLEARED,
+			});
+		setTaskState(db, fresh, {
+			to: "cancelled",
+			failure_kind: "cancelled",
+			state_detail: detail,
+			release: true,
+		});
+		return true;
+	}
+
+	/** Approval binding (ARCHITECTURE #5), re-checked before every stage, resumed or not. */
+	private approvalHolds(
+		t: ManagedTask,
+		claim: Claim,
+		runId: string | null,
+	): boolean {
+		if (t.approval_hash === approvalHashFor(t, this.d.config)) return true;
+		this.fail(
+			t,
+			claim,
+			runId,
+			"approval_void",
+			"the task or the managed policy changed after Run was approved; nothing more was executed — run it again to re-approve",
+		);
+		return false;
+	}
+
 	private finishCancel(t: ManagedTask, claim: Claim): void {
 		const { db } = this.d;
 		const unconfirmed = claim.unconfirmed.length > 0;
@@ -403,7 +534,7 @@ export class Orchestrator {
 				? getRun(db, fresh.current_run_id)
 				: null;
 			const detail = unconfirmed
-				? `cancel requested, but process ${claim.unconfirmed.join(", ")} could not be confirmed terminated`
+				? `process ${claim.unconfirmed.join(", ")} could not be confirmed terminated; it is quarantined until it is proven gone${fresh.cancel_requested_at ? " (the cancel completes then)" : ""}`
 				: "cancelled; owned processes confirmed terminated";
 			if (run && run.state === "running")
 				patchRun(db, run.id, {
@@ -438,14 +569,7 @@ export class Orchestrator {
 				"repo_invalid",
 				"repository is no longer in the managed allowlist",
 			);
-		if (t.approval_hash !== approvalHashFor(t, config))
-			return this.fail(
-				t,
-				claim,
-				null,
-				"approval_void",
-				"the task or the managed policy changed after Run was approved; run it again to re-approve",
-			);
+		if (!this.approvalHolds(t, claim, null)) return;
 		if (t.execution_mode === "live" && !liveConfigured(config))
 			return this.fail(
 				t,
@@ -521,6 +645,7 @@ export class Orchestrator {
 				"no implementer adapter or workspace for this attempt",
 			);
 		const worktree = run.workspace_path;
+		if (!this.approvalHolds(t, claim, run.id)) return;
 
 		// One writer per worktree: it must be exactly where this attempt starts from.
 		const dirty = await mutationSince(this.git, worktree, run.parent_sha);
@@ -563,7 +688,7 @@ export class Orchestrator {
 			},
 			ctx,
 		);
-		if (claim.signal.aborted) return;
+		if (claim.signal.aborted || claim.unconfirmed.length > 0) return;
 
 		const log = (candidate: string | null) =>
 			writeArtifact(db, config.artifacts_root, {
@@ -645,6 +770,8 @@ export class Orchestrator {
 				"no repository config or candidate for this attempt",
 			);
 		const worktree = run.workspace_path;
+		// A resumed verification must not run commands the task was never approved for.
+		if (!this.approvalHolds(t, claim, run.id)) return;
 
 		const before = await mutationSince(this.git, worktree, candidate);
 		if (before)
@@ -673,10 +800,10 @@ export class Orchestrator {
 		const ctx = this.ctx(claim, run);
 		const runs: VerificationRun[] = [];
 		for (const cmd of repo.verification) {
-			if (claim.signal.aborted) return;
+			if (claim.signal.aborted || claim.unconfirmed.length > 0) return;
 			runs.push(await runVerification(cmd, worktree, ctx.run));
 		}
-		if (claim.signal.aborted) return;
+		if (claim.signal.aborted || claim.unconfirmed.length > 0) return;
 
 		const after = await mutationSince(this.git, worktree, candidate);
 		const diff = await diffText(
@@ -851,29 +978,35 @@ export class Orchestrator {
 			);
 		const worktree = run.workspace_path;
 
-		// The evidence on disk must still be the evidence that was hashed.
-		const stored = listArtifacts(db, t.id).filter((a) => a.run_id === run.id);
-		const manifestArt = stored.find((a) => a.name === "manifest.json");
-		const diffArt = stored.find((a) => a.name === "diff.patch");
-		const manifestText = manifestArt
-			? readArtifact(config.artifacts_root, manifestArt, 8_000_000).text
-			: "";
-		const manifest = EvidenceManifest.safeParse(
-			manifestText ? JSON.parse(manifestText) : null,
-		);
-		if (
-			!manifest.success ||
-			!diffArt ||
-			sha256Hex(manifestText) !== manifestHash ||
-			manifest.data.candidate_sha !== candidate ||
-			!verificationPassed(manifest.data.verification)
-		)
+		await this.d.hooks?.at?.("before_review", t.id);
+		if (!this.approvalHolds(t, claim, run.id)) return;
+
+		// The evidence on disk must be byte-for-byte the evidence that was hashed; the verified
+		// buffers are what the reviewer gets (no second read).
+		let evidence: ReturnType<typeof verifyRunEvidence>;
+		try {
+			evidence = verifyRunEvidence(
+				config.artifacts_root,
+				listArtifacts(db, t.id).filter((a) => a.run_id === run.id),
+				{ manifest_hash: manifestHash, candidate_sha: candidate },
+			);
+		} catch (err) {
+			if (!(err instanceof EvidenceError)) throw err;
 			return this.fail(
 				t,
 				claim,
 				run.id,
-				"candidate_mutated",
-				"the stored evidence does not match the candidate that was verified",
+				"evidence_invalid",
+				`stored evidence no longer matches what was verified: ${err.problems.slice(0, 4).join("; ")}`,
+			);
+		}
+		if (!verificationPassed(evidence.manifest.verification))
+			return this.fail(
+				t,
+				claim,
+				run.id,
+				"evidence_invalid",
+				"the stored manifest does not show passing verification",
 			);
 		const before = await mutationSince(this.git, worktree, candidate);
 		if (before)
@@ -910,17 +1043,14 @@ export class Orchestrator {
 				worktree,
 				candidate_sha: candidate,
 				manifest_hash: manifestHash,
-				manifest: manifest.data,
-				diff: readArtifact(
-					config.artifacts_root,
-					diffArt,
-					config.limits.max_diff_bytes,
-				).text,
+				manifest: evidence.manifest,
+				diff: evidence.diff,
 			},
 			ctx,
 		);
-		if (claim.signal.aborted) return;
+		if (claim.signal.aborted || claim.unconfirmed.length > 0) return;
 		const after = await mutationSince(this.git, worktree, candidate);
+		await this.d.hooks?.at?.("before_finalize", t.id);
 
 		const parsed = res.ok ? ReviewOutput.safeParse(res.raw) : null;
 		const output = parsed?.success ? parsed.data : null;
@@ -1021,6 +1151,7 @@ export class Orchestrator {
 		if (output.verdict === "approve") {
 			withFence(db, t.id, claim.fence, (fresh) => {
 				record();
+				if (this.cancelWins(fresh, run.id)) return;
 				patchRun(db, run.id, {
 					state: "finished",
 					phase: "done",

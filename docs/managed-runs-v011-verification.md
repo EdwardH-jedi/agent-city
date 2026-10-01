@@ -1,0 +1,29 @@
+# Managed runs v0.1.1 — verification log
+
+All runs use disposable state: temporary `HOME` / `AGENTCITY_HOME`, mkdtemp fixture repos,
+in-memory or temp SQLite, port 0 / dedicated loopback ports. Never the real `.env`, DB or :4317 hub.
+
+## Phase 0 baseline (base `923854d`, my run)
+
+| Command | Result | Duration |
+| --- | --- | --- |
+| `HOME=<tmp> AGENTCITY_HOME=<tmp> bun test` | PASS 461 / 0 fail | 37 s |
+| `bun run lint` | PASS | <1 s |
+| `bun run typecheck` | PASS | ~5 s |
+| `bun run check:secrets` | PASS | <1 s |
+| `(cd apps/web && bunx vite build)` | PASS | <1 s |
+| `bun run managed:demo` | PASS (8/8 scenarios as expected) | ~3 s |
+
+Pre-existing failures: none.
+
+## Phase 1 (after fixes)
+
+| Command | Result | Duration |
+| --- | --- | --- |
+| `bun test apps/hub/src/managed/hardening.test.ts` ×3 | PASS 20/20 each run | ~4 s each |
+| `HOME=<tmp> AGENTCITY_HOME=<tmp> bun test` | PASS 481 / 0 fail | 41 s |
+| `bun run lint` / `typecheck` / `check:secrets` / `managed:demo` | PASS | — |
+
+Red first: the file failed to load against `923854d` (quarantine / hooks / evidence APIs absent); after
+the first implementation pass the P1.2 review-resume case still failed (`human_ready` with changed
+`limits`) — the approval hash did not cover limits; fixed in `config.ts policyHash`.

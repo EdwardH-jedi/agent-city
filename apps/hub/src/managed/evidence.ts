@@ -6,14 +6,15 @@
 import type { Database } from "bun:sqlite";
 import {
 	closeSync,
-	lstatSync,
+	constants,
+	fstatSync,
 	mkdirSync,
 	openSync,
 	readSync,
 	realpathSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import {
 	type ArtifactKind,
 	EVIDENCE_CONTRACT,
@@ -103,42 +104,224 @@ export function writeArtifact(
 	});
 }
 
-export class ArtifactAccessError extends Error {}
+/**
+ * `not_found`: no such artifact inside the root (or the row points outside it).
+ * `integrity`: the artifact exists but its stored bytes are not the recorded bytes (changed,
+ * truncated, replaced by a symlink, unreadable) — it must not be shown or used as evidence.
+ */
+export class ArtifactAccessError extends Error {
+	constructor(
+		readonly code: "not_found" | "integrity",
+		message: string,
+	) {
+		super(message);
+		this.name = "ArtifactAccessError";
+	}
+}
+
+/** Hard cap on one artifact read (artifacts are written bounded far below this). */
+export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 /**
- * Read a stored artifact. The row's rel_path is resolved, canonicalized and required to be a
- * regular file inside the artifacts root (no symlink, no `..`), whatever the row says.
+ * Read the FULL stored bytes of an artifact and verify them against the row (byte_len + sha256)
+ * before anyone uses them. The returned buffer is the one that was verified — callers check and
+ * consume the same bytes, never a second read. Path rules: inside the artifacts root, no symlink
+ * at the file, a regular file, opened with O_NOFOLLOW.
  */
-export function readArtifact(
+export function readArtifactBytes(
 	root: string,
-	artifact: Pick<ManagedArtifact, "rel_path">,
-	maxBytes: number,
-): { text: string; truncated: boolean } {
+	artifact: Pick<ManagedArtifact, "rel_path" | "byte_len" | "sha256" | "name">,
+): Buffer {
+	// A row is generated as `<task>/<run>/<name>`; anything absolute or with `..` was tampered with.
+	if (
+		isAbsolute(artifact.rel_path) ||
+		artifact.rel_path.split(/[\\/]/).includes("..")
+	)
+		throw new ArtifactAccessError("not_found", "outside the artifacts root");
 	const abs = join(root, artifact.rel_path);
-	let real: string;
 	let realRoot: string;
 	try {
-		if (lstatSync(abs).isSymbolicLink())
-			throw new ArtifactAccessError("symlink");
-		real = realpathSync(abs);
 		realRoot = realpathSync(root);
-	} catch (err) {
-		if (err instanceof ArtifactAccessError) throw err;
-		throw new ArtifactAccessError("missing");
+	} catch {
+		throw new ArtifactAccessError("not_found", "artifacts root is missing");
 	}
-	if (real === realRoot || !isInside(realRoot, real))
-		throw new ArtifactAccessError("outside the artifacts root");
-	const st = lstatSync(real);
-	if (!st.isFile()) throw new ArtifactAccessError("not a file");
-	const len = Math.min(st.size, maxBytes);
-	const buf = Buffer.alloc(len);
-	const fd = openSync(real, "r");
+	let realParent: string;
 	try {
-		readSync(fd, buf, 0, len, 0);
+		realParent = realpathSync(dirname(abs));
+	} catch {
+		throw new ArtifactAccessError(
+			"integrity",
+			`${artifact.name}: file is missing`,
+		);
+	}
+	const real = join(realParent, basename(abs));
+	if (!isInside(realRoot, realParent) || real === realRoot)
+		throw new ArtifactAccessError("not_found", "outside the artifacts root");
+	let fd: number;
+	try {
+		fd = openSync(real, constants.O_RDONLY | constants.O_NOFOLLOW);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		throw new ArtifactAccessError(
+			"integrity",
+			`${artifact.name}: ${code === "ELOOP" ? "replaced by a symlink" : code === "ENOENT" ? "file is missing" : "cannot be opened"}`,
+		);
+	}
+	try {
+		const st = fstatSync(fd);
+		if (!st.isFile())
+			throw new ArtifactAccessError(
+				"integrity",
+				`${artifact.name}: not a regular file`,
+			);
+		if (st.size !== artifact.byte_len)
+			throw new ArtifactAccessError(
+				"integrity",
+				`${artifact.name}: size ${st.size} B, recorded ${artifact.byte_len} B`,
+			);
+		if (st.size > MAX_ARTIFACT_BYTES)
+			throw new ArtifactAccessError(
+				"integrity",
+				`${artifact.name}: too large to verify`,
+			);
+		const buf = Buffer.alloc(st.size);
+		let off = 0;
+		while (off < buf.length) {
+			const n = readSync(fd, buf, off, buf.length - off, off);
+			if (n <= 0) break; // short read: caught by the length check below
+			off += n;
+		}
+		if (off !== buf.length)
+			throw new ArtifactAccessError(
+				"integrity",
+				`${artifact.name}: short read`,
+			);
+		if (sha256Hex(buf) !== artifact.sha256)
+			throw new ArtifactAccessError(
+				"integrity",
+				`${artifact.name}: content does not match its recorded sha256`,
+			);
+		return buf;
 	} finally {
 		closeSync(fd);
 	}
-	return { text: buf.toString("utf8"), truncated: st.size > maxBytes };
+}
+
+/** Verified artifact as text; only a display prefix of at most `maxBytes` is returned. */
+export function readArtifact(
+	root: string,
+	artifact: Pick<ManagedArtifact, "rel_path" | "byte_len" | "sha256" | "name">,
+	maxBytes: number,
+): { text: string; truncated: boolean } {
+	const buf = readArtifactBytes(root, artifact);
+	return {
+		text: buf.subarray(0, maxBytes).toString("utf8"),
+		truncated: buf.length > maxBytes,
+	};
+}
+
+export class EvidenceError extends Error {
+	constructor(readonly problems: string[]) {
+		super(problems.join("; "));
+		this.name = "EvidenceError";
+	}
+}
+
+export interface VerifiedEvidence {
+	manifest: EvidenceManifest;
+	/** The verified diff bytes, decoded once. */
+	diff: string;
+}
+
+const verifyName = (i: number, name: string) => `verify-${i + 1}-${name}.log`;
+
+/**
+ * Check a run's evidence as one unit: every artifact's bytes match its row, the manifest's bytes
+ * hash to the run's manifest_hash, and the manifest's references (diff_sha256, each verification
+ * log_sha256) match the artifacts that are actually stored. Returns the verified manifest + diff.
+ */
+export function verifyRunEvidence(
+	root: string,
+	artifacts: readonly ManagedArtifact[],
+	expected: { manifest_hash: string; candidate_sha: string },
+): VerifiedEvidence {
+	const problems: string[] = [];
+	const bytes = new Map<string, Buffer>();
+	for (const a of artifacts) {
+		try {
+			bytes.set(a.name, readArtifactBytes(root, a));
+		} catch (err) {
+			problems.push((err as Error).message);
+		}
+	}
+	const manifestBuf = bytes.get("manifest.json");
+	let manifest: EvidenceManifest | null = null;
+	if (!artifacts.some((a) => a.name === "manifest.json"))
+		problems.push("manifest.json: missing");
+	else if (manifestBuf) {
+		if (sha256Hex(manifestBuf) !== expected.manifest_hash)
+			problems.push("manifest.json: does not hash to the run's manifest_hash");
+		try {
+			const parsed = EvidenceManifest.safeParse(
+				JSON.parse(manifestBuf.toString("utf8")),
+			);
+			if (parsed.success) manifest = parsed.data;
+			else problems.push("manifest.json: not a valid evidence manifest");
+		} catch {
+			problems.push("manifest.json: not JSON");
+		}
+	}
+	if (manifest) {
+		if (manifest.candidate_sha !== expected.candidate_sha)
+			problems.push("manifest.json: names a different candidate");
+		const diffArt = artifacts.find((a) => a.name === "diff.patch");
+		if (!diffArt) problems.push("diff.patch: missing");
+		else if (diffArt.sha256 !== manifest.diff_sha256)
+			problems.push("diff.patch: not the diff the manifest names");
+		manifest.verification.forEach((v, i) => {
+			const art = artifacts.find((a) => a.name === verifyName(i, v.name));
+			if (!art) problems.push(`${verifyName(i, v.name)}: missing`);
+			else if (art.sha256 !== v.log_sha256)
+				problems.push(
+					`${verifyName(i, v.name)}: not the log the manifest names`,
+				);
+		});
+	}
+	const diffBuf = bytes.get("diff.patch");
+	if (problems.length > 0 || !manifest || !diffBuf)
+		throw new EvidenceError(
+			problems.length ? problems : ["evidence incomplete"],
+		);
+	return { manifest, diff: diffBuf.toString("utf8") };
+}
+
+/** Integrity of every stored artifact of a run (for display): never throws. */
+export function evidenceProblems(
+	root: string,
+	artifacts: readonly ManagedArtifact[],
+	expected: { manifest_hash: string | null; candidate_sha: string | null },
+): string[] {
+	if (!expected.manifest_hash || !expected.candidate_sha) {
+		const problems: string[] = [];
+		for (const a of artifacts)
+			try {
+				readArtifactBytes(root, a);
+			} catch (err) {
+				problems.push((err as Error).message);
+			}
+		return problems;
+	}
+	try {
+		verifyRunEvidence(root, artifacts, {
+			manifest_hash: expected.manifest_hash,
+			candidate_sha: expected.candidate_sha,
+		});
+		return [];
+	} catch (err) {
+		return err instanceof EvidenceError
+			? err.problems
+			: [(err as Error).message];
+	}
 }
 
 // ── verification ────────────────────────────────────────────────────────────

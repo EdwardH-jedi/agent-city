@@ -4,9 +4,10 @@ import { spawn } from "node:child_process";
 import {
 	childEnv,
 	groupAlive,
+	hostProcessOps,
 	processStarted,
+	resolveRecorded,
 	runProcess,
-	terminateRecorded,
 } from "./proc.ts";
 
 const BUN = process.execPath;
@@ -187,11 +188,11 @@ describe("child environment", () => {
 	});
 });
 
-describe("terminateRecorded (orphans from an earlier hub process)", () => {
-	test("gone / foreign (recycled pid) / killed", async () => {
+describe("resolveRecorded (orphans from an earlier hub process)", () => {
+	test("absent / recycled pid (never signalled) / unverifiable identity / terminated", async () => {
 		expect(
-			await terminateRecorded({ pid: 2 ** 22 - 3, started: "x" }, 100),
-		).toBe("gone");
+			await resolveRecorded({ pid: 2 ** 22 - 3, started: "x" }, 100),
+		).toMatchObject({ resolved: true });
 		const child = spawn("/bin/sleep", ["600"], {
 			detached: true,
 			stdio: "ignore",
@@ -199,16 +200,34 @@ describe("terminateRecorded (orphans from an earlier hub process)", () => {
 		child.unref();
 		const pid = child.pid as number;
 		try {
-			expect(
-				await terminateRecorded({ pid, started: "not its start time" }, 100),
-			).toBe("foreign");
-			expect(await terminateRecorded({ pid, started: null }, 100)).toBe(
-				"foreign",
+			const recycled = await resolveRecorded(
+				{ pid, started: "not its start time" },
+				100,
 			);
+			expect(recycled).toMatchObject({ resolved: true });
+			expect(groupAlive(pid)).toBe(true); // not signalled
+			expect(await resolveRecorded({ pid, started: null }, 100)).toMatchObject({
+				resolved: false,
+			});
+			expect(
+				await resolveRecorded({ pid, started: processStarted(pid) }, 100, {
+					...hostProcessOps,
+					terminateGroup: async () => false,
+				}),
+			).toMatchObject({
+				resolved: false,
+				reason: "termination could not be confirmed",
+			});
 			expect(groupAlive(pid)).toBe(true);
 			expect(
-				await terminateRecorded({ pid, started: processStarted(pid) }, 200),
-			).toBe("killed");
+				await resolveRecorded({ pid, started: processStarted(pid) }, 100, {
+					...hostProcessOps,
+					inspect: () => ({ state: "error", error: "boom" }),
+				}),
+			).toMatchObject({ resolved: false, reason: "inspection failed: boom" });
+			expect(
+				await resolveRecorded({ pid, started: processStarted(pid) }, 200),
+			).toMatchObject({ resolved: true });
 			expect(groupAlive(pid)).toBe(false);
 		} finally {
 			try {

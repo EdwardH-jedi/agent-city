@@ -534,7 +534,7 @@ describe("artifact access", () => {
 	});
 
 	test("a tampered row or a planted symlink cannot turn the route into a host-file reader", async () => {
-		const { fx, d, status } = await ready();
+		const { fx, d, status, base } = await ready();
 		const [a, b] = d.artifacts;
 		if (!a || !b) throw new Error("need two artifacts");
 		const secret = join(fx.dir, "outside-secret.txt");
@@ -556,7 +556,15 @@ describe("artifact access", () => {
 		const abs = join(fx.config.artifacts_root, b.rel_path);
 		rmSync(abs);
 		symlinkSync(secret, abs);
-		expect(await status(`/tasks/${d.task.id}/artifacts/${b.id}`)).toBe(404);
+		// refused as an integrity failure (v0.1.1): the content is never served
+		expect(await status(`/tasks/${d.task.id}/artifacts/${b.id}`)).toBe(409);
+		const refused = await fetch(
+			`${base}/api/managed/tasks/${d.task.id}/artifacts/${b.id}`,
+			{ headers: { authorization: `Bearer ${TOKEN}` } },
+		);
+		const refusedBody = await refused.text();
+		expect(refusedBody).toContain("artifact_integrity");
+		expect(refusedBody).not.toContain("HOST-FILE-CONTENT");
 
 		// a symlinked directory inside the root pointing outside
 		const viaDir = join(fx.config.artifacts_root, "linked");

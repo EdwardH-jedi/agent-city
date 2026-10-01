@@ -133,8 +133,10 @@ export const sha256Hex = (data: string | Uint8Array): string =>
 	createHash("sha256").update(data).digest("hex");
 
 /**
- * Hash of everything in the config that decides what a run of `repoId` may do. Part of the approval
- * binding: changing a verification command or a provider after approval voids the approval.
+ * Hash of everything in the config that decides what a run of `repoId` may do or produce: the repo
+ * entry (path, base ref, verification commands), every provider/capability setting, limits, git and
+ * the output roots. Part of the approval binding: changing any of it after approval voids the
+ * approval — for queued AND resumed stages. Other repos' entries are excluded on purpose.
  */
 export function policyHash(cfg: ManagedConfig, repoId: string): string {
 	return sha256Hex(
@@ -142,6 +144,9 @@ export function policyHash(cfg: ManagedConfig, repoId: string): string {
 			repo: findRepo(cfg, repoId),
 			live: cfg.live,
 			git: cfg.git_executable,
+			limits: cfg.limits,
+			workspace_root: cfg.workspace_root,
+			artifacts_root: cfg.artifacts_root,
 		}),
 	);
 }

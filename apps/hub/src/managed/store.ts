@@ -38,7 +38,7 @@ export class IdempotencyConflictError extends Error {
 	}
 }
 
-export const newId = (prefix: "task" | "run" | "art" | "rev") =>
+export const newId = (prefix: "task" | "run" | "art" | "rev" | "qua") =>
 	`${prefix}-${randomUUID()}`;
 
 type Row = Record<string, unknown>;
@@ -237,11 +237,13 @@ export function requestRun(
 	id: string,
 	approvalHash: string,
 	now: string,
-): { task: ManagedTask; queued: boolean } | null {
+): { task: ManagedTask; queued: boolean; quarantined?: boolean } | null {
 	return tx(db, () => {
 		const r = taskRow(db, id);
 		if (!r) return null;
 		const task = toTask(r);
+		if (openQuarantineFor(db, id).length > 0)
+			return { task, queued: false, quarantined: true };
 		if (!RUNNABLE_TASK_STATES.includes(task.state))
 			return { task, queued: false };
 		update(db, "managed_tasks", id, {
@@ -274,7 +276,13 @@ export function requestCancel(
 		if (!r) return null;
 		const task = toTask(r);
 		if (isTerminalTaskState(task.state)) return task;
-		if (isActiveTaskState(task.state) || task.lease_owner !== null) {
+		// An unresolved child keeps the task out of `cancelled` until its termination is proven.
+		const quarantined = openQuarantineFor(db, id).length > 0;
+		if (
+			quarantined ||
+			isActiveTaskState(task.state) ||
+			task.lease_owner !== null
+		) {
 			if (task.cancel_requested_at === null)
 				update(db, "managed_tasks", id, { cancel_requested_at: now });
 		} else {
@@ -319,6 +327,9 @@ export function claimNext(
 			)
 			.get();
 		if ((busy?.n ?? 0) > 0) return null;
+		// An execution whose child could not be proven gone is still "running" as far as the
+		// single-worker policy is concerned.
+		if (listQuarantine(db, { open: true }).length > 0) return null;
 		const resumable = db
 			.query<Row, []>(
 				`SELECT * FROM managed_tasks WHERE state IN (${ACTIVE_SQL}) ORDER BY updated_at LIMIT 1`,
@@ -565,5 +576,130 @@ export function releaseForRetry(db: Database, task: ManagedTask): void {
 		lease_owner: null,
 		lease_until: null,
 		infra_retries: task.infra_retries + 1,
+	});
+}
+
+// ── quarantine (unresolved child processes) ─────────────────────────────────
+
+export interface Quarantine {
+	id: string;
+	task_id: string;
+	run_id: string | null;
+	pid: number;
+	started: string | null;
+	reason: string;
+	created_at: string;
+	last_checked_at: string | null;
+	last_check: string | null;
+	released_at: string | null;
+	release_evidence: string | null;
+}
+
+export function listQuarantine(
+	db: Database,
+	o: { open?: boolean; taskId?: string },
+): Quarantine[] {
+	const where: string[] = [];
+	const params: string[] = [];
+	if (o.open) where.push("released_at IS NULL");
+	if (o.taskId) {
+		where.push("task_id = ?");
+		params.push(o.taskId);
+	}
+	return db
+		.query<Quarantine, string[]>(
+			`SELECT * FROM managed_quarantine${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, id`,
+		)
+		.all(...params);
+}
+
+export const openQuarantineFor = (db: Database, taskId: string) =>
+	listQuarantine(db, { open: true, taskId });
+
+/**
+ * Record a child whose termination could not be confirmed. Not fenced on purpose: safety data is
+ * written even by a worker that lost its lease. Idempotent per open (task, pid).
+ */
+export function openQuarantine(
+	db: Database,
+	q: {
+		task_id: string;
+		run_id: string | null;
+		pid: number;
+		started: string | null;
+		reason: string;
+		now: string;
+	},
+): void {
+	tx(db, () => {
+		const existing = db
+			.query<{ id: string }, [string, number]>(
+				"SELECT id FROM managed_quarantine WHERE task_id = ? AND pid = ? AND released_at IS NULL",
+			)
+			.get(q.task_id, q.pid);
+		if (existing) return;
+		db.query(
+			`INSERT INTO managed_quarantine (id, task_id, run_id, pid, started, reason, created_at)
+			 VALUES ($id, $task, $run, $pid, $started, $reason, $now)`,
+		).run({
+			id: newId("qua"),
+			task: q.task_id,
+			run: q.run_id,
+			pid: q.pid,
+			started: q.started,
+			reason: q.reason.slice(0, 500),
+			now: q.now,
+		});
+	});
+}
+
+export function noteQuarantineCheck(
+	db: Database,
+	id: string,
+	check: string,
+	now: string,
+): void {
+	db.query(
+		"UPDATE managed_quarantine SET last_check = ?, last_checked_at = ? WHERE id = ? AND released_at IS NULL",
+	).run(check.slice(0, 500), now, id);
+}
+
+/**
+ * Release on objective evidence (see proc.resolveRecorded). If that was the task's last open
+ * quarantine and a cancel is pending, the cancel completes now; the run's child pid is cleared.
+ */
+export function releaseQuarantine(
+	db: Database,
+	q: Quarantine,
+	evidence: string,
+	now: string,
+): void {
+	tx(db, () => {
+		db.query(
+			"UPDATE managed_quarantine SET released_at = ?, release_evidence = ?, last_check = ?, last_checked_at = ? WHERE id = ? AND released_at IS NULL",
+		).run(now, evidence.slice(0, 500), evidence.slice(0, 500), now, q.id);
+		if (q.run_id) {
+			const run = getRun(db, q.run_id);
+			if (run?.child_pid === q.pid)
+				update(db, "managed_runs", q.run_id, {
+					child_pid: null,
+					child_started: null,
+					proc_phase: null,
+					proc_started_at: null,
+				});
+		}
+		if (openQuarantineFor(db, q.task_id).length > 0) return;
+		const task = getTask(db, q.task_id);
+		if (
+			task?.cancel_requested_at &&
+			task.lease_owner === null &&
+			canTransition(task.state, "cancelled")
+		)
+			update(db, "managed_tasks", task.id, {
+				state: "cancelled",
+				failure_kind: "cancelled",
+				state_detail: `cancelled; ${evidence}`.slice(0, 1000),
+				fence_token: task.fence_token + 1,
+			});
 	});
 }

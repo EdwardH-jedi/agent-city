@@ -80,6 +80,8 @@ export const FailureKind = z.enum([
 	"no_changes",
 	"scope_violation",
 	"candidate_mutated",
+	// stored evidence bytes no longer match what was recorded/hashed
+	"evidence_invalid",
 	"verification_failed",
 	"review_invalid",
 	"review_rejected",

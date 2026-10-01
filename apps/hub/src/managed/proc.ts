@@ -26,6 +26,10 @@ export interface RunOptions {
 	onSpawn?: (id: ProcessIdentity) => void;
 	/** Complete stdout lines as they arrive (independent of the capture cap). */
 	onStdoutLine?: (line: string) => void;
+	/** Longest stdout line handed to onStdoutLine; longer lines are dropped. Default 1 MiB. */
+	maxLineBytes?: number;
+	/** Process inspection/termination (injectable for fault tests). Default: the host. */
+	processOps?: ProcessOps;
 }
 
 export interface RunResult {
@@ -45,6 +49,12 @@ export interface RunResult {
 	durationMs: number;
 	/** The child's process group no longer exists. false = something may still be running. */
 	terminationConfirmed: boolean;
+	/**
+	 * Set when the run had to be settled without proof that everything it started is gone: the kill
+	 * could not be confirmed, or the output pipes stayed open after the leader exited (a descendant
+	 * outside the group still holds them). Callers must quarantine `pid`.
+	 */
+	unresolved: string | null;
 }
 
 export const MAX_LINE_BYTES = 1_048_576;
@@ -86,6 +96,26 @@ export function processStarted(pid: number): string | null {
 	});
 	const out = r.status === 0 ? r.stdout.trim() : "";
 	return out.length > 0 ? out : null;
+}
+
+/** What a pid currently is. `error` = the inspection itself failed — never evidence of absence. */
+export type Inspection =
+	| { state: "absent" }
+	| { state: "present"; started: string }
+	| { state: "error"; error: string };
+
+export function inspectProcess(pid: number): Inspection {
+	const r = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+		encoding: "utf8",
+		timeout: 5_000,
+	});
+	if (r.error) return { state: "error", error: r.error.message };
+	const out = (r.stdout ?? "").trim();
+	// ps exits 1 with no output when the pid does not exist
+	if (r.status === 1 && out.length === 0) return { state: "absent" };
+	if (r.status === 0 && out.length > 0)
+		return { state: "present", started: out };
+	return { state: "error", error: `ps exited ${r.status}` };
 }
 
 /** Is the process group led by `pid` still there? */
@@ -133,23 +163,79 @@ export async function terminateGroup(
 	return waitGroupGone(pid, Math.max(graceMs, 1_000));
 }
 
+/** The host operations the orchestrator needs; tests inject failing variants. */
+export interface ProcessOps {
+	inspect(pid: number): Inspection;
+	/** "error" = could not tell. */
+	groupAlive(pid: number): boolean | "error";
+	terminateGroup(pid: number, graceMs: number): Promise<boolean>;
+}
+
+export const hostProcessOps: ProcessOps = {
+	inspect: inspectProcess,
+	groupAlive,
+	terminateGroup,
+};
+
+export type Resolution =
+	| { resolved: true; evidence: string }
+	| { resolved: false; reason: string };
+
 /**
- * Terminate a group recorded by an earlier hub process — only if `pid` still is that process
- * (same start time). Returns "gone" (nothing to kill), "killed", "foreign" (pid reused by something
- * else; untouched) or "unconfirmed".
+ * Decide, on objective evidence only, whether a recorded child (`pid` + its start time) and its
+ * process group are gone — terminating them if they still are ours. Never signals a pid that now
+ * belongs to another process. POSIX does not reuse a pid while a process group with that id still
+ * exists, so a recycled leader pid proves the original group is gone.
  */
-export async function terminateRecorded(
+export async function resolveRecorded(
 	id: ProcessIdentity,
 	graceMs: number,
-): Promise<"gone" | "killed" | "foreign" | "unconfirmed"> {
-	const now = processStarted(id.pid);
-	if (now === null) {
-		// leader exited; members of its group may remain
-		if (!groupAlive(id.pid)) return "gone";
-		return (await terminateGroup(id.pid, graceMs)) ? "killed" : "unconfirmed";
+	ops: ProcessOps = hostProcessOps,
+): Promise<Resolution> {
+	const leader = ops.inspect(id.pid);
+	if (leader.state === "error")
+		return { resolved: false, reason: `inspection failed: ${leader.error}` };
+	if (leader.state === "present") {
+		if (id.started === null)
+			return {
+				resolved: false,
+				reason:
+					"process start time was never recorded; identity cannot be verified",
+			};
+		if (leader.started !== id.started)
+			return {
+				resolved: true,
+				evidence:
+					"pid was recycled by an unrelated process (start time differs); the original process group no longer exists — nothing was signalled",
+			};
+		return (await ops.terminateGroup(id.pid, graceMs))
+			? {
+					resolved: true,
+					evidence: "process group terminated and confirmed gone",
+				}
+			: { resolved: false, reason: "termination could not be confirmed" };
 	}
-	if (id.started === null || now !== id.started) return "foreign";
-	return (await terminateGroup(id.pid, graceMs)) ? "killed" : "unconfirmed";
+	// leader absent: remaining members of its group (if any) are still ours
+	const group = ops.groupAlive(id.pid);
+	if (group === "error")
+		return {
+			resolved: false,
+			reason: "inspection failed: process group state unknown",
+		};
+	if (!group)
+		return {
+			resolved: true,
+			evidence: "process and its process group are gone",
+		};
+	return (await ops.terminateGroup(id.pid, graceMs))
+		? {
+				resolved: true,
+				evidence: "remaining group members terminated and confirmed gone",
+			}
+		: {
+				resolved: false,
+				reason: "remaining group members could not be terminated",
+			};
 }
 
 class Capture {
@@ -177,8 +263,13 @@ class Capture {
 	}
 }
 
+/** After the leader exits, how long the pipes may stay open before the run is settled anyway. */
+export const PIPE_CLOSE_GRACE_MS = 1_000;
+
 export function runProcess(opts: RunOptions): Promise<RunResult> {
 	const started = Date.now();
+	const ops = opts.processOps ?? hostProcessOps;
+	const maxLine = opts.maxLineBytes ?? MAX_LINE_BYTES;
 	const out = new Capture(opts.maxOutputBytes);
 	const err = new Capture(opts.maxOutputBytes);
 	const result: RunResult = {
@@ -196,6 +287,7 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 		lineOverflow: false,
 		durationMs: 0,
 		terminationConfirmed: true,
+		unresolved: null,
 	};
 	const [file, ...args] = opts.argv;
 
@@ -225,32 +317,66 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 		let dropping = false;
 		let killing: Promise<boolean> | null = null;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		// independent bounds: the promise settles even if 'close' never comes
+		let settleTimer: ReturnType<typeof setTimeout> | undefined;
+		let pipeTimer: ReturnType<typeof setTimeout> | undefined;
 		const pid = child.pid;
 
 		const kill = () => {
-			if (pid !== undefined && !killing)
-				killing = terminateGroup(pid, opts.killGraceMs);
+			if (pid !== undefined && !killing) {
+				killing = ops.terminateGroup(pid, opts.killGraceMs);
+				// SIGTERM grace + SIGKILL wait + slack; after that we stop waiting for 'close'.
+				settleTimer ??= setTimeout(
+					() =>
+						void finish("the process did not finish after it was terminated"),
+					opts.killGraceMs +
+						Math.max(opts.killGraceMs, 1_000) +
+						PIPE_CLOSE_GRACE_MS,
+				);
+			}
 		};
 		const onAbort = () => {
 			result.aborted = true;
 			kill();
 		};
 
-		const finish = async () => {
+		const emitLine = (line: Buffer) => {
+			if (line.length > maxLine) {
+				result.lineOverflow = true;
+				return;
+			}
+			opts.onStdoutLine?.(line.toString("utf8"));
+		};
+
+		const finish = async (unresolved: string | null = null) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			clearTimeout(settleTimer);
+			clearTimeout(pipeTimer);
 			opts.signal?.removeEventListener("abort", onAbort);
-			if (pid !== undefined) {
-				// The leader is gone; nothing of its group may outlive the run.
-				const confirmed = killing
-					? await killing
-					: await terminateGroup(pid, opts.killGraceMs);
-				result.terminationConfirmed =
-					confirmed || (await terminateGroup(pid, opts.killGraceMs));
+			if (unresolved) {
+				// stop reading; whatever still holds the pipes is outside our control
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+				child.stdin?.destroy();
 			}
-			if (partial.length > 0 && !result.lineOverflow)
-				opts.onStdoutLine?.(partial.toString("utf8"));
+			if (pid !== undefined) {
+				// The leader is gone (or abandoned); nothing of its group may outlive the run.
+				const confirmed = killing
+					? await Promise.race([
+							killing,
+							sleep(opts.killGraceMs * 3 + 1_000).then(() => false),
+						])
+					: await ops.terminateGroup(pid, opts.killGraceMs);
+				result.terminationConfirmed =
+					confirmed || (await ops.terminateGroup(pid, opts.killGraceMs));
+				if (!result.terminationConfirmed)
+					unresolved ??= "the process group could not be confirmed terminated";
+			}
+			result.unresolved = unresolved;
+			if (unresolved) result.terminationConfirmed = false;
+			if (partial.length > 0 && !dropping) emitLine(partial);
 			result.stdout = out.text();
 			result.stderr = err.text();
 			result.stdoutTruncated = out.truncated;
@@ -270,7 +396,11 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 		result.spawned = true;
 		result.pid = pid;
 		try {
-			opts.onSpawn?.({ pid, started: processStarted(pid) });
+			const id = ops.inspect(pid);
+			opts.onSpawn?.({
+				pid,
+				started: id.state === "present" ? id.started : null,
+			});
 		} catch {
 			// a bookkeeping failure must not leak the child: stop it
 			result.aborted = true;
@@ -286,12 +416,14 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 				if (nl === -1) break;
 				const head = rest.subarray(0, nl);
 				if (dropping) dropping = false;
-				else opts.onStdoutLine(Buffer.concat([partial, head]).toString("utf8"));
+				else if (partial.length + head.length > maxLine)
+					result.lineOverflow = true;
+				else emitLine(Buffer.concat([partial, head]));
 				partial = Buffer.alloc(0);
 				rest = rest.subarray(nl + 1);
 			}
 			if (dropping) return;
-			if (partial.length + rest.length > MAX_LINE_BYTES) {
+			if (partial.length + rest.length > maxLine) {
 				result.lineOverflow = true;
 				dropping = true;
 				partial = Buffer.alloc(0);
@@ -310,6 +442,14 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 			result.signal = sig;
 			// Leftover group members can hold the pipes open and delay 'close'; reap them now.
 			kill();
+			// A descendant that left the group can hold the pipes forever: bound the wait.
+			pipeTimer = setTimeout(
+				() =>
+					void finish(
+						"the output pipes stayed open after the process exited (a descendant outside its process group may still be running)",
+					),
+				opts.killGraceMs + PIPE_CLOSE_GRACE_MS,
+			);
 		});
 		child.on("close", () => void finish());
 

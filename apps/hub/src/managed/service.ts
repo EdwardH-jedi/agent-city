@@ -18,7 +18,11 @@ import {
 	policyHash,
 	sha256Hex,
 } from "./config.ts";
-import { ArtifactAccessError, readArtifact } from "./evidence.ts";
+import {
+	ArtifactAccessError,
+	evidenceProblems,
+	readArtifact,
+} from "./evidence.ts";
 import {
 	type GitCtx,
 	GitError,
@@ -32,6 +36,7 @@ import {
 	getTask,
 	IdempotencyConflictError,
 	listArtifacts,
+	listQuarantine,
 	listReviews,
 	listRuns,
 	listTasks,
@@ -191,8 +196,14 @@ export function runTask(
 		nowIso(deps),
 	);
 	if (!res) throw new ServiceError(404, "not_found", "no such task");
+	if (res.quarantined)
+		throw new ServiceError(
+			409,
+			"process_quarantined",
+			"a child process of this task could not be confirmed terminated; it cannot run again until that process is proven gone",
+		);
 	if (res.queued) deps.onChange?.(id);
-	return res;
+	return { task: res.task, queued: res.queued };
 }
 
 /** Persist the cancel intent (idempotent). The worker confirms process termination. */
@@ -209,13 +220,23 @@ export interface ResultIntegrity {
 	reason: string | null;
 }
 
+export interface EvidenceIntegrity {
+	/** Every stored artifact of the result run still has its recorded bytes and manifest links. */
+	intact: boolean;
+	problems: string[];
+}
+
 export interface TaskDetail {
 	task: ManagedTask;
 	runs: ManagedRun[];
 	reviews: ManagedReview[];
 	artifacts: ManagedArtifact[];
-	/** Only for human_ready tasks: checked against the workspace at read time. */
+	/** Workspace integrity — only for human_ready tasks: checked against the worktree at read time. */
 	integrity: ResultIntegrity | null;
+	/** Evidence integrity of the result run (or the newest run with a candidate), checked at read time. */
+	evidence_integrity: EvidenceIntegrity | null;
+	/** Child processes of this task whose termination is not yet proven (blocks Run / Cancel). */
+	quarantine: { pid: number; reason: string; last_check: string | null }[];
 }
 
 export async function taskDetail(
@@ -243,12 +264,37 @@ export async function taskDetail(
 			}
 		}
 	}
+	const artifacts = listArtifacts(deps.db, id);
+	const evidenceRun =
+		runs.find((r) => r.id === task.result_run_id) ??
+		[...runs].reverse().find((r) => r.manifest_hash !== null);
+	const evidence_integrity: EvidenceIntegrity | null = evidenceRun
+		? (() => {
+				const problems = evidenceProblems(
+					deps.config.artifacts_root,
+					artifacts.filter((a) => a.run_id === evidenceRun.id),
+					{
+						manifest_hash: evidenceRun.manifest_hash,
+						candidate_sha: evidenceRun.candidate_sha,
+					},
+				);
+				return { intact: problems.length === 0, problems };
+			})()
+		: null;
 	return {
 		task,
 		runs,
 		reviews: listReviews(deps.db, id),
-		artifacts: listArtifacts(deps.db, id),
+		artifacts,
 		integrity,
+		evidence_integrity,
+		quarantine: listQuarantine(deps.db, { open: true, taskId: id }).map(
+			(q) => ({
+				pid: q.pid,
+				reason: q.reason,
+				last_check: q.last_check,
+			}),
+		),
 	};
 }
 
@@ -273,7 +319,13 @@ export function readTaskArtifact(
 		return { artifact, text, truncated: truncated || artifact.truncated };
 	} catch (err) {
 		if (err instanceof ArtifactAccessError)
-			throw new ServiceError(404, "not_found", "artifact is not available");
+			throw err.code === "integrity"
+				? new ServiceError(
+						409,
+						"artifact_integrity",
+						`artifact failed its integrity check: ${err.message}`,
+					)
+				: new ServiceError(404, "not_found", "artifact is not available");
 		throw err;
 	}
 }
