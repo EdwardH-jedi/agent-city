@@ -30,10 +30,17 @@ Resume from this file + `git log` / `git diff`, never from memory.
 - [~] Phase 5 — optional: A (observed-sessions races) ✔, B (collector spool fallback) ✔, D (state-machine table) ✔, E (read-only diagnostics) ✔, C (task navigation) ✔; extra
   finding fixed: `ps lstart` compared under fixed locale/TZ. All optional items done.
 
+## State at stop
+
+- HEAD `6996fde` + a docs commit; all mandatory phases and optional A–E done; `bun run verify` green.
+- Not done / blocked: hosted CI run (not pushed), any live provider check (forbidden here), OS-level
+  isolation (out of scope).
+
 ## Temporary resources
 
-- `$TMPDIR/ac011-*` run directories (test logs). Tests create their own mkdtemp fixtures and remove them.
+- `$TMPDIR/ac011-*` run directories (test logs) and `$TMPDIR/agentcity-browser-evidence-*` (gate
+  screenshots, synthetic). Tests create their own mkdtemp fixtures and remove them. Safe to delete.
 
 ## Next command
 
-`cd ../agent-city-v011 && bun run verify` (final verification + report)
+`cd ../agent-city-v011 && bun run verify` — then an independent review of `923854d..HEAD`

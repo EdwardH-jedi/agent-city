@@ -91,3 +91,18 @@ Tests: `H` = `apps/hub/src/managed/hardening.test.ts`, `P` = `provider-hardening
 | E Read-only diagnostics | `managed-view.test.ts` "read-only diagnostics" (4) + browser failure-path assertion | `managed-view.ts diagnose` (stage, reason, last committed state, workspace/evidence integrity, next safe action — never an override), `Tasks.tsx` Diagnostics panel | PASS |
 | C Task navigation | browser checks "deep links …", "keyboard: Enter …", "offline …" (24 checks total) | `Tasks.tsx`: `#tasks/<id>` deep link restored on refresh and kept current (no history spam), unknown id explained + link reset, focus moves to the opened detail, rows keyboard-selectable, explicit loading / offline (keeps last state) / not-found states; `App.tsx` tab follows `#tasks…` | PASS |
 | (found) `ps lstart` locale/TZ | `proc.test.ts` "TZ / locale … do not change the recorded start time" | `proc.ts` `PS_ENV` (`LC_ALL=C TZ=UTC`) for every start-time read | PASS |
+
+## Final verification (HEAD `6996fde`, disposable HOME / AGENTCITY_HOME)
+
+| Command | Result | Duration |
+| --- | --- | --- |
+| `bun run verify` (lint → typecheck incl. e2e → `bun test` → check:secrets → build:web → managed:demo → test:browser) | PASS | 85 s |
+| … `bun test` | 541 pass / 0 fail, 28 files | 58 s |
+| … `managed:demo` | 8/8 scenarios as expected | — |
+| … `test:browser` | 24/24 checks | ~25 s |
+| `bun run test:lifecycle` ×3 (after the ×5 earlier) | 60/60 each | ~29 s each |
+| hosted CI (`.github/workflows/ci.yml`) | NOT RUN (never pushed) | — |
+| live provider preflight / model call | NOT RUN (forbidden in this task) | — |
+
+Leftover processes after the run: none. Temporary files left on purpose: `agentcity-browser-evidence-*`
+screenshot directories (synthetic data) and `ac011-*` log directories under `$TMPDIR`.
