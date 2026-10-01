@@ -164,7 +164,10 @@ the bound review are.
   recycled pid proving the group is gone). A descendant that left its process group and still holds
   the output pipes is released only when the *same* hub process sees the pipes close; after a
   restart that cannot be observed and the quarantine stays — stop the stray process yourself. There
-  is deliberately no dismiss button.
+  is deliberately no dismiss button. **Consequence:** such a quarantine never releases after a
+  restart, and while it is open no managed task can run at all (permanent fail-closed lockout).
+  Whether to keep that, or to define a documented out-of-band procedure for an operator who has
+  verified the process is gone, is an open decision for review.
 - Evidence integrity (v0.1.1): reviews and artifact views use one verified read of the full stored
   bytes (size + sha256 + manifest links). Changed, truncated, missing or symlinked evidence blocks the
   review (`evidence_invalid`) and the artifact API answers `409 artifact_integrity`.
