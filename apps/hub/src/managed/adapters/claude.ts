@@ -38,6 +38,7 @@ import {
 	implementationPrompt,
 	obj,
 	parseJsonLine,
+	protocolLoss,
 	providerEnv,
 	settled,
 	str,
@@ -373,6 +374,15 @@ export function createClaudeImplementer(
 				return failed(
 					classifyFailure(errorText, stream.retryErrors),
 					`claude reported ${result.subtype ?? "an error"}: ${redact(resultText.slice(0, 300))}`,
+				);
+
+			// A success after a lost or broken record is not trusted: that record may have been the
+			// failure (stream-json: one JSON object per stdout line).
+			const loss = protocolLoss(r, stream.malformed);
+			if (loss)
+				return failed(
+					"provider_output_invalid",
+					`claude protocol output is incomplete (${loss}); its result is not trusted`,
 				);
 
 			// The implementation contract is structured output — or, failing that, the result text as

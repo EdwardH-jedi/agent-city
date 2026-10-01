@@ -28,6 +28,7 @@ import {
 	classifyFailure,
 	obj,
 	parseJsonLine,
+	protocolLoss,
 	providerEnv,
 	REVIEW_JSON_SCHEMA,
 	readFileBounded,
@@ -304,6 +305,16 @@ export function createCodexReviewer(cfg: CodexProviderConfig): ReviewAdapter {
 						detail: `codex exited ${r.exitCode}: ${redact((stream.errors[0] ?? r.stderr).slice(0, 300))}`,
 					};
 				}
+
+				// an explicit turn.failed may be exactly the record that was lost
+				const loss = protocolLoss(r, stream.malformed);
+				if (loss)
+					return {
+						...meta,
+						ok: false,
+						kind: "provider_output_invalid",
+						detail: `codex protocol output is incomplete (${loss}); its verdict is not trusted`,
+					};
 
 				const fromFile = readFileBounded(outFile, LAST_MESSAGE_MAX_BYTES);
 				if (fromFile.truncated)

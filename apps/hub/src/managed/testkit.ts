@@ -299,6 +299,19 @@ switch (mode) {
 		edit();
 		result({ subtype: "success", is_error: false, result: "I made the change." });
 		break;
+	// a lost or broken protocol record, then an apparently valid success
+	case "oversized_then_success":
+	case "oversized_error_then_success":
+	case "malformed_then_success":
+		out(JSON.parse(init));
+		if (mode === "oversized_then_success")
+			out({ type: "assistant", message: { content: [{ type: "text", text: "x".repeat(1_100_000) }] } });
+		else if (mode === "oversized_error_then_success")
+			result({ subtype: "error_during_execution", is_error: true, result: "e".repeat(1_100_000) });
+		else process.stdout.write("this line is not a protocol record\\n");
+		edit();
+		result({ subtype: "success", is_error: false, result: "done", structured_output: { contract: "agentcity.implementation/v1", status: "completed", summary: "after a lost record" } });
+		break;
 	default: {
 		// a line split across two writes, then stderr noise, a thinking block and a tool call
 		process.stdout.write(init.slice(0, 20));
@@ -370,6 +383,15 @@ switch (mode) {
 	case "reject_once":
 		writeFileSync(outFile, verdict(existsSync(join(dir, "codex.rejected"))));
 		writeFileSync(join(dir, "codex.rejected"), "1");
+		break;
+	// an explicit failure that is lost (oversized) or a broken record, then a valid approval + exit 0
+	case "oversized_failure":
+	case "malformed_then_approve":
+		if (mode === "oversized_failure")
+			out({ type: "turn.failed", error: { message: "f".repeat(1_100_000) } });
+		else process.stdout.write("{\\"type\\": \\"turn.failed\\", \\"error\\": \\n");
+		out({ type: "item.completed", item: { type: "agent_message", text: verdict(true) } });
+		writeFileSync(outFile, verdict(true));
 		break;
 	default:
 		out({ type: "item.completed", item: { type: "reasoning", text: "PRIVATE-REASONING-MARKER" } });

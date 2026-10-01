@@ -195,6 +195,24 @@ export async function checkExecutable(
 	return { ok: true, detail: `${name} ${version ?? ""}`.trim(), version };
 }
 
+/**
+ * Protocol loss, as opposed to diagnostic truncation. In both providers' JSONL modes every stdout
+ * line is a protocol record (diagnostics go to stderr; blank lines are ignored; unknown event types
+ * are tolerated). A record dropped for its size, or one that does not parse, may have been the one
+ * that reported failure — so a later terminal success cannot be trusted. Capture caps (stdout /
+ * stderr / transcript truncation) only shorten the stored log and are NOT protocol loss.
+ */
+export function protocolLoss(
+	r: Pick<RunResult, "lineOverflow">,
+	malformed: number,
+): string | null {
+	const lost: string[] = [];
+	if (r.lineOverflow) lost.push("a record over the line limit was dropped");
+	if (malformed > 0)
+		lost.push(`${malformed} stdout line(s) were not valid records`);
+	return lost.length > 0 ? lost.join("; ") : null;
+}
+
 /** Parse one JSONL line; null when it is not a JSON object. */
 export function parseJsonLine(line: string): Record<string, unknown> | null {
 	const t = line.trim();

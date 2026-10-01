@@ -23,6 +23,7 @@ import {
 	runTask,
 	ServiceError,
 	submitTask,
+	taskDetail,
 } from "./service.ts";
 import { getTask, listQuarantine } from "./store.ts";
 import {
@@ -257,4 +258,56 @@ describe("C1 an unresolved preflight child stops every later provider launch", (
 			(await checkExecutable(fakeCtx(result({}), fx.dir), exe, fx.dir)).ok,
 		).toBe(true);
 	});
+});
+
+// ── C2 ──────────────────────────────────────────────────────────────────────
+
+describe("C2 lost or malformed protocol events never permit success", () => {
+	const reviewLaunched = (fx: Fixture) =>
+		stubCalls(fx, "codex").some(
+			(c) => c.argv[0] === "exec" && c.argv.includes("--json"),
+		);
+
+	for (const mode of [
+		"oversized_then_success",
+		"oversized_error_then_success",
+		"malformed_then_success",
+	])
+		test(`claude ${mode} → provider_output_invalid; nothing downstream starts`, async () => {
+			const fx = live();
+			setStubMode(fx, "claude", mode);
+			const run = await submitAndRun(fx);
+			const d = await taskDetail(run.deps, run.id);
+			expect(d.task.state).not.toBe("human_ready");
+			expect(d.task.failure_kind).toBe("provider_output_invalid");
+			expect(d.runs[0]?.candidate_sha).toBeNull();
+			expect(d.reviews).toHaveLength(0);
+			expect(reviewLaunched(fx)).toBe(false);
+		}, 30_000);
+
+	for (const mode of ["oversized_failure", "malformed_then_approve"])
+		test(`codex ${mode} then a valid approval + exit 0 → no valid review, never human_ready`, async () => {
+			const fx = live();
+			setStubMode(fx, "codex", mode);
+			const run = await submitAndRun(fx);
+			const d = await taskDetail(run.deps, run.id);
+			expect(reviewLaunched(fx)).toBe(true);
+			expect(d.task.state).not.toBe("human_ready");
+			expect(d.task.result_run_id).toBeNull();
+			expect(d.task.failure_kind).toBe("provider_output_invalid");
+			expect(d.reviews.filter((r) => r.valid)).toHaveLength(0);
+			expect(d.reviews.some((r) => r.verdict === "approve")).toBe(false);
+		}, 30_000);
+
+	test("controls: unknown event types, stderr diagnostics and capped capture still succeed", async () => {
+		// default stubs: a split line, stderr noise, an unknown event type, reasoning items
+		const fx = live();
+		const ok = await submitAndRun(fx);
+		expect(getTask(fx.db, ok.id)?.state).toBe("human_ready");
+		// ~1.2 MB of valid events with a 4 KiB capture cap: diagnostic truncation, not event loss
+		const big = live({ limits: { max_log_bytes: 4096 } });
+		setStubMode(big, "claude", "big");
+		const bigRun = await submitAndRun(big);
+		expect(getTask(big.db, bigRun.id)?.state).toBe("human_ready");
+	}, 30_000);
 });
