@@ -1,23 +1,24 @@
 // Hub data for the 2D view: REST snapshot + /ws live updates, with reconnect.
 // On every (re)connect the snapshot is re-fetched, so anything missed while disconnected is filled
 // in; live messages are merged by id so a message racing the snapshot is never lost or doubled.
-import type { Event, Provider, Repo, Session } from "@agent-city/schema";
+import type { Event, Repo, Session } from "@agent-city/schema";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	EVENT_LIMIT,
+	type EventFilter,
+	matchesFilter,
+	mergeDistricts,
+	mergeEventSnapshot,
 	mergeEvents,
 	mergeSessions,
 	parseHubMessage,
+	upsertRepo,
 } from "./merge.ts";
 
 export type RepoView = Repo & { active_sessions: number };
 export type Districts = Record<string, RepoView[]>;
 export type Conn = "connecting" | "open" | "reconnecting";
-export interface EventFilter {
-	repo: string | null;
-	provider: Provider | null;
-}
-
+export type { EventFilter };
 export { EVENT_LIMIT };
 
 const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000];
@@ -35,19 +36,6 @@ const eventsPath = (f: EventFilter) => {
 	return `/api/events?${q}`;
 };
 
-const matches = (e: Event, f: EventFilter) =>
-	(!f.repo || e.repo_id === f.repo) &&
-	(!f.provider || e.provider === f.provider);
-
-function upsertRepo(districts: Districts, repo: RepoView): Districts {
-	const next: Districts = {};
-	for (const [d, list] of Object.entries(districts)) {
-		next[d] = list.filter((r) => r.id !== repo.id);
-	}
-	next[repo.district] = [...(next[repo.district] ?? []), repo];
-	return next;
-}
-
 export function useHub(filter: EventFilter) {
 	const [districts, setDistricts] = useState<Districts>({});
 	const [sessions, setSessions] = useState<Session[]>([]);
@@ -58,16 +46,16 @@ export function useHub(filter: EventFilter) {
 	const [managedSeq, setManagedSeq] = useState(0);
 	const filterRef = useRef(filter);
 	filterRef.current = filter;
+	// latest-request-wins counters: a slower, older answer is dropped
+	const eventsSeq = useRef(0);
+	const snapshotSeq = useRef(0);
 
 	const loadEvents = useCallback(async (f: EventFilter) => {
+		const seq = ++eventsSeq.current;
 		const { events: list } = await getJson<{ events: Event[] }>(eventsPath(f));
-		// drop live rows that no longer match (filter changed), then merge the snapshot in
-		setEvents((cur) =>
-			mergeEvents(
-				cur.filter((e) => matches(e, f)),
-				list,
-			),
-		);
+		if (seq !== eventsSeq.current) return;
+		// merged under the filter that is current now, not the one this request was made with
+		setEvents((cur) => mergeEventSnapshot(cur, list, filterRef.current));
 	}, []);
 
 	const loadSessions = useCallback(async () => {
@@ -76,13 +64,16 @@ export function useHub(filter: EventFilter) {
 	}, []);
 
 	const loadSnapshot = useCallback(async () => {
+		const seq = ++snapshotSeq.current;
 		try {
 			const [r, s] = await Promise.all([
 				getJson<{ districts: Districts }>("/api/repos"),
 				getJson<{ sessions: Session[] }>("/api/sessions"),
 				loadEvents(filterRef.current),
 			]);
-			setDistricts(r.districts);
+			if (seq !== snapshotSeq.current) return;
+			// per repo the newer version wins: a late snapshot cannot undo a newer live `repo` frame
+			setDistricts((cur) => mergeDistricts(cur, r.districts));
 			setSessions((cur) => mergeSessions(cur, s.sessions));
 			setError(null);
 		} catch (err) {
@@ -128,7 +119,7 @@ export function useHub(filter: EventFilter) {
 					setManagedSeq((n) => n + 1);
 				} else if (msg.kind === "event") {
 					const e = msg.data as Event;
-					if (matches(e, filterRef.current))
+					if (matchesFilter(e, filterRef.current))
 						setEvents((cur) => mergeEvents([e], cur));
 				} else if (msg.kind === "session") {
 					setSessions((cur) => mergeSessions(cur, [msg.data as Session]));

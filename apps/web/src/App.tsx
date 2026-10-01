@@ -7,7 +7,7 @@ import type {
 	Session,
 	SessionStatus,
 } from "@agent-city/schema";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { liveCountByRepo } from "./merge.ts";
 import { Tasks } from "./Tasks.tsx";
 import {
@@ -287,11 +287,14 @@ function Events({
 	repoIds: string[];
 	now: number;
 }) {
+	// Every repo id seen in this page's lifetime stays selectable: deriving options only from the
+	// currently filtered events made the other repos disappear once one was selected.
+	const seen = useRef(new Set<string>());
 	const options = useMemo(() => {
-		const set = new Set(repoIds);
-		for (const e of events) if (e.repo_id) set.add(e.repo_id);
-		if (filter.repo) set.add(filter.repo);
-		return [...set].sort((a, b) => a.localeCompare(b));
+		for (const id of repoIds) seen.current.add(id);
+		for (const e of events) if (e.repo_id) seen.current.add(e.repo_id);
+		if (filter.repo) seen.current.add(filter.repo);
+		return [...seen.current].sort((a, b) => a.localeCompare(b));
 	}, [repoIds, events, filter.repo]);
 
 	return (

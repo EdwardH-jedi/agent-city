@@ -289,6 +289,53 @@ async function main(): Promise<number> {
 		await shot(page, "observed-sessions");
 	});
 
+	await step(
+		"observed events: a late answer for an old repo filter cannot inject its rows",
+		async () => {
+			for (const repo of ["local/gate-x", "local/gate-y"])
+				await fetch(`${hubUrl}/ingest`, {
+					method: "POST",
+					headers: {
+						authorization: `Bearer ${INGEST}`,
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({
+						id: `gate-${repo.slice(-1)}-${NONCE}`,
+						ts: new Date().toISOString(),
+						machine_id: "cockpit",
+						session_id: `gate-session-${repo.slice(-1)}-${NONCE}`,
+						provider: "claude",
+						type: "PostToolUse",
+						summary: `event of ${repo}`,
+						repo_id: repo,
+					}),
+				});
+			await page.reload();
+			const select = page.getByLabel("repo filter");
+			await select
+				.locator('option[value="local/gate-x"]')
+				.waitFor({ state: "attached" });
+			await page.route("**/api/events?**", async (route) => {
+				if (route.request().url().includes("gate-x")) await sleep(1_200);
+				await route.continue();
+			});
+			await select.selectOption("local/gate-x");
+			await select.selectOption("local/gate-y");
+			await page
+				.locator("ol.events li")
+				.filter({ hasText: "event of local/gate-y" })
+				.waitFor();
+			await sleep(1_600); // the late gate-x answer lands now
+			const rows = await page.locator("ol.events li").allTextContents();
+			assert(
+				rows.length > 0 && rows.every((r) => r.includes("gate-y")),
+				`rows: ${rows.join(" | ")}`,
+			);
+			await page.unrouteAll();
+			await select.selectOption("");
+		},
+	);
+
 	await step("wrong token → rejected, gate shown again", async () => {
 		await page.goto(`${base}/#tasks`);
 		await shot(page, "token-gate");
