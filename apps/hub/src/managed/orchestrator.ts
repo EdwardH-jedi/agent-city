@@ -37,6 +37,7 @@ import { findRepo, type ManagedConfig, sha256Hex } from "./config.ts";
 import {
 	buildManifest,
 	EvidenceError,
+	redactDiff,
 	redactLog,
 	runVerification,
 	type VerificationRun,
@@ -921,7 +922,8 @@ export class Orchestrator {
 			candidate,
 			config.limits.max_diff_bytes,
 		);
-		const diffStored = redactLog(diff.text, { truncated: diff.truncated });
+		// diff-aware: +/-/context prefixes must not hide multi-line secrets (stored = reviewed = served)
+		const diffStored = redactDiff(diff.text, { truncated: diff.truncated });
 		const files = await changedFiles(this.git, worktree, t.base_sha, candidate);
 		const results = runs.map((r) => r.result);
 		const { json, hash } = buildManifest({

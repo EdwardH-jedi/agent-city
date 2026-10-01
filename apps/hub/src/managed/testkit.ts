@@ -299,6 +299,17 @@ switch (mode) {
 		edit();
 		result({ subtype: "success", is_error: false, result: "I made the change." });
 		break;
+	// writes the files named in <bin>/claude.payload.json ({ "rel/path": "content" }, built by a test)
+	case "write_payload": {
+		out(JSON.parse(init));
+		const payload = JSON.parse(read("claude.payload.json") || "{}") as Record<string, string>;
+		for (const [rel, content] of Object.entries(payload)) {
+			mkdirSync(join(rel, ".."), { recursive: true });
+			writeFileSync(rel, content);
+		}
+		result({ subtype: "success", is_error: false, result: "done", structured_output: { contract: "agentcity.implementation/v1", status: "completed", summary: "payload written" } });
+		break;
+	}
 	// a lost or broken protocol record, then an apparently valid success
 	case "oversized_then_success":
 	case "oversized_error_then_success":

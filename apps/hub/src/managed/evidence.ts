@@ -151,6 +151,160 @@ export function redactLog(
 	return out.join("\n");
 }
 
+/**
+ * redactLog's multi-line protections over ONE file version, line for line: output i belongs to
+ * input line i (null = a private-key body line, dropped). A `\`-continued chain is joined (same
+ * bounds as redactLog) and redacted as one unit; if that masks anything, each line of the chain
+ * keeps only its text before the first masked position.
+ */
+function maskVersion(lines: readonly string[]): (string | null)[] {
+	const out: (string | null)[] = [];
+	let inKey = false;
+	let yamlIndent: number | null = null;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i] as string;
+		if (inKey) {
+			out.push(null);
+			if (KEY_END.test(line)) inKey = false;
+			continue;
+		}
+		if (yamlIndent !== null) {
+			const ws = /^[ \t]*/.exec(line)?.[0] ?? "";
+			if (line.trim() === "") {
+				out.push(line);
+				continue;
+			}
+			if (ws.length > yamlIndent) {
+				out.push(`${ws}${REDACTED}`); // still inside the block
+				continue;
+			}
+			yamlIndent = null;
+		}
+		if (KEY_BEGIN.test(line)) {
+			out.push(REDACTED);
+			inKey = !KEY_END.test(line);
+			continue;
+		}
+		const head = YAML_HEAD.exec(line);
+		if (head && isSecretName(head[3] ?? "")) {
+			out.push(redactLine(line));
+			yamlIndent = (head[1] ?? "").length;
+			continue;
+		}
+		if (!CONTINUED.test(line)) {
+			out.push(redactLine(line));
+			continue;
+		}
+		const segs = [{ lead: 0, text: line }];
+		let j = i;
+		let len = line.length;
+		for (;;) {
+			const last = segs[segs.length - 1] as { lead: number; text: string };
+			if (
+				!CONTINUED.test(last.text) ||
+				j + 1 >= lines.length ||
+				j - i >= 20 ||
+				len >= 8_000
+			)
+				break;
+			last.text = last.text.replace(CONTINUED, "");
+			j++;
+			const next = lines[j] as string;
+			const lead = /^[ \t]*/.exec(next)?.[0].length ?? 0;
+			segs.push({ lead, text: next.slice(lead) });
+			len += next.length - lead;
+		}
+		const joined = segs.map((s) => s.text).join("");
+		const masked = redactLine(joined);
+		if (masked === joined) {
+			for (let k = i; k <= j; k++) out.push(redactLine(lines[k] as string));
+		} else {
+			let keep = 0;
+			while (keep < joined.length && joined[keep] === masked[keep]) keep++;
+			let offset = 0;
+			segs.forEach((s, k) => {
+				const orig = lines[i + k] as string;
+				const end = offset + s.text.length;
+				out.push(
+					end <= keep
+						? orig
+						: `${orig.slice(0, s.lead + Math.max(0, keep - offset))}${REDACTED}`,
+				);
+				offset = end;
+			});
+		}
+		i = j;
+	}
+	return out;
+}
+
+/**
+ * Redact a unified diff (`git diff` output) with the same protections as redactLog. Line prefixes
+ * (`+`, `-`, ` `) would hide a YAML block or a `\`-continued token from line-based detection, and a
+ * secret's lines may be split between context and changed lines. So per file, the two versions the
+ * diff shows — context + removed lines, context + added lines — are each analysed as text without
+ * prefixes, and the result is mapped back onto the original lines with their prefixes. A context
+ * line the two versions mask differently is masked whole. Headers (`diff --git`, `---`, `+++`,
+ * `@@ …`) are redacted line by line; line structure is kept (only key-block bodies are dropped).
+ */
+export function redactDiff(
+	text: string,
+	o: { truncated?: boolean } = {},
+): string {
+	const src = o.truncated ? dropTrailingFragment(text) : text;
+	const lines = src.split(/\r?\n/);
+	const out: (string | null)[] = lines.map(() => null);
+	let file: number[] = []; // content-line indices of the current file
+	let inHunk = false;
+	const content = (i: number) => (lines[i] as string).slice(1);
+	const flush = () => {
+		const oldIdx = file.filter((i) => !(lines[i] as string).startsWith("+"));
+		const newIdx = file.filter((i) => !(lines[i] as string).startsWith("-"));
+		const oldOut = maskVersion(oldIdx.map(content));
+		const newOut = maskVersion(newIdx.map(content));
+		const oldOf = new Map(oldIdx.map((li, k) => [li, oldOut[k] ?? null]));
+		const newOf = new Map(newIdx.map((li, k) => [li, newOut[k] ?? null]));
+		for (const li of file) {
+			const line = lines[li] as string;
+			const p = line.slice(0, 1);
+			let v: string | null;
+			if (p === "+") v = newOf.get(li) ?? null;
+			else if (p === "-") v = oldOf.get(li) ?? null;
+			else {
+				const a = oldOf.get(li) ?? null;
+				const b = newOf.get(li) ?? null;
+				v =
+					a === b
+						? a
+						: a === null || b === null
+							? null
+							: `${/^[ \t]*/.exec(content(li))?.[0] ?? ""}${REDACTED}`;
+			}
+			out[li] = v === null ? null : line === "" ? "" : `${p}${v}`;
+		}
+		file = [];
+	};
+	lines.forEach((line, i) => {
+		if (line.startsWith("diff --git ")) {
+			flush();
+			inHunk = false;
+		} else if (line.startsWith("@@")) inHunk = true;
+		else if (
+			inHunk &&
+			(line === "" || line[0] === "+" || line[0] === "-" || line[0] === " ")
+		) {
+			file.push(i);
+			return;
+		} else if (inHunk && line.startsWith("\\")) {
+			out[i] = line; // "\ No newline at end of file"
+			return;
+		}
+		out[i] = redactLine(line);
+	});
+	flush();
+	return out.filter((l): l is string => l !== null).join("\n");
+}
+
 export interface ArtifactInput {
 	task_id: string;
 	run_id: string;
