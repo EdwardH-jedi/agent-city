@@ -2,6 +2,7 @@
 // The point of this file: a simulated result, a live result whose integration was never verified,
 // a failed attempt and a genuinely human-ready result must never look alike.
 import {
+	type FailureKind,
 	isActiveTaskState,
 	isTerminalTaskState,
 	type ManagedRun,
@@ -149,3 +150,120 @@ export const newerTask = (
 	incoming: Pick<ManagedTask, "rev">,
 	current: Pick<ManagedTask, "rev">,
 ): boolean => incoming.rev >= current.rev;
+
+export interface Diagnosis {
+	/** Where the attempt stopped (stage of the newest run), or null when nothing ran. */
+	stage: string | null;
+	/** Why it is not moving / what ended it. */
+	reason: string | null;
+	/** The last state the hub committed, and when. */
+	lastTransition: string;
+	workspace: "intact" | "changed" | "not checked";
+	evidence: "intact" | "invalid" | "not checked";
+	/** The next safe thing a person can do. Never an override of a safety check. */
+	nextAction: string;
+}
+
+const NEXT_FOR_KIND: Partial<Record<FailureKind, string>> = {
+	provider_auth:
+		"Sign in to the provider yourself (subscription login), check the auth settings in MANAGED_CONFIG, then Run again.",
+	provider_quota: "Wait for your plan's limit to reset, then Run again.",
+	provider_model:
+		"Pick a model your login can use in MANAGED_CONFIG, then Run again.",
+	provider_unavailable:
+		"Fix the provider executable / required controls reported in the detail (see managed:preflight), then Run again.",
+	approval_void:
+		"The task or the managed policy changed after approval: review the change, then Run again to re-approve.",
+	verification_missing:
+		"Configure verification commands for this repository in MANAGED_CONFIG, restart the hub, then Run again.",
+	verification_unavailable:
+		"Make the verification commands runnable (missing tool, timeout), then Run again.",
+	repo_invalid: "Fix the repository entry in MANAGED_CONFIG, then Run again.",
+	workspace_error:
+		"Check the repository and workspace root on disk, then Run again.",
+	evidence_invalid:
+		"Stored evidence was changed after it was recorded: treat this attempt as untrusted and create a new task or Run again.",
+	candidate_mutated:
+		"Something changed the workspace outside the pipeline: inspect it; create a new task or Run again for a fresh attempt.",
+	scope_violation:
+		"The change touched files outside the approved scope: adjust the task (scope or objective) and create a new task.",
+	no_changes:
+		"The implementer changed nothing: refine the objective and create a new task.",
+	verification_failed:
+		"Inspect the verification log; refine the task and create a new one.",
+	review_rejected:
+		"Read the review findings; refine the task and create a new one.",
+	repair_limit_exhausted:
+		"Read the last review findings; refine the task and create a new one (repairs are used up).",
+	review_invalid:
+		"The reviewer's output did not count; check the review log, then create a new task.",
+	provider_output_invalid:
+		"The implementer's output was not valid; check its log, then create a new task.",
+	provider_error:
+		"Check the provider log for the error, then create a new task.",
+	timeout:
+		"Raise the provider timeout in MANAGED_CONFIG if appropriate, then create a new task.",
+	interrupted:
+		"The hub stopped mid-stage: inspect the preserved workspace; Run again for a fresh attempt.",
+	internal_error: "Check the hub log for the error message, then Run again.",
+};
+
+/** Read-only diagnosis of one task (no controls, no overrides). */
+export function diagnose(
+	task: Pick<
+		ManagedTask,
+		"state" | "failure_kind" | "state_detail" | "updated_at" | "execution_mode"
+	>,
+	runs: readonly Pick<ManagedRun, "phase" | "attempt_no" | "state">[],
+	integrity: Integrity | null,
+	evidenceIntact: boolean | null,
+	quarantined: boolean,
+): Diagnosis {
+	const last = runs.at(-1);
+	const workspace = integrity
+		? integrity.intact
+			? "intact"
+			: "changed"
+		: "not checked";
+	const evidence =
+		evidenceIntact === null
+			? "not checked"
+			: evidenceIntact
+				? "intact"
+				: "invalid";
+	let nextAction: string;
+	if (quarantined)
+		nextAction =
+			"A child process could not be proven terminated: stop it yourself. The quarantine releases on its own once the process is gone; nothing else can run until then.";
+	else if (evidence === "invalid")
+		nextAction = NEXT_FOR_KIND.evidence_invalid ?? "";
+	else if (task.state === "human_ready")
+		nextAction =
+			workspace === "changed"
+				? "The workspace changed after review: inspect it; the reviewed candidate is no longer what is on disk."
+				: task.execution_mode === "simulated"
+					? "Simulated result: nothing to merge. Use it to check the pipeline, not the work."
+					: "Inspect the diff, evidence and review; merge or discard the branch yourself.";
+	else if (task.state === "draft")
+		nextAction = "Approve & run when the task is right.";
+	else if (task.state === "cancelled")
+		nextAction = "Nothing to do; create a new task if needed.";
+	else if (isActiveTaskState(task.state) || task.state === "queued")
+		nextAction = "Wait, or Cancel. The UI updates on its own.";
+	else
+		nextAction =
+			(task.failure_kind && NEXT_FOR_KIND[task.failure_kind]) ||
+			"Inspect the detail and logs.";
+	return {
+		stage: last
+			? `attempt ${last.attempt_no}: ${last.phase} (${last.state})`
+			: null,
+		reason: task.failure_kind
+			? `${task.failure_kind}: ${task.state_detail ?? "no detail recorded"}`
+			: (task.state_detail ?? null),
+		lastTransition: `${task.state} at ${task.updated_at}`,
+		workspace,
+		evidence,
+		nextAction,
+	};
+}

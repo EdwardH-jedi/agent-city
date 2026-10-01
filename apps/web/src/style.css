@@ -386,3 +386,10 @@ button.link {
 	white-space: pre-wrap;
 	word-break: break-word;
 }
+.diagnostics {
+	margin: 6px 0;
+}
+.diagnostics summary {
+	cursor: pointer;
+	color: var(--muted);
+}

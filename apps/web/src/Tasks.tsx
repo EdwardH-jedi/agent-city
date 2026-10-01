@@ -27,6 +27,7 @@ import {
 	blockingReason,
 	canCancel,
 	canRun,
+	diagnose,
 	type Integrity,
 	isActive,
 	modeBadge,
@@ -830,6 +831,15 @@ function TaskDetail({
 				</p>
 			)}
 			{reason && <p className="mnote mnote-warn">{reason}</p>}
+			<Diagnostics
+				diagnosis={diagnose(
+					task,
+					runs,
+					integrity,
+					evidence ? evidence.intact : null,
+					quarantine.length > 0,
+				)}
+			/>
 
 			<div className="actions">
 				{canRun(task) && quarantine.length === 0 && (
@@ -1053,5 +1063,29 @@ function TaskDetail({
 				</div>
 			)}
 		</div>
+	);
+}
+
+function Diagnostics({
+	diagnosis: d,
+}: {
+	diagnosis: ReturnType<typeof diagnose>;
+}) {
+	return (
+		<details className="diagnostics" data-testid="diagnostics">
+			<summary>Diagnostics — next: {d.nextAction}</summary>
+			<dl>
+				<dt>stopped at</dt>
+				<dd>{d.stage ?? "no attempt yet"}</dd>
+				<dt>reason</dt>
+				<dd>{d.reason ?? "—"}</dd>
+				<dt>last committed state</dt>
+				<dd>{d.lastTransition}</dd>
+				<dt>workspace integrity</dt>
+				<dd>{d.workspace}</dd>
+				<dt>evidence integrity</dt>
+				<dd>{d.evidence}</dd>
+			</dl>
+		</details>
 	);
 }

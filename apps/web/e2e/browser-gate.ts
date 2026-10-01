@@ -684,6 +684,17 @@ async function main(): Promise<number> {
 			await select(page, id);
 			await page.getByTestId("run-button").click();
 			await waitState(page, id, "failed");
+			const diag = page.getByTestId("diagnostics");
+			await diag.locator("summary").click();
+			const text = (await diag.textContent()) ?? "";
+			assert(
+				text.includes("verification log") && text.includes("verify (failed)"),
+				`diagnostics: ${text}`,
+			);
+			assert(
+				!/force|dismiss|unlock/i.test(text),
+				"diagnostics suggest an override",
+			);
 		},
 	);
 

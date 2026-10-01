@@ -4,6 +4,7 @@ import {
 	blockingReason,
 	canCancel,
 	canRun,
+	diagnose,
 	isActive,
 	modeBadge,
 	modelLabel,
@@ -212,5 +213,101 @@ describe("v0.1.1 form and ordering helpers", () => {
 		expect(newerTask({ rev: 3 }, { rev: 5 })).toBe(false);
 		expect(newerTask({ rev: 5 }, { rev: 5 })).toBe(true);
 		expect(newerTask({ rev: 6 }, { rev: 5 })).toBe(true);
+	});
+});
+
+describe("read-only diagnostics", () => {
+	const t = (over: Partial<ManagedTask>) =>
+		task({ updated_at: "2026-01-01T00:00:00.000Z", ...over });
+	const runs = [
+		{ phase: "verify" as const, attempt_no: 2, state: "failed" as const },
+	];
+
+	test("names the stage, the reason, the last transition and a safe next action", () => {
+		const d = diagnose(
+			t({
+				state: "blocked",
+				failure_kind: "provider_auth",
+				state_detail: "not logged in",
+			}),
+			runs,
+			null,
+			null,
+			false,
+		);
+		expect(d.stage).toBe("attempt 2: verify (failed)");
+		expect(d.reason).toBe("provider_auth: not logged in");
+		expect(d.lastTransition).toBe("blocked at 2026-01-01T00:00:00.000Z");
+		expect(d.nextAction).toContain("Sign in");
+		expect(d.workspace).toBe("not checked");
+	});
+
+	test("quarantine and invalid evidence take precedence; never suggests an override", () => {
+		const q = diagnose(
+			t({ state: "interrupted", failure_kind: "interrupted" }),
+			runs,
+			null,
+			null,
+			true,
+		);
+		expect(q.nextAction).toContain("stop it yourself");
+		const e = diagnose(
+			t({ state: "human_ready" }),
+			runs,
+			{ intact: true, reason: null },
+			false,
+			false,
+		);
+		expect(e.evidence).toBe("invalid");
+		expect(e.nextAction).toContain("untrusted");
+		for (const d of [q, e])
+			expect(d.nextAction).not.toMatch(/force|dismiss|unlock|override/i);
+	});
+
+	test("human-ready: simulated vs live vs changed workspace", () => {
+		expect(
+			diagnose(
+				t({ state: "human_ready" }),
+				runs,
+				{ intact: true, reason: null },
+				true,
+				false,
+			).nextAction,
+		).toContain("Simulated");
+		expect(
+			diagnose(
+				t({ state: "human_ready", execution_mode: "live" }),
+				runs,
+				{ intact: true, reason: null },
+				true,
+				false,
+			).nextAction,
+		).toContain("merge or discard");
+		expect(
+			diagnose(
+				t({ state: "human_ready" }),
+				runs,
+				{ intact: false, reason: "x" },
+				true,
+				false,
+			).workspace,
+		).toBe("changed");
+	});
+
+	test("every failure kind has a next action", () => {
+		for (const k of [
+			"approval_void",
+			"verification_missing",
+			"scope_violation",
+			"timeout",
+			"evidence_invalid",
+			"repair_limit_exhausted",
+			"provider_output_invalid",
+			"internal_error",
+		] as const)
+			expect(
+				diagnose(t({ state: "failed", failure_kind: k }), [], null, null, false)
+					.nextAction,
+			).not.toBe("Inspect the detail and logs.");
 	});
 });
