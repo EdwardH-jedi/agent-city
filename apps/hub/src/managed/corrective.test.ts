@@ -17,6 +17,7 @@ import type {
 	ImplementationAdapter,
 } from "./adapters/types.ts";
 import { EMPTY_META } from "./adapters/types.ts";
+import { canonicalJson, sha256Hex } from "./config.ts";
 import { readArtifactBytes, redactDiff } from "./evidence.ts";
 import { diffText } from "./git.ts";
 import { Orchestrator } from "./orchestrator.ts";
@@ -755,5 +756,83 @@ describe("C4 reader protections that stay in place", () => {
 			text: '{"ok":true}',
 			truncated: false,
 		});
+	});
+});
+
+// ── C5 ──────────────────────────────────────────────────────────────────────
+// Local tampering (someone with write access to the artifacts directory and the hub DB), not a
+// remote attack: the API is token-protected and the routes take ids, never paths.
+
+describe("C5 the artifact API serves only evidence bound to the reviewed manifest", () => {
+	async function reviewed() {
+		const fx = makeFixture();
+		fixtures.push(fx);
+		const run = await submitAndRun(fx);
+		expect(getTask(fx.db, run.id)?.state).toBe("human_ready");
+		const arts = listArtifacts(fx.db, run.id);
+		const byName = (n: string) => {
+			const a = arts.find((x) => x.name === n);
+			if (!a) throw new Error(`no ${n}`);
+			return a;
+		};
+		/** Replace a file AND update its row so the row-level check alone passes. */
+		const rewrite = (name: string, content: string) => {
+			const a = byName(name);
+			const bytes = Buffer.from(content, "utf8");
+			writeFileSync(join(fx.config.artifacts_root, a.rel_path), bytes);
+			fx.db.run(
+				"UPDATE managed_artifacts SET sha256 = ?, byte_len = ? WHERE id = ?",
+				[sha256Hex(bytes), bytes.length, a.id],
+			);
+			return sha256Hex(bytes);
+		};
+		return { fx, run, byName, rewrite, get: hubFor(fx) };
+	}
+
+	test("control: untampered evidence is served", async () => {
+		const { run, byName, get } = await reviewed();
+		for (const name of ["diff.patch", "manifest.json", "changed-files.json"])
+			expect(
+				(await get(`/tasks/${run.id}/artifacts/${byName(name).id}`)).status,
+			).toBe(200);
+	});
+
+	test("diff bytes replaced + row hash/length updated coherently, manifest unchanged → 409", async () => {
+		const { run, byName, rewrite, get } = await reviewed();
+		rewrite("diff.patch", "diff --git a/x b/x\n+TAMPERED-DIFF-CONTENT\n");
+		const res = await get(
+			`/tasks/${run.id}/artifacts/${byName("diff.patch").id}`,
+		);
+		expect(res.status).toBe(409);
+		expect(res.body).toContain("artifact_integrity");
+		expect(res.body).not.toContain("TAMPERED-DIFF-CONTENT");
+		// every artifact of the run is refused while its evidence does not verify as a unit
+		expect(
+			(await get(`/tasks/${run.id}/artifacts/${byName("manifest.json").id}`))
+				.status,
+		).toBe(409);
+	});
+
+	test("diff + manifest + run hash rewritten coherently → still 409: the review names the original manifest", async () => {
+		const { fx, run, byName, rewrite, get } = await reviewed();
+		const diffHash = rewrite(
+			"diff.patch",
+			"diff --git a/x b/x\n+TAMPERED-DIFF-CONTENT\n",
+		);
+		const manifestArt = byName("manifest.json");
+		const manifest = JSON.parse(
+			readArtifactBytes(fx.config.artifacts_root, manifestArt).toString("utf8"),
+		) as Record<string, unknown>;
+		const forged = canonicalJson({ ...manifest, diff_sha256: diffHash });
+		const forgedHash = rewrite("manifest.json", forged);
+		fx.db.run("UPDATE managed_runs SET manifest_hash = ? WHERE id = ?", [
+			forgedHash,
+			manifestArt.run_id,
+		]);
+		const res = await get(
+			`/tasks/${run.id}/artifacts/${byName("diff.patch").id}`,
+		);
+		expect(res.status).toBe(409);
+		expect(res.body).not.toContain("TAMPERED-DIFF-CONTENT");
 	});
 });

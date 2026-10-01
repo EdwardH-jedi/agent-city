@@ -489,29 +489,43 @@ export interface VerifiedEvidence {
 
 const verifyName = (i: number, name: string) => `verify-${i + 1}-${name}.log`;
 
+export interface RunEvidenceCheck {
+	manifest: EvidenceManifest | null;
+	/** The verified bytes of each artifact whose bytes matched its row, by artifact id. */
+	bytes: Map<string, Buffer>;
+	/** Why an artifact's own bytes could not be read/verified, by artifact id. */
+	readErrors: Map<string, ArtifactAccessError>;
+	/** Everything wrong with the run's evidence as a unit (read errors included). */
+	problems: string[];
+}
+
 /**
  * Check a run's evidence as one unit: every artifact's bytes match its row, the manifest's bytes
  * hash to the run's manifest_hash, and the manifest's references (diff_sha256, each verification
- * log_sha256) match the artifacts that are actually stored. Returns the verified manifest + diff.
+ * log_sha256) match the artifacts that are actually stored. Never throws; each artifact is read
+ * exactly once and `bytes` holds those verified buffers (use them — never re-read the path).
  */
-export function verifyRunEvidence(
+export function checkRunEvidence(
 	root: string,
 	artifacts: readonly ManagedArtifact[],
 	expected: { manifest_hash: string; candidate_sha: string },
-): VerifiedEvidence {
+): RunEvidenceCheck {
 	const problems: string[] = [];
 	const bytes = new Map<string, Buffer>();
+	const readErrors = new Map<string, ArtifactAccessError>();
 	for (const a of artifacts) {
 		try {
-			bytes.set(a.name, readArtifactBytes(root, a));
+			bytes.set(a.id, readArtifactBytes(root, a));
 		} catch (err) {
+			if (err instanceof ArtifactAccessError) readErrors.set(a.id, err);
 			problems.push((err as Error).message);
 		}
 	}
-	const manifestBuf = bytes.get("manifest.json");
+	const named = (name: string) => artifacts.find((a) => a.name === name);
+	const manifestArt = named("manifest.json");
+	const manifestBuf = manifestArt ? bytes.get(manifestArt.id) : undefined;
 	let manifest: EvidenceManifest | null = null;
-	if (!artifacts.some((a) => a.name === "manifest.json"))
-		problems.push("manifest.json: missing");
+	if (!manifestArt) problems.push("manifest.json: missing");
 	else if (manifestBuf) {
 		if (sha256Hex(manifestBuf) !== expected.manifest_hash)
 			problems.push("manifest.json: does not hash to the run's manifest_hash");
@@ -528,12 +542,12 @@ export function verifyRunEvidence(
 	if (manifest) {
 		if (manifest.candidate_sha !== expected.candidate_sha)
 			problems.push("manifest.json: names a different candidate");
-		const diffArt = artifacts.find((a) => a.name === "diff.patch");
+		const diffArt = named("diff.patch");
 		if (!diffArt) problems.push("diff.patch: missing");
 		else if (diffArt.sha256 !== manifest.diff_sha256)
 			problems.push("diff.patch: not the diff the manifest names");
 		manifest.verification.forEach((v, i) => {
-			const art = artifacts.find((a) => a.name === verifyName(i, v.name));
+			const art = named(verifyName(i, v.name));
 			if (!art) problems.push(`${verifyName(i, v.name)}: missing`);
 			else if (art.sha256 !== v.log_sha256)
 				problems.push(
@@ -541,7 +555,22 @@ export function verifyRunEvidence(
 				);
 		});
 	}
-	const diffBuf = bytes.get("diff.patch");
+	return { manifest, bytes, readErrors, problems };
+}
+
+/** checkRunEvidence that throws EvidenceError unless everything holds; returns manifest + diff. */
+export function verifyRunEvidence(
+	root: string,
+	artifacts: readonly ManagedArtifact[],
+	expected: { manifest_hash: string; candidate_sha: string },
+): VerifiedEvidence {
+	const { manifest, bytes, problems } = checkRunEvidence(
+		root,
+		artifacts,
+		expected,
+	);
+	const diffArt = artifacts.find((a) => a.name === "diff.patch");
+	const diffBuf = diffArt ? bytes.get(diffArt.id) : undefined;
 	if (problems.length > 0 || !manifest || !diffBuf)
 		throw new EvidenceError(
 			problems.length ? problems : ["evidence incomplete"],

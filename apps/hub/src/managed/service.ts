@@ -20,6 +20,7 @@ import {
 } from "./config.ts";
 import {
 	ArtifactAccessError,
+	checkRunEvidence,
 	evidenceProblems,
 	readArtifact,
 } from "./evidence.ts";
@@ -33,6 +34,7 @@ import {
 import {
 	createTask,
 	getArtifact,
+	getRun,
 	getTask,
 	IdempotencyConflictError,
 	listArtifacts,
@@ -302,7 +304,20 @@ export const allTasks = (deps: ManagedDeps) => listTasks(deps.db);
 
 export const ARTIFACT_VIEW_MAX_BYTES = 1_048_576;
 
-/** Artifact content by (task id, artifact id) — never by path. */
+const integrityError = (detail: string) =>
+	new ServiceError(
+		409,
+		"artifact_integrity",
+		`artifact failed its integrity check: ${detail}`,
+	);
+
+/**
+ * Artifact content by (task id, artifact id) — never by path. For a run with evidence (a manifest
+ * hash), an artifact is delivered only if the run's evidence verifies as a unit against that
+ * manifest AND every review of the run names exactly that candidate + manifest: a file replaced
+ * together with its row is still not the evidence that was reviewed. The bytes served are the
+ * verified buffer itself — the path is not read again after the check.
+ */
 export function readTaskArtifact(
 	deps: ManagedDeps,
 	taskId: string,
@@ -310,6 +325,39 @@ export function readTaskArtifact(
 ): { artifact: ManagedArtifact; text: string; truncated: boolean } {
 	const artifact = getArtifact(deps.db, taskId, artifactId);
 	if (!artifact) throw new ServiceError(404, "not_found", "no such artifact");
+	const run = getRun(deps.db, artifact.run_id);
+	if (run?.manifest_hash && run.candidate_sha) {
+		const check = checkRunEvidence(
+			deps.config.artifacts_root,
+			listArtifacts(deps.db, taskId).filter((a) => a.run_id === run.id),
+			{ manifest_hash: run.manifest_hash, candidate_sha: run.candidate_sha },
+		);
+		const own = check.readErrors.get(artifact.id);
+		if (own?.code === "not_found")
+			throw new ServiceError(404, "not_found", "artifact is not available");
+		if (own) throw integrityError(own.message);
+		const problems = [...check.problems];
+		for (const r of listReviews(deps.db, taskId))
+			if (
+				r.run_id === run.id &&
+				(r.manifest_hash !== run.manifest_hash ||
+					r.candidate_sha !== run.candidate_sha)
+			)
+				problems.push(
+					"a review of this attempt is bound to different evidence than the attempt now names",
+				);
+		const buf = check.bytes.get(artifact.id);
+		if (problems.length > 0 || !buf)
+			throw integrityError(
+				`the attempt's evidence does not verify: ${problems.slice(0, 3).join("; ") || "unreadable"}`,
+			);
+		return {
+			artifact,
+			text: buf.subarray(0, ARTIFACT_VIEW_MAX_BYTES).toString("utf8"),
+			truncated: buf.length > ARTIFACT_VIEW_MAX_BYTES || artifact.truncated,
+		};
+	}
+	// no evidence manifest for this attempt: the row is the only binding there is
 	try {
 		const { text, truncated } = readArtifact(
 			deps.config.artifacts_root,
@@ -320,11 +368,7 @@ export function readTaskArtifact(
 	} catch (err) {
 		if (err instanceof ArtifactAccessError)
 			throw err.code === "integrity"
-				? new ServiceError(
-						409,
-						"artifact_integrity",
-						`artifact failed its integrity check: ${err.message}`,
-					)
+				? integrityError(err.message)
 				: new ServiceError(404, "not_found", "artifact is not available");
 		throw err;
 	}
