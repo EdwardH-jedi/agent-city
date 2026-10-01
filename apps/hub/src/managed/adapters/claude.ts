@@ -39,7 +39,9 @@ import {
 	obj,
 	parseJsonLine,
 	providerEnv,
+	settled,
 	str,
+	UNSETTLED_DETAIL,
 } from "./cli.ts";
 import type {
 	AdapterContext,
@@ -278,6 +280,13 @@ export function createClaudeImplementer(
 				timeoutMs: 10_000,
 				maxOutputBytes: 16_384,
 			});
+			if (!settled(r))
+				return {
+					ok: false,
+					kind: "provider_unavailable",
+					detail: `claude auth status ${UNSETTLED_DETAIL}`,
+					version: exe.version,
+				};
 			const auth = readClaudeAuth(
 				r.stdout,
 				r.exitCode,

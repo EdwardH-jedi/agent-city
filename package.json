@@ -13,7 +13,7 @@
 		"test": "bun test",
 		"test:unit": "bun test packages apps/web/src scripts",
 		"test:integration": "bun test apps/hub apps/collector",
-		"test:lifecycle": "bun test apps/hub/src/managed/hardening.test.ts apps/hub/src/managed/recovery.test.ts apps/hub/src/managed/provider-hardening.test.ts",
+		"test:lifecycle": "bun test apps/hub/src/managed/hardening.test.ts apps/hub/src/managed/recovery.test.ts apps/hub/src/managed/provider-hardening.test.ts apps/hub/src/managed/corrective.test.ts",
 		"build:web": "bun --filter '@agent-city/web' build",
 		"verify": "bun run lint && bun run typecheck && bun test && bun run check:secrets && bun run build:web && bun run managed:demo && bun run test:browser",
 		"lint": "biome check .",

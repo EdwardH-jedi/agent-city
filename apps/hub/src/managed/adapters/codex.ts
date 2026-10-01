@@ -32,7 +32,9 @@ import {
 	REVIEW_JSON_SCHEMA,
 	readFileBounded,
 	reviewPrompt,
+	settled,
 	str,
+	UNSETTLED_DETAIL,
 } from "./cli.ts";
 import type {
 	AdapterContext,
@@ -201,6 +203,13 @@ export function createCodexReviewer(cfg: CodexProviderConfig): ReviewAdapter {
 				timeoutMs: 10_000,
 				maxOutputBytes: 4_096,
 			});
+			if (!settled(r))
+				return {
+					ok: false,
+					kind: "provider_unavailable",
+					detail: `codex login status ${UNSETTLED_DETAIL}`,
+					version: exe.version,
+				};
 			const auth = readCodexAuth(
 				`${r.stdout}\n${r.stderr}`,
 				r.exitCode,

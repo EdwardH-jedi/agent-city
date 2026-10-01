@@ -280,6 +280,29 @@ class Capture {
 	}
 }
 
+/** The result of a launch that was refused before anything was spawned. */
+export function refusedRun(reason: string): RunResult {
+	return {
+		spawned: false,
+		spawnError: `launch refused: ${reason}`,
+		pid: null,
+		exitCode: null,
+		signal: null,
+		timedOut: false,
+		aborted: false,
+		stdout: "",
+		stderr: "",
+		stdoutTruncated: false,
+		stderrTruncated: false,
+		lineOverflow: false,
+		durationMs: 0,
+		terminationConfirmed: true,
+		unresolved: null,
+		unresolvedKind: null,
+		pipesClosed: Promise.resolve(),
+	};
+}
+
 /** After the leader exits, how long the pipes may stay open before the run is settled anyway. */
 export const PIPE_CLOSE_GRACE_MS = 1_000;
 

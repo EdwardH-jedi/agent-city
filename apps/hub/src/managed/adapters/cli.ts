@@ -17,8 +17,27 @@ import {
 	type ManagedTask,
 	REVIEW_CONTRACT,
 } from "@agent-city/schema";
-import { childEnv } from "../proc.ts";
+import { childEnv, type RunResult } from "../proc.ts";
 import type { AdapterContext, Preflight } from "./types.ts";
+
+/**
+ * The check command ran to its own exit AND everything it started is proven gone. Its exit code
+ * never outweighs an unresolved child: such a run is quarantined and nothing more may start.
+ */
+export const settled = (r: RunResult): boolean =>
+	r.spawned &&
+	!r.timedOut &&
+	!r.aborted &&
+	r.exitCode !== null &&
+	r.terminationConfirmed &&
+	r.unresolved === null;
+
+/** Settled with exit code 0. */
+export const cleanExit = (r: RunResult): boolean =>
+	settled(r) && r.exitCode === 0;
+
+export const UNSETTLED_DETAIL =
+	"did not finish cleanly (stopped, timed out, or something it started could not be confirmed gone)";
 
 /**
  * Environment for a provider CLI: the allowlist only. API-key variables (ANTHROPIC_API_KEY,
@@ -117,7 +136,7 @@ export async function checkCapabilities(
 		timeoutMs: PREFLIGHT_TIMEOUT_MS,
 		maxOutputBytes: 262_144,
 	});
-	if (!r.spawned || r.timedOut || r.exitCode !== 0)
+	if (!cleanExit(r))
 		return {
 			ok: false,
 			kind: "provider_unavailable",
@@ -166,7 +185,7 @@ export async function checkExecutable(
 		timeoutMs: PREFLIGHT_TIMEOUT_MS,
 		maxOutputBytes: 4_096,
 	});
-	if (!r.spawned || r.timedOut || r.exitCode !== 0)
+	if (!cleanExit(r))
 		return {
 			ok: false,
 			kind: "provider_unavailable",

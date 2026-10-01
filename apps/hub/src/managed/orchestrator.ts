@@ -58,6 +58,7 @@ import {
 import {
 	hostProcessOps,
 	type ProcessOps,
+	refusedRun,
 	resolveRecorded,
 	runProcess,
 } from "./proc.ts";
@@ -475,6 +476,25 @@ export class Orchestrator {
 		return run;
 	}
 
+	/**
+	 * Why nothing more may be started for this claim, or null. Checked before EVERY launch (preflight
+	 * checks, implement, verification, review), whatever the caller made of earlier results: an
+	 * unresolved child of this claim, an open quarantine of the task, or a claim this worker no
+	 * longer owns.
+	 */
+	private launchRefusal(claim: Claim): string | null {
+		const { db } = this.d;
+		if (
+			claim.unconfirmed.length > 0 ||
+			listQuarantine(db, { open: true, taskId: claim.id }).length > 0
+		)
+			return "process quarantine: a child process of this task could not be confirmed terminated";
+		const t = getTask(db, claim.id);
+		if (!t || t.fence_token !== claim.fence || t.lease_owner !== this.workerId)
+			return "this worker no longer holds the task";
+		return null;
+	}
+
 	/** The adapter's view of the process boundary: owned, recorded, bounded, abortable. */
 	private ctx(claim: Claim, run: ManagedRun): AdapterContext {
 		const { db, config } = this.d;
@@ -491,6 +511,8 @@ export class Orchestrator {
 			scratchDir,
 			maxLogBytes: config.limits.max_log_bytes,
 			run: async (o) => {
+				const refused = this.launchRefusal(claim);
+				if (refused) return refusedRun(refused);
 				const r = await runProcess({
 					...o,
 					maxOutputBytes: o.maxOutputBytes ?? config.limits.max_log_bytes,
@@ -745,7 +767,8 @@ export class Orchestrator {
 
 		const ctx = this.ctx(claim, run);
 		const pre = await adapter.preflight(ctx);
-		if (claim.signal.aborted) return;
+		// an unresolved preflight child ends the claim (finishCancel → quarantine), whatever `pre` says
+		if (claim.signal.aborted || claim.unconfirmed.length > 0) return;
 		if (!pre.ok)
 			return this.fail(
 				t,
@@ -1105,7 +1128,7 @@ export class Orchestrator {
 
 		const ctx = this.ctx(claim, run);
 		const pre = await reviewer.preflight(ctx);
-		if (claim.signal.aborted) return;
+		if (claim.signal.aborted || claim.unconfirmed.length > 0) return;
 		if (!pre.ok)
 			return this.fail(
 				t,

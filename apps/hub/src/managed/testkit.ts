@@ -179,6 +179,7 @@ export function writeStub(dir: string, name: string, script: string): string {
 // `<bin>/<name>.calls.jsonl` (argv, stdin, env variable NAMES, cwd).
 
 const STUB_PRELUDE = `
+import { spawn as spawnChild } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const dir = import.meta.dir;
@@ -192,19 +193,29 @@ const hang = async (ignoreTerm: boolean) => {
 	writeFileSync(join(dir, NAME + ".pids"), process.pid + " " + child.pid);
 	await new Promise(() => setInterval(() => {}, 1000));
 };
+// mode "escape_<stage>" (version | help | auth): this preflight call exits 0 but leaves a descendant
+// outside its process group holding stdout/stderr open
+const escapeAt = (stage: string) => {
+	if (mode !== "escape_" + stage) return;
+	const c = spawnChild("/bin/sleep", ["600"], { detached: true, stdio: ["ignore", "inherit", "inherit"] });
+	c.unref();
+	writeFileSync(join(dir, NAME + ".pids"), process.pid + " " + c.pid);
+};
 `;
 
 const CLAUDE_STUB = `const NAME = "claude";${STUB_PRELUDE}
 const mode = read("claude.mode") || "success";
 const stdin = args.includes("-p") ? await Bun.stdin.text() : "";
 appendFileSync(join(dir, "claude.calls.jsonl"), JSON.stringify({ argv: args, stdin, env: Object.keys(process.env).sort(), cwd: process.cwd() }) + "\\n");
-if (args[0] === "--version") { console.log("9.9.9 (stub claude)"); process.exit(0); }
+if (args[0] === "--version") { escapeAt("version"); console.log("9.9.9 (stub claude)"); process.exit(0); }
 if (args[0] === "--help") {
+	escapeAt("help");
 	const flags = ["-p, --print", "--output-format <format>", "--verbose", "--model <model>", "--permission-mode <mode>", "--permission-prompts <target>", "--tools <tools...>", "--allowedTools, --allowed-tools <tools...>", "--json-schema <schema>", "--session-id <uuid>", "-r, --resume [value]", "--safe-mode", "--restricted", "--strict-mcp-config", "--disable-slash-commands"];
 	console.log("Usage: claude [options]\\n" + flags.filter((f) => mode !== "no_safe_mode" || f !== "--safe-mode").map((f) => "  " + f + "   (stub)").join("\\n"));
 	process.exit(0);
 }
 if (args[0] === "auth") {
+	escapeAt("auth");
 	if (mode === "malformed_status") { console.log("Logged in, probably"); process.exit(0); }
 	if (mode === "empty_status") { console.log("{}"); process.exit(0); }
 	const method = mode === "api_key_auth" ? "stub-api-key" : "stub-subscription";
@@ -306,13 +317,15 @@ const CODEX_STUB = `const NAME = "codex";${STUB_PRELUDE}
 const mode = read("codex.mode") || "success";
 const stdin = args[0] === "exec" ? await Bun.stdin.text() : "";
 appendFileSync(join(dir, "codex.calls.jsonl"), JSON.stringify({ argv: args, stdin, env: Object.keys(process.env).sort(), cwd: process.cwd() }) + "\\n");
-if (args[0] === "--version") { console.log("codex-cli 0.0.0-stub"); process.exit(0); }
+if (args[0] === "--version") { escapeAt("version"); console.log("codex-cli 0.0.0-stub"); process.exit(0); }
 if (args[0] === "exec" && args[1] === "--help") {
+	escapeAt("help");
 	const flags = ["--json", "-s, --sandbox <MODE>", "-m, --model <MODEL>", "-C, --cd <DIR>", "--ignore-user-config", "--ignore-rules", "--output-schema <FILE>", "-o, --output-last-message <FILE>"];
 	console.log("Usage: codex exec [OPTIONS] [PROMPT]\\n" + flags.filter((f) => mode !== "no_ignore_config" || f !== "--ignore-user-config").map((f) => "  " + f).join("\\n"));
 	process.exit(0);
 }
 if (args[0] === "login") {
+	escapeAt("auth");
 	if (mode === "logged_out") process.exit(1);
 	console.log(mode === "api_key_auth" ? "Logged in using an API key (stub)" : "Logged in using ChatGPT (stub)");
 	process.exit(0);
