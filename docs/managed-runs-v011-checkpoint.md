@@ -27,8 +27,8 @@ Resume from this file + `git log` / `git diff`, never from memory.
 - [x] Phase 4 — CI workflow (written, not run, not pushed), `test:unit`/`test:integration`/
   `test:lifecycle`/`build:web`/`verify`, flake loop (lifecycle ×5 green), requirement→test map,
   README reconciled by hand with main's `e33f2ac` wording (main NOT merged), runbook + agent rules
-- [~] Phase 5 — optional: A (observed-sessions races) ✔, B (collector spool fallback) ✔; extra
-  finding fixed: `ps lstart` compared under fixed locale/TZ. C/D/E not started.
+- [~] Phase 5 — optional: A (observed-sessions races) ✔, B (collector spool fallback) ✔, D (state-machine table) ✔; extra
+  finding fixed: `ps lstart` compared under fixed locale/TZ. C/E not started.
 
 ## Temporary resources
 

@@ -1049,6 +1049,8 @@ export class Orchestrator {
 
 	private async review(t: ManagedTask, claim: Claim): Promise<void> {
 		const { db, config, adapters } = this.d;
+		await this.d.hooks?.at?.("before_review", t.id);
+		// read the attempt AFTER any boundary: what is verified is what the row says now
 		const run = this.currentRun(t);
 		const candidate = run.candidate_sha;
 		const manifestHash = run.manifest_hash;
@@ -1062,8 +1064,6 @@ export class Orchestrator {
 				"no reviewer adapter or evidence for this attempt",
 			);
 		const worktree = run.workspace_path;
-
-		await this.d.hooks?.at?.("before_review", t.id);
 		if (!this.approvalHolds(t, claim, run.id)) return;
 
 		// The evidence on disk must be byte-for-byte the evidence that was hashed; the verified
@@ -1237,6 +1237,29 @@ export class Orchestrator {
 			withFence(db, t.id, claim.fence, (fresh) => {
 				record();
 				if (this.cancelWins(fresh, run.id)) return;
+				// the binding must still hold at the commit itself (no check-then-commit gap)
+				const latest = getRun(db, run.id);
+				if (
+					latest?.candidate_sha !== candidate ||
+					latest.manifest_hash !== manifestHash
+				) {
+					const detail =
+						"the attempt's candidate / evidence binding changed while it was being reviewed";
+					patchRun(db, run.id, {
+						state: "failed",
+						failure_kind: "evidence_invalid",
+						failure_detail: detail,
+						ended_at: this.now(),
+						...PROC_CLEARED,
+					});
+					setTaskState(db, fresh, {
+						to: "failed",
+						failure_kind: "evidence_invalid",
+						state_detail: detail,
+						release: true,
+					});
+					return;
+				}
 				patchRun(db, run.id, {
 					state: "finished",
 					phase: "done",
