@@ -1,11 +1,54 @@
 # Agent City
 
-A live map of my coding agents. Every Claude Code / Codex session on every machine is collected into a
-local hub and drawn as a city: GitHub repos are buildings, grouped into districts
-(`games`, `school`, `client`, `infra`, `uncategorized`), and active agents walk between them.
+A local telemetry dashboard for Claude Code and Codex sessions, with read-only GitHub repository
+status — plus, on this branch, an opt-in **managed task pipeline** for one allowed local repository.
+Collectors feed redacted events to a Bun/SQLite hub; a React 2D view shows repositories, live
+sessions, the event stream, and managed tasks.
 
-Phase 0 (this repo today) is the data layer plus a flat 2D view to verify it; the 3D city comes last
-(see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+**Current status.** The data layer and 2D inspection view are implemented. Collection covers the
+machines and supported session events you configure. The managed pipeline (v0.1.1) can create an
+isolated worktree, run an implementation, run trusted verification, review the exact candidate and
+stop at a result a person inspects — **tested only with deterministic fake adapters and generated
+stub executables**. It is off by default; live Claude/Codex execution is disabled and has never been
+verified end to end; there is no OS-level sandbox. The 3D city is future work.
+
+Decisions and their order: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Managed runs:
+[docs/managed-runs.md](docs/managed-runs.md).
+
+[Quick start](#quick-start-cockpit) · [Checks](#development-and-checks) ·
+[Environment](#environment) · [Security](#security-model) · [Roadmap](#roadmap)
+
+## Implemented features
+
+- Claude Code hooks and a Codex log tailer, with local spooling during outages
+- Shared event schemas, session/agent IDs, redaction, and status transitions
+- A Hono hub with SQLite storage, ingest, REST reads, WebSocket updates, and stale-session handling
+- Read-only GitHub repository/CI sync, rate-limit handling, ETag caching, and local checkout mapping
+- A flat React UI for inspecting repositories, sessions, and events
+- Machine roles and SSH-tunnel setup for collectors on separate hosts
+- Managed tasks (opt-in, `MANAGED_CONFIG`): versioned task/run/evidence/review records, approval
+  binding, fenced single-worker execution, worktree isolation, candidate-bound evidence, bounded
+  repair, quarantine of unresolved child processes, token-protected API and a *Managed tasks* tab
+
+## Architecture and repository map
+
+```text
+Claude hook / Codex tailer
+  → redact → POST /ingest (or local spool while offline)
+  → SQLite → /api + /ws → React 2D view
+GitHub (read-only) → repository / CI sync → SQLite
+Managed task (explicit Run) → worktree → implement → verify → review → result   [opt-in]
+```
+
+| Path | Responsibility |
+|---|---|
+| `apps/collector/` | Claude hook launcher, Codex tailer, config, redaction integration, and spool |
+| `apps/hub/` | Hono + `bun:sqlite`, `/healthz`, `/ingest`, `/api/*`, `/ws`, GitHub sync, stale sweep |
+| `apps/hub/src/managed/` | Managed runs: orchestrator, worktrees, evidence, process boundary, CLI adapters |
+| `apps/web/` | Vite + React 2D view, *Managed tasks* tab; `e2e/` browser regression gate |
+| `packages/schema/` | Zod types, status machines, IDs, redaction, secret patterns, SQL migrations |
+| `config/` | `districts.yaml` (repo → district), `managed.example.yaml` |
+| `scripts/` | Secret scanning, documentation parity, golden-event helpers |
 
 ## Machines
 
@@ -17,32 +60,24 @@ Phase 0 (this repo today) is the data layer plus a flat 2D view to verify it; th
 
 Set the role per machine with `AGENTCITY_MACHINE`.
 
-## Layout
+## Quick start (cockpit)
 
-```
-apps/hub          Hono + bun:sqlite — /healthz, /ingest, /api/*, /ws, GitHub sync, stale sweep,
-                  managed runs (src/managed: orchestrator, worktrees, evidence, CLI adapters)
-apps/collector    Claude Code hook (bin/claude-hook), Codex log tailer, local spool
-apps/web          Vite + React 2D view (repos · live sessions · event stream) + Managed tasks tab
-packages/schema   zod types, status machine, redaction, secret patterns, SQL migrations
-config/           districts.yaml (repo → district), managed.example.yaml
-scripts/          check-secrets.ts
-```
-
-Data flow: `hook / codex tail → redact → POST /ingest (or ~/.agentcity/spool.jsonl) → SQLite → /api + /ws → web`.
-
-## Setup (cockpit)
-
-Requires [Bun](https://bun.sh) (`brew install bun`) and git.
+Requires [Bun](https://bun.sh) and Git. For GitHub sync, configure a token with the read
+permissions described below, or use an existing `gh` CLI login.
 
 ```sh
+git clone https://github.com/EdwardH-jedi/agent-city.git
+cd agent-city
 bun install
 cp .env.example .env         # fill in secrets by hand (see Environment)
 bun run sync:github          # first GitHub sync → prints a summary
 bun run dev                  # hub :4317 + web :5173  (or dev:hub / dev:web separately)
 ```
 
-Open http://127.0.0.1:5173.
+Open http://127.0.0.1:5173. Set `INGEST_TOKEN` in `.env` before collecting events; an unset token
+disables ingest. Keep the hub on loopback. Read the [security model](#security-model) before
+changing its bind address. Managed tasks stay off until you set `MANAGED_CONFIG` and
+`MANAGED_TOKEN` (see [Managed runs](#managed-runs-v011)).
 
 Collectors on cockpit:
 
@@ -56,6 +91,28 @@ bun run collector:codex      # resident Codex tailer (keep it running in a termi
 ```
 
 Hooks load when a Claude Code session starts — open a new session after applying.
+
+## Development and checks
+
+Run from the repository root:
+
+```sh
+bun run typecheck
+bun run lint
+bun test                  # everything; or split: bun run test:unit · bun run test:integration
+bun run check:secrets
+bun run build:web
+bun run managed:demo      # simulated managed-pipeline scenarios, no model
+bun run test:browser      # managed-task browser gate (cached Playwright Chromium, disposable hub)
+bun run verify            # all of the above in one command
+```
+
+The suite covers schema/IDs/redaction, collector mapping and spooling, hub ingestion and ordering,
+GitHub integration logic, web-state merging, documentation parity, and the managed pipeline
+(lifecycle, recovery, quarantine, evidence integrity, provider protocol handling against
+**generated stub executables**). These checks do not prove a live multi-machine deployment, real
+provider compatibility, subscription billing, or host isolation. A GitHub Actions definition is in
+`.github/workflows/ci.yml`; it has not been run on hosted CI.
 
 ## Environment
 
@@ -103,8 +160,9 @@ first time the tailer reaches the file's end — that is persisted with the offs
 appended afterwards is always collected, whatever its timestamp.
 
 **GitHub token.** A fine-grained PAT only sees one resource owner: repos from organizations or where
-you are a collaborator won't sync. Today every repo is owned by the account, so nothing is missing; if
-that changes, use a classic read-only PAT or empty `GITHUB_TOKEN` to fall back to `gh auth token`.
+you are a collaborator may require different token coverage. Check the synced repository list
+against the repositories you expect. Use the least-privileged credentials that cover your
+repositories; an empty `GITHUB_TOKEN` falls back to the current `gh auth token`.
 CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync summary).
 
 ## Scripts
@@ -113,6 +171,10 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | ----------------------------- | -------------------------------------------------------------------------------- |
 | `dev` / `dev:hub` / `dev:web` | hub + web · hub only (from repo root) · Vite (proxies `/healthz`, `/api`, `/ws`) |
 | `test` · `lint` · `format`    | `bun test` · `biome check .` · `biome format --write .`                          |
+| `test:unit` · `test:integration` | Fast schema/web/scripts tests · process, API and pipeline tests (hub + collector). Together = `bun test`. |
+| `test:lifecycle`              | Managed lifecycle fault tests (quarantine, approval, cancel, evidence, provider bounds) — rerun to hunt flakes. |
+| `test:browser`                | Managed-task browser gate: in-process disposable hub, programmatic Vite without the repo `.env`, cached Playwright Chromium. |
+| `build:web` · `verify`        | Production web build · every required gate in one command (lint, typecheck, tests, secrets, build, demo, browser). |
 | `typecheck`                   | `tsc --noEmit` for schema, hub, collector and web.                               |
 | `sync:github`                 | One GitHub sync + summary (repos, private/archived/fork, CI, local mapping, rate). |
 | `db:reset`                    | Stop the hub first. Moves `DB_PATH` (+ `-wal`/`-shm`) to `<db>.bak.<UTC stamp>` and creates an empty, migrated DB. `--db <path>` overrides. |
@@ -162,20 +224,23 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
 - Collectors on every machine (cockpit included) reach it through an SSH tunnel to spine, as above.
 - cockpit's web: `HUB_URL=http://127.0.0.1:4317` over the tunnel, `bun run dev:web`.
 - `REPO_ROOTS` mapping only covers spine's disk; per-machine `repo_paths` need collector-side
-  reporting (see Next).
+  reporting (see Roadmap).
 - Before binding to a LAN/Tailscale address instead of a tunnel: add a configurable Host allowlist
   (today only loopback + `HUB_HOST` pass), put TLS in front, and require auth on `/api` and `/ws`.
 - Back up `data/agentcity.db` (SQLite `.backup`) nightly.
 
-## Managed runs (v0.1)
+## Managed runs (v0.1.1)
 
 Besides *observing* sessions, the hub can run one **managed task** at a time for an explicitly
 allowed local repository: isolated worktree → implementation → trusted verification → review of the
 exact candidate → at most one automatic repair → a result a person can inspect. Observed sessions,
 managed runs and simulated runs are three different things and are labelled as such everywhere.
 
-It is off by default (`MANAGED_CONFIG` empty). The default and every test use **simulated** adapters;
-the real Claude / Codex CLI adapters exist, are stub-tested, and have **not** been run live.
+It is off by default (`MANAGED_CONFIG` empty). The default and every test use **simulated** adapters
+or generated stub executables; the real Claude / Codex CLI adapters exist, are stub-tested, are gated
+by capability and positive subscription-auth checks that block by default, and have **not** been run
+live. A child process whose termination cannot be proven is quarantined (no further managed work
+until it is proven gone). Worktrees are Git isolation, not an OS sandbox.
 Runbook, state machine, security limits and the live-smoke checklist:
 [docs/managed-runs.md](docs/managed-runs.md).
 
@@ -200,7 +265,7 @@ bun run managed:demo --init     # fixture repo + config under ~/.agentcity/manag
 - Collectors redact before spooling/sending: prompt text is never stored (length only); `tool_input`
   is reduced to tool name + file path + first 80 chars of a command, all through `redact()`; every
   string field of an event is sanitized, and the hub re-applies all of it before storing.
-- Hooks never block: always exit 0, no stdout. The event is written to the spool **before** any
+- Hooks are designed to avoid blocking sessions: exit 0, no stdout. The event is written to the spool **before** any
   network I/O; the POST gets only the time left (≤ 300 ms, all work inside 450 ms), the hook's own
   timer exits at 500 ms, and the launcher `bin/claude-hook` SIGKILLs it after
   `AGENTCITY_HOOK_KILL_S` (default 0.6 s) even if it is stuck in synchronous work. Hooks are
@@ -232,38 +297,38 @@ text; don't paste secrets into commands in the first place):
 
 ## Roadmap
 
-- **Step 0 — Scaffold** ✅
-- **Phase 0 — Data layer** ✅ schema + status machine + redaction; hub (ingest / API / ws / stale
-  sweep, Host/Origin guard); GitHub sync (GraphQL + CI ETag + local mapping); Claude hook + spool;
-  Codex tailer; 2D view.
-- **Phase 1 → 4 — Reliable monitor → Runner → Relay → 3D city**: see Next.
+Decisions and their reasons are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Planned, not
+implemented unless marked:
 
-## Next
+1. **Workflow foundation** — work items, stages, ownership, transitions and completion evidence,
+   with observation kept distinct from commands and approvals. *Partly implemented on this branch as
+   managed runs v0.1.1 (single machine, one task at a time, simulated by default).*
+2. **Monitor reliability** — normalized event kinds (hook payloads:
+   [docs/hook-events.md](docs/hook-events.md)), run state and health signals (waiting, stalled,
+   failing, looping) and notifications.
+3. **Reliable multi-machine tracking** — collector-reported `repo_paths`, machine presence, and
+   service/tunnel lifecycle management. The setup instructions above describe how to run
+   collectors; they do not imply every machine is deployed.
+4. **Permissioned control** — from observation to notifications to explicit per-action approval
+   for local agent actions; a dedicated OS user + clone for isolation (ARCHITECTURE #7, not done).
+   GitHub remains read-only unless a separate decision changes that scope.
+5. **External relay** — propose + read-public-results only.
+6. **Live city view** — an R3F scene with districts, repository buildings and agents, retaining the
+   2D view for debugging.
 
-Decisions and their reasons are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the order is fixed:
+### Known gaps and deferred work
 
-1. **Phase 1a — Monitor reliability.** Normalized event kinds (hook payloads:
-   [docs/hook-events.md](docs/hook-events.md)), then Run state and health signals (waiting, stalled,
-   failing, looping) and notifications (e.g. waiting > N min).
-2. **Phase 1b — Deploy, result screens, GitHub links.** Hub on spine behind `tailscale serve`
-   (Host allowlist + auth on `/api` and `/ws` first); collectors on forge/spine with
-   collector-reported `repo_paths` and machine presence; desktop + phone screens; issue / PR / CI
-   links, read-only. Evaluate GitHub webhooks (push / workflow_run) instead of polling — polling
-   stays as the fallback.
-3. **Phase 2 — Single Runner.** Acts on local agents only with explicit per-action approval, plus
-   recovery and isolation. No GitHub writes at any stage without a new decision.
-4. **Phase 3 — External Relay.** Propose + read-public-results only.
-5. **Phase 4 — 3D city.** R3F (react-three-fiber): districts as blocks, repos as buildings
-   (height = commits_30d, CI colour), agents as walkers; the 2D view stays as a debug panel.
-
-**Deferred from Phase 0**
-- Codex subagents (`spawn_agent`) as agent rows (no reliable end signal yet).
-- Tool events fired inside a Claude subagent are attributed to the main agent (Claude's internal agent
-  id can't be matched to the Task call).
-- Bisect a rejected ingest batch so one bad event doesn't park the whole batch.
-- Repos deleted on GitHub / access lost stay with a stale `synced_at` — mark or prune.
-- CI badge from the default branch only (`actions/runs?branch=<default>`) instead of the latest run
-  on any branch.
-- Configurable Host allowlist + auth on `/api` and `/ws` before any non-loopback bind.
-- launchd units for the hub, `collector:codex` and SSH tunnels.
-- Prune `github_etags` rows of tokens no longer in use (keys are token-scoped; old ones just sit).
+- Codex subagents (`spawn_agent`) are not represented as separate agent rows; there is no reliable
+  end signal yet
+- Tool events inside a Claude subagent are attributed to the main agent because the internal agent
+  ID cannot be matched to the Task call
+- A rejected ingest batch is parked as a whole; bisecting it to isolate one bad event remains to do
+- Deleted/inaccessible GitHub repos remain with stale `synced_at` values
+- CI status uses the latest run on any branch; default-branch-only badges remain deferred
+- A configurable Host allowlist and auth on `/api` and `/ws` are needed before exposing a hub
+  beyond loopback
+- Service units for the hub, Codex tailer, and SSH tunnels remain to be added
+- Old token-scoped `github_etags` rows are not automatically pruned
+- Managed runs: live provider integration, subscription-only billing and host isolation are
+  unverified; worktrees and artifacts are never cleaned up automatically; a quarantine caused by an
+  escaped descendant cannot be released after a hub restart (by design: no evidence)

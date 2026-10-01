@@ -1,0 +1,48 @@
+# Read-only CI for Agent City. NOT yet run on hosted CI — it was written and checked locally only.
+# No secrets, no write permissions, no deployment, no real provider CLIs or credentials: managed
+# tests use fake adapters and generated stub executables; the browser gate starts its own disposable
+# hub. Before enabling, pin the actions below to full commit SHAs.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # never let anything fall back to a provider login or a real hub
+      MANAGED_CONFIG: ""
+      MANAGED_TOKEN: ""
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2 # the version the suite was verified with
+      - name: Install (lockfile)
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Unit tests
+        run: bun run test:unit
+      - name: Integration tests (process / API / pipeline, stub executables only)
+        run: bun run test:integration
+      - name: Secret scan
+        run: bun run check:secrets
+      - name: Web build
+        run: bun run build:web
+      - name: Simulated managed demo
+        run: bun run managed:demo
+      - name: Browser engine for the gate (headless shell only)
+        run: bunx playwright-core install --with-deps chromium-headless-shell
+      - name: Browser gate
+        run: bun run test:browser

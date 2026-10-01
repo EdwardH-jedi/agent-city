@@ -54,3 +54,29 @@ loaded page did not switch tabs (fixed: `hashchange` listener), and the console 
 counted provoked 401/409/502 network logs (now an explicit allowlist of exactly those statuses).
 Screenshots (synthetic data) are written to a fresh `agentcity-browser-evidence-*` temp directory
 printed at the end of each run; they are not committed.
+
+## Requirement → regression test → fix
+
+Tests: `H` = `apps/hub/src/managed/hardening.test.ts`, `P` = `provider-hardening.test.ts`,
+`B` = `apps/web/e2e/browser-gate.ts`. Lines are at the commit that introduced the fix.
+
+| ID | Requirement | Regression test(s) | Fix (source) | Result |
+| --- | --- | --- | --- | --- |
+| P1.1 | Unresolved child → persistent quarantine; Cancel/Run/claim blocked; restart; inspection failure; identity mismatch | H "P1.1 …" (9 cases) | `proc.ts:197 resolveRecorded`, `store.ts:332` claim guard, `store.ts:623/671` open/release, `orchestrator.ts:223 resolveQuarantines`, migration `007` | PASS |
+| P1.2 | Approval revalidated before resumed stages; immutable config snapshot | H "P1.2 …" (4) | `orchestrator.ts:598 approvalHolds` (start/implement/verify/review), `orchestrator.ts:165` frozen snapshot, `config.ts:167` limits + roots in `policyHash` | PASS |
+| P1.3 | Cancel vs completion linearized; fence change during final await | H "P1.3 …" (3) | `orchestrator.ts:573 cancelWins` inside the final transaction | PASS |
+| P1.4 | Review/artifact use one verified read of exact bytes; manifest links; 409 on tamper; workspace vs evidence integrity | H "P1.4 …" (4), B "tampered evidence …" | `evidence.ts:222 readArtifactBytes`, `evidence.ts:334 verifyRunEvidence`, `service.ts:325` 409 mapping, `evidence_integrity` in task detail | PASS |
+| P2.5 | Capability policy + positive subscription auth, approval-bound; docs corrected | P "P2.5 …" (6), adapters tests | `claude.ts:54` required controls + isolation flags, `claude.ts:212 readClaudeAuth`, `codex.ts:143 readCodexAuth`, `cli.ts:106 checkCapabilities`, config `allowed_auth_methods` / `auth_status_pattern` | PASS (stub-only) |
+| P2.6 | Multiline redaction through real artifact paths; no raw scratch | P "P2.6 …" (5) | `evidence.ts:99 redactLog` (stateful), codex scratch `finally` cleanup, `orchestrator.ts:454 cleanupScratch` | PASS |
+| P2.7 | Independent termination bound; escaped descendant; kill failure; bounded lines/history/files | P "P2.7 …" (6), proc tests | `proc.ts` settle/pipe timers (`PIPE_CLOSE_GRACE_MS` at `proc.ts:274`), pipe-EOF evidence for `[pipe]` quarantines, `cli.ts:36 BoundedLog`, `cli.ts:71 readFileBounded` | PASS |
+| P2.8 | Invalid implementation contracts never start downstream stages | P "P2.8 …" (7) | `claude.ts:383` `provider_output_invalid` instead of fabricated `completed` | PASS |
+| P3 | Re-click, A→B race, stale snapshot, auth purge, late 401, uncertain create, viewer races, comma criteria, reload/nav, success/failure/cancel/restart, labels, observed view | B (20 checks) | `Tasks.tsx:156 purge`/auth epoch, `Tasks.tsx:250 select`, `Tasks.tsx:510` uncertain-create flow, `Tasks.tsx:724` viewer seq, `managed-view.ts:113 splitLines`, `App.tsx:60` hashchange | PASS |
+
+## Phase 4
+
+| Command | Result | Duration |
+| --- | --- | --- |
+| `bun run test:lifecycle` ×5 (temp HOME) | PASS 60/60 each run | ~29 s each |
+| `bun run test:unit` + `bun run test:integration` | 164 + 344 = 508 = `bun test` | 0.04 s + 60 s |
+| `.github/workflows/ci.yml` | written; **NOT RUN** on hosted CI (not pushed) | — |
+| `bunx playwright-core install --help` | confirms `--with-deps` and `chromium-headless-shell` used by the workflow | — |

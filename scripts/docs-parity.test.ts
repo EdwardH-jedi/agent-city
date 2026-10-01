@@ -89,7 +89,7 @@ describe("docs parity (F18)", () => {
 
 	test(".env.example carries no secret values", () => {
 		const env = read(".env.example");
-		for (const k of ["GITHUB_TOKEN", "INGEST_TOKEN"])
+		for (const k of ["GITHUB_TOKEN", "INGEST_TOKEN", "MANAGED_TOKEN"])
 			expect(env).toMatch(new RegExp(`^${k}=$`, "m"));
 	});
 

@@ -1,4 +1,4 @@
-# Managed runs (v0.1) — runbook and handoff
+# Managed runs (v0.1.1) — runbook and handoff
 
 A **managed run** is an explicit, authorized attempt at a bounded task in one allowed local
 repository. Agent City owns its input, workspace, provider invocation, evidence and review, and ends
@@ -22,7 +22,8 @@ Three things that must not be confused:
 | Orchestrator (implement → verify → review → ≤1 repair) | implemented, tested with **fake** adapters |
 | Claude CLI implementer | implemented, **stub-tested**; flags checked against `claude --help` 2.1.285; **not live-tested** |
 | Codex CLI reviewer | implemented, **stub-tested**; flags taken from the docs only (`codex` is not installed here); **not live-tested** |
-| API + web UI | implemented; API tested; UI exercised by hand in a browser with a simulated task |
+| API + web UI | implemented; API tested; automated browser gate (`bun run test:browser`, 20 checks) on a disposable hub |
+| v0.1.1 hardening | quarantine, per-stage approval revalidation, cancel/finalize ordering, verified evidence bytes, capability + positive auth gates, multiline redaction, bounded processes/parsing — all tested with fakes/stubs |
 | Live end-to-end run with real models | **never run**. `LIVE_INTEGRATION_VERIFIED` is `false`. |
 
 Nothing in this document or the code should be read as "the live pipeline works". Only simulated
@@ -102,7 +103,18 @@ the bound review are.
 - A crash before any model stage, or during verification, is resumed automatically, at most
   `max_infra_retries` (2) times.
 - An orphaned child from a previous hub process is terminated only if its pid still has the recorded
-  start time. If termination cannot be confirmed, the task is `interrupted`, not `cancelled`.
+  start time. If termination cannot be confirmed, the task is `interrupted`, not `cancelled`, and
+  the child is **quarantined** (`managed_quarantine`): no other task is claimed, this task cannot be
+  run again, and Cancel only records the intent. Each worker tick re-checks open quarantines and
+  releases one only on objective evidence (process + group gone, terminated here, or the pid now
+  belongs to a different process — POSIX does not reuse a pid while its process group exists). An
+  inspection failure or an unrecorded start time keeps it open. Task detail shows open quarantines.
+- Every stage (start, implement, verify, review — resumed or not) re-checks the approval binding
+  against the orchestrator's frozen config snapshot. A changed verification command, provider
+  setting, model, limit or output root blocks the task (`approval_void`) before anything runs.
+- Cancel vs completion: the transaction that would commit a final state is the linearization
+  point. A cancel recorded before it wins (the task ends `cancelled`, evidence written in that
+  transaction stays); a cancel after completion leaves the finished task unchanged.
 - Stopping the hub with Ctrl-C / SIGTERM terminates the running child first; the task is then
   reconciled (`interrupted`, or resumed if no model stage had started) when the hub starts again.
   A hard kill (SIGKILL, power loss) leaves that to the next start as well.
@@ -197,13 +209,13 @@ Unverified assumptions a live smoke must check:
 ## Verification
 
 ```sh
-bun test            # includes apps/hub/src/managed/*.test.ts and apps/web/src/managed-view.test.ts
-bun run lint
-bun run typecheck
-bun run check:secrets
-(cd apps/web && bunx vite build)
-bun run managed:demo
+bun run verify      # = lint, typecheck, bun test, check:secrets, build:web, managed:demo, test:browser
+bun run test:unit · bun run test:integration · bun run test:lifecycle   # split views of bun test
 ```
+
+Run tests with a temporary `HOME`/`AGENTCITY_HOME` if you want to be sure nothing reads your own;
+the browser gate then needs `PLAYWRIGHT_BROWSERS_PATH` pointing at the Playwright browser cache.
+Requirement → test map for v0.1.1: [managed-runs-v011-verification.md](managed-runs-v011-verification.md).
 
 Where the required gates are tested:
 
@@ -219,10 +231,14 @@ Where the required gates are tested:
 | Rejected repo, path traversal, artifact access | `managed/api.test.ts`, `managed/orchestrator.test.ts` |
 | Telemetry / redaction intact | existing suites + `managed/api.test.ts` |
 | Zero real model calls by default | `managed/recovery.test.ts` |
+| v0.1.1 lifecycle / evidence (P1) | `managed/hardening.test.ts` |
+| v0.1.1 provider / process / privacy (P2) | `managed/provider-hardening.test.ts` |
+| v0.1.1 browser regressions (P3) | `apps/web/e2e/browser-gate.ts` |
 
-## Not in v0.1
+## Not in v0.1.1
 
 3D city, meetings, cross-repo scheduling, distributed workers, task discovery, an API-based planner,
 GitHub writes, automatic merge/deploy, OS-level isolation, worktree garbage collection, more than
 one active task, reviewer session continuation (implemented in the adapter, unused by the
-orchestrator), an automated browser test of the UI.
+orchestrator), a hosted CI run (the workflow file exists but was never executed), any live provider
+run.

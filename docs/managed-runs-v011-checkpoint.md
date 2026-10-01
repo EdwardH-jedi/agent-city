@@ -24,7 +24,9 @@ Resume from this file + `git log` / `git diff`, never from memory.
   Tasks UX fixes (auth epoch, guarded selection/detail, purge, uncertain create, viewer seq,
   line-split criteria, hash navigation). Dependency: `playwright-core` 1.63.0 (dev, pinned); uses the
   cached Chromium 1243 build, no download.
-- [ ] Phase 4 — CI workflow (not pushed), split commands, flake loop, docs reconcile
+- [x] Phase 4 — CI workflow (written, not run, not pushed), `test:unit`/`test:integration`/
+  `test:lifecycle`/`build:web`/`verify`, flake loop (lifecycle ×5 green), requirement→test map,
+  README reconciled by hand with main's `e33f2ac` wording (main NOT merged), runbook + agent rules
 - [ ] Phase 5 — optional
 
 ## Temporary resources
@@ -33,4 +35,4 @@ Resume from this file + `git log` / `git diff`, never from memory.
 
 ## Next command
 
-`cd ../agent-city-v011 && bun run test:browser` (then Phase 4: CI file, split commands, docs)
+`cd ../agent-city-v011 && bun run verify` (then Phase 5 optional A: Observed-sessions races)

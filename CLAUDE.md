@@ -60,6 +60,21 @@ scripts/         repo tooling (check-secrets)
      the demo must make zero real model calls — use the stub executables in `managed/testkit.ts`.
    - a model stage is never re-launched automatically after a crash; a verdict counts only for the
      exact candidate SHA + evidence manifest it names; simulated results are labelled simulated.
+   - (v0.1.1) a child whose termination is not proven goes to `managed_quarantine`; it blocks all
+     claims, Run and Cancel→cancelled until objective evidence (never a dismiss button / manual ack);
+     never signal a pid whose start time differs from the recorded one.
+   - (v0.1.1) the approval binding is re-checked before EVERY stage, resumed ones included, against
+     the orchestrator's frozen config snapshot; everything that changes what a run may do or
+     produce belongs in `policyHash`.
+   - (v0.1.1) evidence is used and shown only after one verified read of the full stored bytes
+     (`readArtifactBytes` / `verifyRunEvidence`); never check one read and use another.
+   - (v0.1.1) provider CLIs run only with their isolation controls (`--safe-mode --restricted
+     --strict-mcp-config --disable-slash-commands`; Codex `--ignore-user-config --ignore-rules`),
+     each confirmed in the installed `--help`, and only after a positive subscription-auth check
+     (`allowed_auth_methods` / `auth_status_pattern`, empty = blocked). Env filtering alone is not
+     a billing guarantee.
+   - tests and the browser gate use disposable state only (temp HOME/DB/fixtures, port 0); the
+     browser gate never loads `apps/web/vite.config.ts` or the repo `.env`.
 
 ## Commands
 
@@ -79,6 +94,8 @@ bun run collector:hooks  # print-only merge of the Claude hook into ~/.claude/se
 bun run collector:codex  # resident Codex log tailer
 bun run managed:demo     # simulated managed-pipeline demo on a throwaway fixture repo (no model)
 bun run managed:preflight # check configured live providers without calling a model
+bun run test:browser     # managed-task browser gate (disposable hub, cached Playwright Chromium)
+bun run verify           # every required gate in one command
 bun run check:secrets    # scan tracked/untracked files for token patterns
 ```
 
