@@ -1,10 +1,46 @@
 # Agent City
 
-A live map of my coding agents. Every Claude Code / Codex session on every machine is collected into a
-local hub and drawn as a city: GitHub repos are buildings, grouped into districts
-(`games`, `school`, `client`, `infra`, `uncategorized`), and active agents walk between them.
+A local telemetry dashboard for Claude Code and Codex sessions, with read-only
+GitHub repository status. Collectors feed redacted events to a Bun/SQLite hub;
+a React 2D view shows repositories, live sessions, and the event stream.
 
-Phase 0 (this repo today) is the data layer plus a flat 2D view to verify it; the 3D city is Phase 1.
+**Current status:** the data layer and 2D inspection view are implemented.
+Collection covers the machines and supported session events you configure.
+Workflow orchestration and the 3D city are future work: this version does not
+schedule tasks, launch agents, advance pipeline stages, or approve actions.
+
+The next priority is reliable workflow tracking and explicit control boundaries.
+The city visualization comes after that foundation.
+
+[Quick start](#quick-start-cockpit) · [Checks](#development-and-checks) ·
+[Environment](#environment) · [Security](#security-model) · [Roadmap](#roadmap)
+
+## Implemented features
+
+- Claude Code hooks and a Codex log tailer, with local spooling during outages
+- Shared event schemas, session/agent IDs, redaction, and status transitions
+- A Hono hub with SQLite storage, ingest, REST reads, WebSocket updates, and stale-session handling
+- Read-only GitHub repository/CI sync, rate-limit handling, ETag caching, and local checkout mapping
+- A flat React UI for inspecting repositories, sessions, and events
+- Machine roles and SSH-tunnel setup for collectors on separate hosts
+
+## Architecture and repository map
+
+```text
+Claude hook / Codex tailer
+  → redact → POST /ingest (or local spool while offline)
+  → SQLite → /api + /ws → React 2D view
+GitHub (read-only) → repository / CI sync → SQLite
+```
+
+| Path | Responsibility |
+|---|---|
+| `apps/collector/` | Claude hook launcher, Codex tailer, config, redaction integration, and spool |
+| `apps/hub/` | Hono + `bun:sqlite`, `/healthz`, `/ingest`, `/api/*`, `/ws`, GitHub sync, stale sweep |
+| `apps/web/` | Vite + React 2D repository/session/event view |
+| `packages/schema/` | Zod types, status machine, IDs, redaction, secret patterns, SQL migrations |
+| `config/districts.yaml` | Repository-to-district mapping |
+| `scripts/` | Secret scanning, documentation parity, golden-event helpers |
 
 ## Machines
 
@@ -16,31 +52,23 @@ Phase 0 (this repo today) is the data layer plus a flat 2D view to verify it; th
 
 Set the role per machine with `AGENTCITY_MACHINE`.
 
-## Layout
+## Quick start (cockpit)
 
-```
-apps/hub          Hono + bun:sqlite — /healthz, /ingest, /api/*, /ws, GitHub sync, stale sweep
-apps/collector    Claude Code hook (bin/claude-hook), Codex log tailer, local spool
-apps/web          Vite + React 2D view (repos · live sessions · event stream)
-packages/schema   zod types, status machine, redaction, secret patterns, SQL migrations
-config/           districts.yaml (repo → district)
-scripts/          check-secrets.ts
-```
-
-Data flow: `hook / codex tail → redact → POST /ingest (or ~/.agentcity/spool.jsonl) → SQLite → /api + /ws → web`.
-
-## Setup (cockpit)
-
-Requires [Bun](https://bun.sh) (`brew install bun`) and git.
+Requires [Bun](https://bun.sh) and Git. For GitHub sync, configure a token with
+the read permissions described below, or use an existing `gh` CLI login.
 
 ```sh
+git clone https://github.com/EdwardH-jedi/agent-city.git
+cd agent-city
 bun install
 cp .env.example .env         # fill in secrets by hand (see Environment)
 bun run sync:github          # first GitHub sync → prints a summary
 bun run dev                  # hub :4317 + web :5173  (or dev:hub / dev:web separately)
 ```
 
-Open http://127.0.0.1:5173.
+Open http://127.0.0.1:5173. Set `INGEST_TOKEN` in `.env` before collecting
+events; an unset token disables ingest. Keep the hub on loopback. Read the
+[security model](#security-model) before changing its bind address.
 
 Collectors on cockpit:
 
@@ -54,6 +82,23 @@ bun run collector:codex      # resident Codex tailer (keep it running in a termi
 ```
 
 Hooks load when a Claude Code session starts — open a new session after applying.
+
+## Development and checks
+
+Run from the repository root:
+
+```sh
+bun run typecheck
+bun run lint
+bun test
+bun run check:secrets
+```
+
+The test suite covers schema/IDs/redaction, collector mapping and spooling,
+hub ingestion and ordering, GitHub integration logic, web-state merging, and
+documentation parity. These checks do not by themselves prove a live
+multi-machine deployment or provider session compatibility. `main` currently
+has no GitHub Actions workflow; run the checks locally for the change under review.
 
 ## Environment
 
@@ -99,8 +144,9 @@ first time the tailer reaches the file's end — that is persisted with the offs
 appended afterwards is always collected, whatever its timestamp.
 
 **GitHub token.** A fine-grained PAT only sees one resource owner: repos from organizations or where
-you are a collaborator won't sync. Today every repo is owned by the account, so nothing is missing; if
-that changes, use a classic read-only PAT or empty `GITHUB_TOKEN` to fall back to `gh auth token`.
+you are a collaborator may require different token coverage. Check the synced repository list
+against the repositories you expect. Use the least-privileged credentials that cover your
+repositories; an empty `GITHUB_TOKEN` falls back to the current `gh auth token`.
 CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync summary).
 
 ## Scripts
@@ -156,7 +202,7 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
 - Collectors on every machine (cockpit included) reach it through an SSH tunnel to spine, as above.
 - cockpit's web: `HUB_URL=http://127.0.0.1:4317` over the tunnel, `bun run dev:web`.
 - `REPO_ROOTS` mapping only covers spine's disk; per-machine `repo_paths` need collector-side
-  reporting (see Next).
+  reporting (see Roadmap).
 - Before binding to a LAN/Tailscale address instead of a tunnel: add a configurable Host allowlist
   (today only loopback + `HUB_HOST` pass), put TLS in front, and require auth on `/api` and `/ws`.
 - Back up `data/agentcity.db` (SQLite `.backup`) nightly.
@@ -173,7 +219,7 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
 - Collectors redact before spooling/sending: prompt text is never stored (length only); `tool_input`
   is reduced to tool name + file path + first 80 chars of a command, all through `redact()`; every
   string field of an event is sanitized, and the hub re-applies all of it before storing.
-- Hooks never block: always exit 0, no stdout. The event is written to the spool **before** any
+- Hooks are designed to avoid blocking sessions: exit 0, no stdout. The event is written to the spool **before** any
   network I/O; the POST gets only the time left (≤ 300 ms, all work inside 450 ms), the hook's own
   timer exits at 500 ms, and the launcher `bin/claude-hook` SIGKILLs it after
   `AGENTCITY_HOOK_KILL_S` (default 0.6 s) even if it is stuck in synchronous work. Hooks are
@@ -205,32 +251,34 @@ text; don't paste secrets into commands in the first place):
 
 ## Roadmap
 
-- **Step 0 — Scaffold** ✅
-- **Phase 0 — Data layer** ✅ schema + status machine + redaction; hub (ingest / API / ws / stale
-  sweep, Host/Origin guard); GitHub sync (GraphQL + CI ETag + local mapping); Claude hook + spool;
-  Codex tailer; 2D view.
-- **Phase 1 — Live city**: see Next.
+The following work is planned, not implemented by the telemetry layer above.
 
-## Next
+1. **Workflow foundation:** define work items, pipeline stages, ownership,
+   transitions, and completion evidence before adding agent control. Keep
+   observation distinct from commands and approvals.
+2. **Reliable multi-machine tracking:** collector-reported `repo_paths`, machine
+   presence, and service/tunnel lifecycle management. The setup instructions above
+   describe how to run collectors; they do not imply every machine is deployed.
+3. **Permissioned control:** progress from read-only observation to notifications,
+   then explicit per-action approval for local agent actions. GitHub remains
+   read-only unless a separate decision changes that scope.
+4. **Live city view:** an R3F (React Three Fiber) scene with districts, repository
+   buildings, and agents, retaining the 2D view for debugging.
+5. **Event delivery:** evaluate GitHub push/workflow webhooks, with polling as the
+   fallback. Webhooks would need a public endpoint or relay.
 
-**Phase 1**
-- R3F (react-three-fiber) city: districts as blocks, repos as buildings (height = commits_30d, CI
-  colour), agents as walkers; the 2D view stays as a debug panel.
-- Multi-machine for real: collectors on forge/spine through tunnels; collector-reported `repo_paths`
-  per machine; machine presence.
-- Evaluate GitHub webhooks (push / workflow_run) instead of polling — needs a public endpoint or a
-  relay; keep polling as the fallback.
-- Control plane in permission stages: read-only (today) → notify (e.g. waiting > N min) → act on local
-  agents with explicit per-action approval. No GitHub writes at any stage without a new decision.
+### Known gaps and deferred work
 
-**Deferred from Phase 0**
-- Codex subagents (`spawn_agent`) as agent rows (no reliable end signal yet).
-- Tool events fired inside a Claude subagent are attributed to the main agent (Claude's internal agent
-  id can't be matched to the Task call).
-- Bisect a rejected ingest batch so one bad event doesn't park the whole batch.
-- Repos deleted on GitHub / access lost stay with a stale `synced_at` — mark or prune.
-- CI badge from the default branch only (`actions/runs?branch=<default>`) instead of the latest run
-  on any branch.
-- Configurable Host allowlist + auth on `/api` and `/ws` before any non-loopback bind.
-- launchd units for the hub, `collector:codex` and SSH tunnels.
-- Prune `github_etags` rows of tokens no longer in use (keys are token-scoped; old ones just sit).
+- Codex subagents (`spawn_agent`) are not represented as separate agent rows;
+  there is no reliable end signal yet
+- Tool events inside a Claude subagent are attributed to the main agent because
+  the internal agent ID cannot be matched to the Task call
+- A rejected ingest batch is parked as a whole; bisecting it to isolate one bad
+  event remains work to do
+- Deleted/inaccessible GitHub repos remain with stale `synced_at` values
+- CI status uses the latest run on any branch; default-branch-only badges remain
+  deferred
+- A configurable Host allowlist and auth on `/api` and `/ws` are needed before
+  exposing a hub beyond loopback
+- Service units for the hub, Codex tailer, and SSH tunnels remain to be added
+- Old token-scoped `github_etags` rows are not automatically pruned
