@@ -275,8 +275,8 @@ async function main(): Promise<number> {
 		const provoked =
 			/WebSocket/.test(text) ||
 			(/Failed to load resource/.test(text) &&
-				// 401: token tests · 409: tampered-evidence test · 502: hub-restart window
-				/(status of (401|409|502)\b|ERR_CONNECTION_RESET|ERR_FAILED)/.test(
+				// 401: token tests · 404: unknown deep link · 409: tampered evidence · 502: hub restart
+				/(status of (401|404|409|502)\b|ERR_CONNECTION_RESET|ERR_CONNECTION_REFUSED|ERR_FAILED)/.test(
 					text,
 				));
 		if (m.type() === "error" && !provoked) consoleErrors.push(text);
@@ -785,11 +785,63 @@ async function main(): Promise<number> {
 		async () => {
 			await page.reload();
 			await page.getByTestId("new-title").waitFor();
-			assert(page.url().endsWith("#tasks"), "tab not restored");
+			assert(page.url().includes("#tasks"), "tab not restored");
 			await page.getByRole("button", { name: "Observed sessions" }).click();
 			await page.getByRole("heading", { name: /Live sessions/ }).waitFor();
 			await page.getByRole("button", { name: "Managed tasks" }).click();
 			await page.getByTestId("new-title").waitFor();
+		},
+	);
+
+	await step(
+		"deep links: #tasks/<id> restores the task after refresh; unknown id is explained",
+		async () => {
+			await page.goto(`${base}/#tasks/${ok}`);
+			await page.reload();
+			await page
+				.locator(`[data-testid=task-detail][data-task-id="${ok}"]`)
+				.waitFor();
+			const focused = await page.evaluate(() =>
+				document.activeElement?.getAttribute("data-testid"),
+			);
+			assert(focused === "detail-heading", `focus is on ${focused}`);
+			await page.goto(
+				`${base}/#tasks/task-00000000-0000-0000-0000-000000000000`,
+			);
+			await page.reload();
+			await page.getByText("that task does not exist on this hub").waitFor();
+			assert(page.url().endsWith("#tasks"), "the bad deep link was kept");
+			await page.getByTestId("detail-placeholder").waitFor();
+		},
+	);
+
+	await step("keyboard: Enter on a focused task row opens it", async () => {
+		const row = page.locator(`[data-testid=task-row][data-task-id="${b}"]`);
+		await row.focus();
+		await page.keyboard.press("Enter");
+		await page
+			.locator(`[data-testid=task-detail][data-task-id="${b}"]`)
+			.waitFor();
+		assert(page.url().endsWith(`#tasks/${b}`), "deep link not updated");
+	});
+
+	await step(
+		"offline: a lost detail request shows an offline notice that clears on recovery",
+		async () => {
+			await page.route(`**/api/managed/tasks/${b}`, (route) =>
+				route.abort("connectionrefused"),
+			);
+			await page.locator(`[data-testid=task-row][data-task-id="${b}"]`).click();
+			await page.getByTestId("offline").waitFor();
+			assert(
+				await page
+					.locator(`[data-testid=task-detail][data-task-id="${b}"]`)
+					.isVisible(),
+				"last loaded detail was dropped",
+			);
+			await page.unrouteAll();
+			await page.locator(`[data-testid=task-row][data-task-id="${b}"]`).click();
+			await page.getByTestId("offline").waitFor({ state: "detached" });
 		},
 	);
 

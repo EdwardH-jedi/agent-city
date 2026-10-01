@@ -48,7 +48,7 @@ export function App() {
 	const { districts, sessions, events, conn, error, managedSeq } =
 		useHub(filter);
 	const [view, setView] = useState<"city" | "tasks">(() =>
-		location.hash === "#tasks" ? "tasks" : "city",
+		location.hash.startsWith("#tasks") ? "tasks" : "city",
 	);
 	const show = (v: "city" | "tasks") => {
 		history.replaceState(null, "", v === "tasks" ? "#tasks" : "#");
@@ -56,7 +56,8 @@ export function App() {
 	};
 	// back/forward and typed `#tasks` links switch the tab too (not only the initial load)
 	useEffect(() => {
-		const onHash = () => setView(location.hash === "#tasks" ? "tasks" : "city");
+		const onHash = () =>
+			setView(location.hash.startsWith("#tasks") ? "tasks" : "city");
 		window.addEventListener("hashchange", onHash);
 		return () => window.removeEventListener("hashchange", onHash);
 	}, []);

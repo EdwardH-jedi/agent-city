@@ -17,6 +17,7 @@ import type {
 } from "@agent-city/schema";
 import {
 	type FormEvent,
+	type RefObject,
 	useCallback,
 	useEffect,
 	useRef,
@@ -119,6 +120,14 @@ const uncertain = (err: unknown) =>
 	err instanceof ApiError && (err.status === 0 || err.status >= 500);
 
 const TOKEN_KEY = "agentcity.managedToken";
+
+const TASK_HASH = /^#tasks\/(task-[0-9a-f-]{36})$/;
+/** `#tasks/<task id>` → the id; anything else → null. */
+const taskFromHash = (): string | null =>
+	TASK_HASH.exec(location.hash)?.[1] ?? null;
+/** Keep the URL pointing at the selected task (no history entry per click). */
+const setTaskHash = (id: string | null) =>
+	history.replaceState(null, "", id ? `#tasks/${id}` : "#tasks");
 const newKey = () => `ui-${crypto.randomUUID()}`;
 type Call = <T>(path: string, json?: unknown) => Promise<T | undefined>;
 
@@ -138,11 +147,15 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	const [draftToken, setDraftToken] = useState("");
 	const [info, setInfo] = useState<ManagedInfo | null>(null);
 	const [tasks, setTasks] = useState<ManagedTask[]>([]);
-	const [selected, setSelected] = useState<string | null>(null);
+	// deep link: #tasks/<task id> selects that task (and survives a refresh)
+	const [selected, setSelected] = useState<string | null>(() => taskFromHash());
 	const [detail, setDetail] = useState<Detail | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [unavailable, setUnavailable] = useState<string | null>(null);
 	const [epoch, setEpoch] = useState(0);
+	const [loaded, setLoaded] = useState(false);
+	const [offline, setOffline] = useState(false);
+	const detailHeading = useRef<HTMLHeadingElement | null>(null);
 
 	// refs read by async callbacks: the CURRENT token / epoch / selection, not the captured ones
 	const epochRef = useRef(0);
@@ -166,6 +179,8 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 		setDetail(null);
 		setUnavailable(null);
 		setError(message);
+		setLoaded(false);
+		setTaskHash(null);
 	}, []);
 
 	/** Epoch-guarded request: undefined when the answer belongs to an older token / purge. */
@@ -198,11 +213,20 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 				const d = await call<Detail>(`/tasks/${id}`);
 				if (!d || seq !== detailSeq.current || selectedRef.current !== id)
 					return;
+				setOffline(false);
 				setDetail((cur) =>
 					cur && cur.task.id === id && !newerTask(d.task, cur.task) ? cur : d,
 				);
 			} catch (err) {
-				if (seq === detailSeq.current) setError((err as Error).message);
+				if (seq !== detailSeq.current) return;
+				if (err instanceof ApiError && err.status === 404) {
+					// a deep link / stale selection to a task that does not exist (any more)
+					setSelected(null);
+					setTaskHash(null);
+					setError("that task does not exist on this hub");
+				} else if (err instanceof ApiError && err.status === 0)
+					setOffline(true);
+				else setError((err as Error).message);
 			}
 		},
 		[call],
@@ -221,8 +245,12 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 			setTasks(list.tasks);
 			setUnavailable(null);
 			setAuth("ok");
+			setLoaded(true);
+			setOffline(false);
 		} catch (err) {
-			if (seq === listSeq.current) setError((err as Error).message);
+			if (seq !== listSeq.current) return;
+			if (err instanceof ApiError && err.status === 0) setOffline(true);
+			else setError((err as Error).message);
 		}
 		const id = selectedRef.current;
 		if (id) await loadDetail(id);
@@ -249,6 +277,7 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	}, [busy, refresh]);
 
 	const select = (id: string) => {
+		setTaskHash(id);
 		if (id === selected) {
 			void loadDetail(id); // re-clicking refreshes; it never blanks the view
 			return;
@@ -256,6 +285,13 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 		setDetail(null);
 		setSelected(id);
 	};
+
+	// keyboard users land on the detail they opened
+	const detailId = detail?.task.id ?? null;
+	useEffect(() => {
+		if (detailId && detailId === selectedRef.current)
+			detailHeading.current?.focus({ preventScroll: true });
+	}, [detailId]);
 
 	if (auth === "none")
 		return (
@@ -323,6 +359,11 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 			<section className="tasks-gate" data-testid="authenticating">
 				<h2>Managed tasks</h2>
 				<p className="muted">checking the token with the hub…</p>
+				{offline && (
+					<p className="mnote mnote-warn" data-testid="offline">
+						The hub cannot be reached right now; it is retried on reconnect.
+					</p>
+				)}
 				<button
 					type="button"
 					className="link"
@@ -389,7 +430,15 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 								data-testid="task-row"
 								data-task-id={t.id}
 								className={t.id === selected ? "selected" : undefined}
+								tabIndex={0}
+								aria-selected={t.id === selected}
 								onClick={() => select(t.id)}
+								onKeyDown={(e) => {
+									if (e.key === "Enter" || e.key === " ") {
+										e.preventDefault();
+										select(t.id);
+									}
+								}}
 							>
 								<td title={t.id}>
 									{t.title}
@@ -410,12 +459,22 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 						))}
 					</tbody>
 				</table>
-				{tasks.length === 0 && <p className="muted">no managed tasks yet</p>}
+				{offline && (
+					<p className="mnote mnote-warn" data-testid="offline">
+						The hub cannot be reached right now; showing the last loaded state.
+						It refreshes on its own when the connection is back.
+					</p>
+				)}
+				{!loaded && <p className="muted">loading tasks…</p>}
+				{loaded && tasks.length === 0 && (
+					<p className="muted">no managed tasks yet</p>
+				)}
 			</section>
 			<section className="tasks-right">
 				{detail && detail.task.id === selected ? (
 					<TaskDetail
 						key={`${detail.task.id}-${epoch}`}
+						headingRef={detailHeading}
 						detail={detail}
 						call={call}
 						liveVerified={info?.live_integration_verified ?? false}
@@ -680,12 +739,14 @@ interface Viewer {
 }
 
 function TaskDetail({
+	headingRef,
 	detail,
 	call,
 	liveVerified,
 	onChanged,
 	onError,
 }: {
+	headingRef: RefObject<HTMLHeadingElement | null>;
 	detail: Detail;
 	call: Call;
 	liveVerified: boolean;
@@ -788,7 +849,7 @@ function TaskDetail({
 			data-task-id={task.id}
 			data-rev={task.rev}
 		>
-			<h2>
+			<h2 ref={headingRef} tabIndex={-1} data-testid="detail-heading">
 				{task.title} <Tag badge={mode} />{" "}
 				<span data-testid="detail-state">
 					<Tag badge={stateBadge(task, integrity)} />

@@ -47,7 +47,9 @@ bun run dev                     # hub + web
 
 Open the web UI → **Managed tasks** → paste the token → fill the form (mode *simulated*, pick a
 scenario) → **Create draft** → **Approve & run**. The task list and detail update live and survive a
-refresh or a hub restart. The **Observed sessions** tab is the existing telemetry view.
+refresh or a hub restart. A task can be linked directly (`#tasks/<task id>`); its detail has a
+**Diagnostics** section (where it stopped, why, integrity, the next safe step). The **Observed
+sessions** tab is the existing telemetry view.
 
 Scenarios: `approve`, `reject_then_approve`, `reject_always`, `malformed_review`, `reviewer_error`,
 `review_wrong_candidate`, `reviewer_mutates`, `verification_fails`, `verification_fails_then_fixed`,
