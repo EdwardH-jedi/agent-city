@@ -76,6 +76,8 @@ export interface FixtureOptions {
 	limits?: Record<string, unknown>;
 	/** File-backed DB (restart tests). Default: in-memory. */
 	dbFile?: boolean;
+	/** Repo id in the generated config (default `local/fixture`). */
+	repoId?: string;
 	/** Enable live mode against generated stub `claude` / `codex` executables (never the real CLIs). */
 	liveStubs?: { claudeTimeoutS?: number; codexTimeoutS?: number };
 }
@@ -108,7 +110,7 @@ export function makeFixture(opts: FixtureOptions = {}): Fixture {
 							timeout_s: 30,
 						},
 					];
-	const repoId = "local/fixture";
+	const repoId = opts.repoId ?? "local/fixture";
 	const config = parseManagedConfig({
 		workspace_root: join(dir, "workspaces"),
 		artifacts_root: join(dir, "artifacts"),

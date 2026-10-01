@@ -54,6 +54,12 @@ export function App() {
 		history.replaceState(null, "", v === "tasks" ? "#tasks" : "#");
 		setView(v);
 	};
+	// back/forward and typed `#tasks` links switch the tab too (not only the initial load)
+	useEffect(() => {
+		const onHash = () => setView(location.hash === "#tasks" ? "tasks" : "city");
+		window.addEventListener("hashchange", onHash);
+		return () => window.removeEventListener("hashchange", onHash);
+	}, []);
 	const now = useNow(5_000);
 
 	// live session counts per repo, computed from the session list so they update in real time

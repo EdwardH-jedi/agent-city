@@ -20,7 +20,10 @@ Resume from this file + `git log` / `git diff`, never from memory.
   (tests: `apps/hub/src/managed/provider-hardening.test.ts`, 24 cases; finding while testing: an
   escaped descendant holding the pipes is only provable gone by pipe EOF in the same process —
   after a restart that quarantine stays open by design)
-- [ ] Phase 3 — browser gate + Tasks UX fixes
+- [x] Phase 3 — browser gate (`bun run test:browser`, `apps/web/e2e/browser-gate.ts`, 20 checks) +
+  Tasks UX fixes (auth epoch, guarded selection/detail, purge, uncertain create, viewer seq,
+  line-split criteria, hash navigation). Dependency: `playwright-core` 1.63.0 (dev, pinned); uses the
+  cached Chromium 1243 build, no download.
 - [ ] Phase 4 — CI workflow (not pushed), split commands, flake loop, docs reconcile
 - [ ] Phase 5 — optional
 
@@ -30,4 +33,4 @@ Resume from this file + `git log` / `git diff`, never from memory.
 
 ## Next command
 
-`cd ../agent-city-v011 && bun test apps/hub/src/managed` (then Phase 3: browser gate)
+`cd ../agent-city-v011 && bun run test:browser` (then Phase 4: CI file, split commands, docs)

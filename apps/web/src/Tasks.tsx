@@ -2,6 +2,11 @@
 // inspect evidence and review findings. Talks to /api/managed with a bearer token the user pastes
 // (kept in sessionStorage for this tab only). Everything shown is re-fetched from the hub, so a
 // refresh or a reconnect loses nothing.
+//
+// Response ordering (v0.1.1): every request is tagged with the auth epoch (bumped on token change,
+// Forget and 401) and, for detail / list / artifact loads, a sequence number. A response whose
+// epoch or sequence is no longer current is dropped, and a task snapshot with a lower `rev` never
+// replaces a newer one. A late 401 for an old token cannot clear a newer token.
 import type {
 	ExecutionMode,
 	ManagedArtifact,
@@ -26,8 +31,12 @@ import {
 	isActive,
 	modeBadge,
 	modelLabel,
+	newerTask,
 	runLabel,
+	type Submission,
+	sameSubmission,
 	shortSha,
+	splitLines,
 	splitList,
 	stateBadge,
 } from "./managed-view.ts";
@@ -52,11 +61,15 @@ interface Detail {
 	reviews: ManagedReview[];
 	artifacts: ManagedArtifact[];
 	integrity: Integrity | null;
+	evidence_integrity?: { intact: boolean; problems: string[] } | null;
+	quarantine?: { pid: number; reason: string; last_check: string | null }[];
 }
 
 class ApiError extends Error {
 	constructor(
+		/** 0 = no response at all (network error): the outcome of a write is unknown. */
 		readonly status: number,
+		readonly code: string | null,
 		message: string,
 	) {
 		super(message);
@@ -64,14 +77,19 @@ class ApiError extends Error {
 }
 
 async function api<T>(token: string, path: string, json?: unknown): Promise<T> {
-	const res = await fetch(`/api/managed${path}`, {
-		method: json === undefined ? "GET" : "POST",
-		headers: {
-			authorization: `Bearer ${token}`,
-			...(json === undefined ? {} : { "content-type": "application/json" }),
-		},
-		body: json === undefined ? undefined : JSON.stringify(json),
-	});
+	let res: Response;
+	try {
+		res = await fetch(`/api/managed${path}`, {
+			method: json === undefined ? "GET" : "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				...(json === undefined ? {} : { "content-type": "application/json" }),
+			},
+			body: json === undefined ? undefined : JSON.stringify(json),
+		});
+	} catch {
+		throw new ApiError(0, null, "the hub could not be reached");
+	}
 	const data = (await res.json().catch(() => ({}))) as {
 		error?: string;
 		message?: string;
@@ -84,6 +102,7 @@ async function api<T>(token: string, path: string, json?: unknown): Promise<T> {
 			.join("; ");
 		throw new ApiError(
 			res.status,
+			data.error ?? null,
 			issues ||
 				data.message ||
 				data.reason ||
@@ -94,8 +113,13 @@ async function api<T>(token: string, path: string, json?: unknown): Promise<T> {
 	return data as T;
 }
 
+/** A write whose outcome we cannot know: no response, or a server/proxy failure. */
+const uncertain = (err: unknown) =>
+	err instanceof ApiError && (err.status === 0 || err.status >= 500);
+
 const TOKEN_KEY = "agentcity.managedToken";
 const newKey = () => `ui-${crypto.randomUUID()}`;
+type Call = <T>(path: string, json?: unknown) => Promise<T | undefined>;
 
 // ── view ─────────────────────────────────────────────────────────────────────
 
@@ -107,6 +131,9 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	const [token, setToken] = useState(
 		() => sessionStorage.getItem(TOKEN_KEY) ?? "",
 	);
+	const [auth, setAuth] = useState<"none" | "authenticating" | "ok">(() =>
+		sessionStorage.getItem(TOKEN_KEY) ? "authenticating" : "none",
+	);
 	const [draftToken, setDraftToken] = useState("");
 	const [info, setInfo] = useState<ManagedInfo | null>(null);
 	const [tasks, setTasks] = useState<ManagedTask[]>([]);
@@ -114,38 +141,103 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	const [detail, setDetail] = useState<Detail | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [unavailable, setUnavailable] = useState<string | null>(null);
+	const [epoch, setEpoch] = useState(0);
 
-	const fail = useCallback((err: unknown) => {
-		const e = err as ApiError;
-		if (e.status === 401) {
-			sessionStorage.removeItem(TOKEN_KEY);
-			setToken("");
-			setError("the hub rejected this token");
-		} else if (e.status === 503) setUnavailable(e.message);
-		else setError(e.message);
+	// refs read by async callbacks: the CURRENT token / epoch / selection, not the captured ones
+	const epochRef = useRef(0);
+	const tokenRef = useRef(token);
+	const selectedRef = useRef<string | null>(null);
+	const listSeq = useRef(0);
+	const detailSeq = useRef(0);
+	tokenRef.current = token;
+	selectedRef.current = selected;
+
+	/** Drop everything this token could see and invalidate all in-flight work. */
+	const purge = useCallback((message: string | null) => {
+		epochRef.current++;
+		setEpoch(epochRef.current);
+		sessionStorage.removeItem(TOKEN_KEY);
+		setToken("");
+		setAuth("none");
+		setInfo(null);
+		setTasks([]);
+		setSelected(null);
+		setDetail(null);
+		setUnavailable(null);
+		setError(message);
 	}, []);
 
+	/** Epoch-guarded request: undefined when the answer belongs to an older token / purge. */
+	const call: Call = useCallback(
+		async <T,>(path: string, json?: unknown): Promise<T | undefined> => {
+			const e = epochRef.current;
+			try {
+				const res = await api<T>(tokenRef.current, path, json);
+				return e === epochRef.current ? res : undefined;
+			} catch (err) {
+				if (e !== epochRef.current) return undefined; // late, from an older token
+				if (err instanceof ApiError && err.status === 401) {
+					purge("the hub rejected this token");
+					return undefined;
+				}
+				if (err instanceof ApiError && err.status === 503) {
+					setUnavailable(err.message);
+					return undefined;
+				}
+				throw err;
+			}
+		},
+		[purge],
+	);
+
+	const loadDetail = useCallback(
+		async (id: string) => {
+			const seq = ++detailSeq.current;
+			try {
+				const d = await call<Detail>(`/tasks/${id}`);
+				if (!d || seq !== detailSeq.current || selectedRef.current !== id)
+					return;
+				setDetail((cur) =>
+					cur && cur.task.id === id && !newerTask(d.task, cur.task) ? cur : d,
+				);
+			} catch (err) {
+				if (seq === detailSeq.current) setError((err as Error).message);
+			}
+		},
+		[call],
+	);
+
 	const refresh = useCallback(async () => {
-		if (!token) return;
+		if (!tokenRef.current) return;
+		const seq = ++listSeq.current;
 		try {
 			const [cfg, list] = await Promise.all([
-				api<ManagedInfo>(token, "/config"),
-				api<{ tasks: ManagedTask[] }>(token, "/tasks"),
+				call<ManagedInfo>("/config"),
+				call<{ tasks: ManagedTask[] }>("/tasks"),
 			]);
+			if (!cfg || !list || seq !== listSeq.current) return;
 			setInfo(cfg);
 			setTasks(list.tasks);
 			setUnavailable(null);
-			if (selected) setDetail(await api<Detail>(token, `/tasks/${selected}`));
+			setAuth("ok");
 		} catch (err) {
-			fail(err);
+			if (seq === listSeq.current) setError((err as Error).message);
 		}
-	}, [token, selected, fail]);
+		const id = selectedRef.current;
+		if (id) await loadDetail(id);
+	}, [call, loadDetail]);
 
-	// (re)connect, a `managed` frame, a new selection → re-fetch from the hub
+	// token accepted / (re)connect / `managed` frame → re-fetch from the hub
 	useEffect(() => {
 		void managedSeq; // the trigger: bumped by the hub hook on reconnect / managed frames
-		void refresh();
-	}, [refresh, managedSeq]);
+		void epoch;
+		if (token) void refresh();
+	}, [refresh, managedSeq, epoch, token]);
+
+	// a new selection → its detail (the previous one is never shown under the new id)
+	useEffect(() => {
+		if (selected) void loadDetail(selected);
+	}, [selected, loadDetail]);
 
 	// fallback poll while something is in flight (covers a dropped socket)
 	const busy = tasks.some(isActive);
@@ -155,7 +247,16 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 		return () => clearInterval(t);
 	}, [busy, refresh]);
 
-	if (!token)
+	const select = (id: string) => {
+		if (id === selected) {
+			void loadDetail(id); // re-clicking refreshes; it never blanks the view
+			return;
+		}
+		setDetail(null);
+		setSelected(id);
+	};
+
+	if (auth === "none")
 		return (
 			<section className="tasks-gate">
 				<h2>Managed tasks</h2>
@@ -168,23 +269,34 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 				<form
 					onSubmit={(e) => {
 						e.preventDefault();
-						if (!draftToken.trim()) return;
-						sessionStorage.setItem(TOKEN_KEY, draftToken.trim());
+						const next = draftToken.trim();
+						if (!next) return;
+						epochRef.current++;
+						setEpoch(epochRef.current);
+						sessionStorage.setItem(TOKEN_KEY, next);
 						setError(null);
-						setToken(draftToken.trim());
+						setToken(next);
+						setAuth("authenticating");
 						setDraftToken("");
 					}}
 				>
 					<input
 						type="password"
 						aria-label="managed token"
+						data-testid="token-input"
 						autoComplete="off"
 						value={draftToken}
 						onChange={(e) => setDraftToken(e.target.value)}
 					/>{" "}
-					<button type="submit">Use token</button>
+					<button type="submit" data-testid="token-submit">
+						Use token
+					</button>
 				</form>
-				{error && <p className="err">{error}</p>}
+				{error && (
+					<p className="err" data-testid="auth-error">
+						{error}
+					</p>
+				)}
 			</section>
 		);
 
@@ -205,6 +317,23 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 			</section>
 		);
 
+	if (auth === "authenticating")
+		return (
+			<section className="tasks-gate" data-testid="authenticating">
+				<h2>Managed tasks</h2>
+				<p className="muted">checking the token with the hub…</p>
+				<button
+					type="button"
+					className="link"
+					onClick={() => purge(null)}
+					data-testid="forget-token"
+				>
+					forget token
+				</button>
+				{error && <p className="err">{error}</p>}
+			</section>
+		);
+
 	return (
 		<div className="tasks">
 			<section className="tasks-left">
@@ -213,10 +342,8 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 					<button
 						type="button"
 						className="link"
-						onClick={() => {
-							sessionStorage.removeItem(TOKEN_KEY);
-							setToken("");
-						}}
+						data-testid="forget-token"
+						onClick={() => purge(null)}
 					>
 						forget token
 					</button>
@@ -235,13 +362,15 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 				)}
 				{info && (
 					<NewTask
+						key={`new-${epoch}`}
 						info={info}
-						token={token}
+						call={call}
 						onCreated={(t) => {
+							setDetail(null);
 							setSelected(t.id);
 							void refresh();
 						}}
-						onError={fail}
+						onError={(err) => setError((err as Error).message)}
 					/>
 				)}
 				<table className="task-list">
@@ -256,11 +385,10 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 						{tasks.map((t) => (
 							<tr
 								key={t.id}
+								data-testid="task-row"
+								data-task-id={t.id}
 								className={t.id === selected ? "selected" : undefined}
-								onClick={() => {
-									setDetail(null);
-									setSelected(t.id);
-								}}
+								onClick={() => select(t.id)}
 							>
 								<td title={t.id}>
 									{t.title}
@@ -286,14 +414,15 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 			<section className="tasks-right">
 				{detail && detail.task.id === selected ? (
 					<TaskDetail
+						key={`${detail.task.id}-${epoch}`}
 						detail={detail}
-						token={token}
+						call={call}
 						liveVerified={info?.live_integration_verified ?? false}
 						onChanged={() => void refresh()}
-						onError={fail}
+						onError={(err) => setError((err as Error).message)}
 					/>
 				) : (
-					<p className="muted">
+					<p className="muted" data-testid="detail-placeholder">
 						{selected ? "loading…" : "select a task to see its attempts"}
 					</p>
 				)}
@@ -306,12 +435,12 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 
 function NewTask({
 	info,
-	token,
+	call,
 	onCreated,
 	onError,
 }: {
 	info: ManagedInfo;
-	token: string;
+	call: Call;
 	onCreated: (t: ManagedTask) => void;
 	onError: (err: unknown) => void;
 }) {
@@ -324,35 +453,64 @@ function NewTask({
 	const [scenario, setScenario] = useState<SimulationScenario>("approve");
 	const [repairLimit, setRepairLimit] = useState(info.repair_limit.default);
 	const [pending, setPending] = useState(false);
-	// One key per form fill: a double submit (or a retry after a lost response) creates one task.
+	// One key per intended task: a double submit or a retry after a lost response creates one task.
 	const key = useRef(newKey());
+	/** A create whose outcome is unknown: the key is NOT rotated until that is resolved. */
+	const [unknown, setUnknown] = useState<{
+		key: string;
+		body: Submission;
+	} | null>(null);
+	const [diverged, setDiverged] = useState(false);
 
-	const submit = async (e: FormEvent) => {
-		e.preventDefault();
+	const current = (): Submission => ({
+		repo_id: repo,
+		title,
+		objective,
+		acceptance_criteria: splitLines(criteria),
+		approved_scope: splitList(scope),
+		execution_mode: mode,
+		...(mode === "simulated" ? { simulation_scenario: scenario } : {}),
+		repair_limit: repairLimit,
+	});
+
+	const send = async (k: string, body: Submission) => {
 		if (pending) return;
 		setPending(true);
+		setDiverged(false);
 		try {
-			const { task } = await api<{ task: ManagedTask }>(token, "/tasks", {
-				idempotency_key: key.current,
-				repo_id: repo,
-				title,
-				objective,
-				acceptance_criteria: splitList(criteria),
-				approved_scope: splitList(scope),
-				execution_mode: mode,
-				...(mode === "simulated" ? { simulation_scenario: scenario } : {}),
-				repair_limit: repairLimit,
+			const res = await call<{ task: ManagedTask }>("/tasks", {
+				idempotency_key: k,
+				...body,
 			});
+			if (!res) return;
+			setUnknown(null);
 			key.current = newKey();
-			setTitle("");
-			setObjective("");
-			setCriteria("");
-			onCreated(task);
+			// clear only what still holds the submitted values — later edits are kept
+			setTitle((v) => (v === body.title ? "" : v));
+			setObjective((v) => (v === body.objective ? "" : v));
+			setCriteria((v) =>
+				sameSubmission({ ...body, acceptance_criteria: splitLines(v) }, body)
+					? ""
+					: v,
+			);
+			onCreated(res.task);
 		} catch (err) {
+			if (uncertain(err)) setUnknown({ key: k, body });
 			onError(err);
 		} finally {
 			setPending(false);
 		}
+	};
+
+	const submit = (e: FormEvent) => {
+		e.preventDefault();
+		const body = current();
+		if (unknown) {
+			if (sameSubmission(body, unknown.body)) void send(unknown.key, body);
+			else setDiverged(true); // never silently rotate the key while the outcome is unknown
+			return;
+		}
+		void send(key.current, body);
 	};
 
 	const repoInfo = info.repos.find((r) => r.id === repo);
@@ -380,6 +538,7 @@ function NewTask({
 				<input
 					required
 					maxLength={120}
+					data-testid="new-title"
 					value={title}
 					onChange={(e) => setTitle(e.target.value)}
 				/>
@@ -390,15 +549,17 @@ function NewTask({
 					required
 					maxLength={4000}
 					rows={3}
+					data-testid="new-objective"
 					value={objective}
 					onChange={(e) => setObjective(e.target.value)}
 				/>
 			</label>
 			<label>
-				acceptance criteria (one per line)
+				acceptance criteria (one per line; commas are kept)
 				<textarea
 					required
 					rows={2}
+					data-testid="new-criteria"
 					value={criteria}
 					onChange={(e) => setCriteria(e.target.value)}
 				/>
@@ -407,6 +568,7 @@ function NewTask({
 				approved scope (path prefixes, comma separated; "." = whole repo)
 				<input
 					required
+					data-testid="new-scope"
 					value={scope}
 					onChange={(e) => setScope(e.target.value)}
 				/>
@@ -431,6 +593,7 @@ function NewTask({
 					<label>
 						scenario
 						<select
+							data-testid="new-scenario"
 							value={scenario}
 							onChange={(e) =>
 								setScenario(e.target.value as SimulationScenario)
@@ -464,8 +627,41 @@ function NewTask({
 						: " This integration has only been tested against stub executables."}
 				</p>
 			)}
-			<button type="submit" disabled={pending}>
-				{pending ? "creating…" : "Create draft"}
+			{unknown && (
+				<div className="mnote mnote-warn" data-testid="uncertain-create">
+					The last create got no answer — it may or may not exist.{" "}
+					{diverged ? (
+						<>
+							You changed the form since.{" "}
+							<button
+								type="button"
+								data-testid="recover-original"
+								disabled={pending}
+								onClick={() => void send(unknown.key, unknown.body)}
+							>
+								Recover the original request
+							</button>{" "}
+							<button
+								type="button"
+								data-testid="start-new"
+								disabled={pending}
+								onClick={() => {
+									setUnknown(null);
+									setDiverged(false);
+									key.current = newKey();
+									void send(key.current, current());
+								}}
+							>
+								Create a new task from the form
+							</button>
+						</>
+					) : (
+						"Submitting the same form again recovers it (no duplicate is created)."
+					)}
+				</div>
+			)}
+			<button type="submit" disabled={pending} data-testid="create-button">
+				{pending ? "creating…" : unknown ? "Retry create" : "Create draft"}
 			</button>
 			<span className="muted"> nothing runs until you approve it</span>
 		</form>
@@ -474,26 +670,31 @@ function NewTask({
 
 // ── detail ───────────────────────────────────────────────────────────────────
 
+interface Viewer {
+	artifact: ManagedArtifact;
+	attempt: number | null;
+	state: "loading" | "ok" | "error";
+	text: string;
+	truncated: boolean;
+}
+
 function TaskDetail({
 	detail,
-	token,
+	call,
 	liveVerified,
 	onChanged,
 	onError,
 }: {
 	detail: Detail;
-	token: string;
+	call: Call;
 	liveVerified: boolean;
 	onChanged: () => void;
 	onError: (err: unknown) => void;
 }) {
 	const { task, runs, reviews, artifacts, integrity } = detail;
 	const [pending, setPending] = useState<"run" | "cancel" | null>(null);
-	const [viewer, setViewer] = useState<{
-		name: string;
-		text: string;
-		truncated: boolean;
-	} | null>(null);
+	const [viewer, setViewer] = useState<Viewer | null>(null);
+	const viewSeq = useRef(0);
 	const [files, setFiles] = useState<{ status: string; path: string }[] | null>(
 		null,
 	);
@@ -502,7 +703,7 @@ function TaskDetail({
 		if (pending) return;
 		setPending(kind);
 		try {
-			await api(token, `/tasks/${task.id}/${kind}`, {});
+			await call(`/tasks/${task.id}/${kind}`, {});
 			onChanged();
 		} catch (err) {
 			onError(err);
@@ -511,14 +712,50 @@ function TaskDetail({
 		}
 	};
 
-	const open = useCallback(
+	const fetchArtifact = useCallback(
 		(artifactId: string) =>
-			api<{ text: string; truncated: boolean }>(
-				token,
+			call<{ text: string; truncated: boolean }>(
 				`/tasks/${task.id}/artifacts/${artifactId}`,
 			),
-		[token, task.id],
+		[call, task.id],
 	);
+
+	/** Open an artifact; a late answer can neither reopen a closed viewer nor replace a newer one. */
+	const open = async (a: ManagedArtifact) => {
+		const seq = ++viewSeq.current;
+		const attempt = runs.find((r) => r.id === a.run_id)?.attempt_no ?? null;
+		setViewer({
+			artifact: a,
+			attempt,
+			state: "loading",
+			text: "",
+			truncated: false,
+		});
+		try {
+			const r = await fetchArtifact(a.id);
+			if (seq !== viewSeq.current || !r) return;
+			setViewer({
+				artifact: a,
+				attempt,
+				state: "ok",
+				text: r.text,
+				truncated: r.truncated,
+			});
+		} catch (err) {
+			if (seq !== viewSeq.current) return;
+			setViewer({
+				artifact: a,
+				attempt,
+				state: "error",
+				text: (err as Error).message,
+				truncated: false,
+			});
+		}
+	};
+	const close = () => {
+		viewSeq.current++;
+		setViewer(null);
+	};
 
 	// changed files of the newest attempt that has evidence
 	const latest = [...runs].reverse().find((r) => r.candidate_sha);
@@ -529,23 +766,32 @@ function TaskDetail({
 		setFiles(null);
 		if (!filesArtifactId) return;
 		let live = true;
-		open(filesArtifactId)
+		fetchArtifact(filesArtifactId)
 			.then((r) => {
-				if (live) setFiles(JSON.parse(r.text));
+				if (live && r) setFiles(JSON.parse(r.text));
 			})
 			.catch(() => {});
 		return () => {
 			live = false;
 		};
-	}, [filesArtifactId, open]);
+	}, [filesArtifactId, fetchArtifact]);
 
 	const reason = blockingReason(task);
 	const mode = modeBadge(task, liveVerified);
+	const evidence = detail.evidence_integrity ?? null;
+	const quarantine = detail.quarantine ?? [];
 	return (
-		<div className="task-detail">
+		<div
+			className="task-detail"
+			data-testid="task-detail"
+			data-task-id={task.id}
+			data-rev={task.rev}
+		>
 			<h2>
 				{task.title} <Tag badge={mode} />{" "}
-				<Tag badge={stateBadge(task, integrity)} />
+				<span data-testid="detail-state">
+					<Tag badge={stateBadge(task, integrity)} />
+				</span>
 			</h2>
 			{task.state === "human_ready" && task.execution_mode === "simulated" && (
 				<p className="mnote mnote-sim">
@@ -564,17 +810,32 @@ function TaskDetail({
 				</p>
 			)}
 			{integrity && !integrity.intact && (
-				<p className="mnote mnote-bad">
-					The workspace no longer matches the reviewed candidate:{" "}
-					{integrity.reason}
+				<p className="mnote mnote-bad" data-testid="workspace-integrity">
+					Workspace integrity: the workspace no longer matches the reviewed
+					candidate: {integrity.reason}
+				</p>
+			)}
+			{evidence && !evidence.intact && (
+				<p className="mnote mnote-bad" data-testid="evidence-integrity">
+					Evidence integrity: stored evidence does not match what was recorded —{" "}
+					{evidence.problems.slice(0, 4).join("; ")}
+				</p>
+			)}
+			{quarantine.length > 0 && (
+				<p className="mnote mnote-bad" data-testid="quarantine">
+					A process of this task could not be confirmed terminated (pid{" "}
+					{quarantine.map((q) => q.pid).join(", ")}). Run and Cancel stay
+					blocked until it is proven gone. Last check:{" "}
+					{quarantine[0]?.last_check ?? "pending"}
 				</p>
 			)}
 			{reason && <p className="mnote mnote-warn">{reason}</p>}
 
 			<div className="actions">
-				{canRun(task) && (
+				{canRun(task) && quarantine.length === 0 && (
 					<button
 						type="button"
+						data-testid="run-button"
 						disabled={pending !== null}
 						onClick={() => act("run")}
 					>
@@ -584,6 +845,7 @@ function TaskDetail({
 				{canCancel(task) && (
 					<button
 						type="button"
+						data-testid="cancel-button"
 						disabled={pending !== null}
 						onClick={() => act("cancel")}
 					>
@@ -593,6 +855,10 @@ function TaskDetail({
 			</div>
 
 			<dl>
+				<dt>task</dt>
+				<dd>
+					<code title={task.id}>{task.id.slice(0, 13)}</code> · rev {task.rev}
+				</dd>
 				<dt>repository</dt>
 				<dd>
 					{task.repo_id} @ {task.base_ref} · base{" "}
@@ -602,7 +868,7 @@ function TaskDetail({
 				<dd className="pre">{task.objective}</dd>
 				<dt>acceptance criteria</dt>
 				<dd>
-					<ul>
+					<ul data-testid="criteria">
 						{task.acceptance_criteria.map((c) => (
 							<li key={c}>{c}</li>
 						))}
@@ -735,11 +1001,10 @@ function TaskDetail({
 							<button
 								type="button"
 								className="link"
-								onClick={() =>
-									open(a.id)
-										.then((r) => setViewer({ name: a.name, ...r }))
-										.catch(onError)
-								}
+								data-testid="artifact-link"
+								data-name={a.name}
+								data-attempt={run?.attempt_no ?? ""}
+								onClick={() => void open(a)}
 							>
 								{a.name}
 							</button>{" "}
@@ -756,19 +1021,35 @@ function TaskDetail({
 				})}
 			</ul>
 			{viewer && (
-				<div className="viewer">
+				<div
+					className="viewer"
+					data-testid="viewer"
+					data-name={viewer.artifact.name}
+					data-state={viewer.state}
+				>
 					<div>
-						<b>{viewer.name}</b>
+						<b>{viewer.artifact.name}</b>{" "}
+						<span className="muted">
+							task {task.id.slice(0, 13)} · attempt {viewer.attempt ?? "?"} ·
+							candidate {shortSha(viewer.artifact.candidate_sha)}
+						</span>
 						{viewer.truncated && <span className="muted"> (truncated)</span>}{" "}
 						<button
 							type="button"
 							className="link"
-							onClick={() => setViewer(null)}
+							data-testid="viewer-close"
+							onClick={close}
 						>
 							close
 						</button>
 					</div>
-					<pre>{viewer.text}</pre>
+					{viewer.state === "loading" && <p className="muted">loading…</p>}
+					{viewer.state === "error" && (
+						<p className="mnote mnote-bad" data-testid="viewer-error">
+							{viewer.text}
+						</p>
+					)}
+					{viewer.state === "ok" && <pre>{viewer.text}</pre>}
 				</div>
 			)}
 		</div>

@@ -40,3 +40,17 @@ Behaviour intentionally changed (tests updated with the reason in the test name)
 without a valid implementation contract is now `provider_output_invalid` (was: fabricated
 `completed`); the Codex review call is no longer the first `codex exec` call (capability check runs
 first); the scratch schema/last-message files no longer exist after a review.
+
+## Phase 3
+
+| Command | Result | Duration |
+| --- | --- | --- |
+| `env HOME=<tmp> PLAYWRIGHT_BROWSERS_PATH=<existing cache> bun run test:browser` ×3 | PASS 20/20 each | ~24 s |
+| `HOME=<tmp> AGENTCITY_HOME=<tmp> bun test` | PASS 508 / 0 fail | ~60 s |
+| `bun run lint` / `typecheck` (incl. `apps/web/e2e`) / `check:secrets` / web build | PASS | — |
+
+The gate's first runs found two real defects besides the brief's list: a `#tasks` hash change in a
+loaded page did not switch tabs (fixed: `hashchange` listener), and the console check initially
+counted provoked 401/409/502 network logs (now an explicit allowlist of exactly those statuses).
+Screenshots (synthetic data) are written to a fresh `agentcity-browser-evidence-*` temp directory
+printed at the end of each run; they are not committed.

@@ -7,6 +7,9 @@ import {
 	isActive,
 	modeBadge,
 	modelLabel,
+	newerTask,
+	sameSubmission,
+	splitLines,
 	splitList,
 	stateBadge,
 } from "./managed-view.ts";
@@ -174,5 +177,40 @@ describe("/ws managed frames", () => {
 		expect(
 			parseHubMessage(JSON.stringify({ kind: "managed", data: {} })),
 		).toBeNull();
+	});
+});
+
+describe("v0.1.1 form and ordering helpers", () => {
+	test("criteria are split by lines only; commas are kept", () => {
+		expect(splitLines("a, b and c\r\n\n  second, with comma ")).toEqual([
+			"a, b and c",
+			"second, with comma",
+		]);
+		expect(splitList("src, docs")).toEqual(["src", "docs"]);
+	});
+
+	test("sameSubmission compares every field", () => {
+		const base = {
+			repo_id: "r",
+			title: "t",
+			objective: "o",
+			acceptance_criteria: ["a, b"],
+			approved_scope: ["."],
+			execution_mode: "simulated" as const,
+			simulation_scenario: "approve",
+			repair_limit: 1,
+		};
+		expect(sameSubmission(base, { ...base })).toBe(true);
+		expect(sameSubmission(base, { ...base, title: "t2" })).toBe(false);
+		expect(
+			sameSubmission(base, { ...base, acceptance_criteria: ["a", "b"] }),
+		).toBe(false);
+		expect(sameSubmission(base, { ...base, repair_limit: 0 })).toBe(false);
+	});
+
+	test("a lower revision never replaces a newer snapshot", () => {
+		expect(newerTask({ rev: 3 }, { rev: 5 })).toBe(false);
+		expect(newerTask({ rev: 5 }, { rev: 5 })).toBe(true);
+		expect(newerTask({ rev: 6 }, { rev: 5 })).toBe(true);
 	});
 });

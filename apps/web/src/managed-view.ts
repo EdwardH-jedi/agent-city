@@ -108,3 +108,44 @@ export const splitList = (text: string): string[] =>
 		.split(/[\n,]/)
 		.map((s) => s.trim())
 		.filter((s) => s.length > 0);
+
+/** Acceptance criteria: one per line. Commas are part of a criterion, never a separator. */
+export const splitLines = (text: string): string[] =>
+	text
+		.split(/\r?\n/)
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
+
+/** What the create form sends (without the idempotency key). */
+export interface Submission {
+	repo_id: string;
+	title: string;
+	objective: string;
+	acceptance_criteria: string[];
+	approved_scope: string[];
+	execution_mode: "simulated" | "live";
+	simulation_scenario?: string;
+	repair_limit: number;
+}
+
+/** Same request, field by field — decides whether a retry may reuse an uncertain key. */
+export function sameSubmission(a: Submission, b: Submission): boolean {
+	const list = (x: string[], y: string[]) =>
+		x.length === y.length && x.every((v, i) => v === y[i]);
+	return (
+		a.repo_id === b.repo_id &&
+		a.title === b.title &&
+		a.objective === b.objective &&
+		list(a.acceptance_criteria, b.acceptance_criteria) &&
+		list(a.approved_scope, b.approved_scope) &&
+		a.execution_mode === b.execution_mode &&
+		(a.simulation_scenario ?? null) === (b.simulation_scenario ?? null) &&
+		a.repair_limit === b.repair_limit
+	);
+}
+
+/** Does `incoming` describe a later (or the same) version of the task than `current`? */
+export const newerTask = (
+	incoming: Pick<ManagedTask, "rev">,
+	current: Pick<ManagedTask, "rev">,
+): boolean => incoming.rev >= current.rev;
