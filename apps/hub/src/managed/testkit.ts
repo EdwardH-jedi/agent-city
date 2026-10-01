@@ -121,11 +121,14 @@ export function makeFixture(opts: FixtureOptions = {}): Fixture {
 						executable: writeStub(join(dir, "bin"), "claude", CLAUDE_STUB),
 						model: "stub-model",
 						timeout_s: opts.liveStubs.claudeTimeoutS ?? 30,
+						// synthetic value printed by the stub; never a real CLI's
+						allowed_auth_methods: ["stub-subscription"],
 					},
 					codex: {
 						executable: writeStub(join(dir, "bin"), "codex", CODEX_STUB),
 						model: "stub-review-model",
 						timeout_s: opts.liveStubs.codexTimeoutS ?? 30,
+						auth_status_pattern: "^Logged in using ChatGPT",
 					},
 				}
 			: (opts.live ?? { enabled: false }),
@@ -194,8 +197,16 @@ const mode = read("claude.mode") || "success";
 const stdin = args.includes("-p") ? await Bun.stdin.text() : "";
 appendFileSync(join(dir, "claude.calls.jsonl"), JSON.stringify({ argv: args, stdin, env: Object.keys(process.env).sort(), cwd: process.cwd() }) + "\\n");
 if (args[0] === "--version") { console.log("9.9.9 (stub claude)"); process.exit(0); }
+if (args[0] === "--help") {
+	const flags = ["-p, --print", "--output-format <format>", "--verbose", "--model <model>", "--permission-mode <mode>", "--permission-prompts <target>", "--tools <tools...>", "--allowedTools, --allowed-tools <tools...>", "--json-schema <schema>", "--session-id <uuid>", "-r, --resume [value]", "--safe-mode", "--restricted", "--strict-mcp-config", "--disable-slash-commands"];
+	console.log("Usage: claude [options]\\n" + flags.filter((f) => mode !== "no_safe_mode" || f !== "--safe-mode").map((f) => "  " + f + "   (stub)").join("\\n"));
+	process.exit(0);
+}
 if (args[0] === "auth") {
-	console.log(JSON.stringify({ loggedIn: mode !== "logged_out", authMethod: "stub", subscriptionType: "stub", email: "stub@example.invalid" }, null, 2));
+	if (mode === "malformed_status") { console.log("Logged in, probably"); process.exit(0); }
+	if (mode === "empty_status") { console.log("{}"); process.exit(0); }
+	const method = mode === "api_key_auth" ? "stub-api-key" : "stub-subscription";
+	console.log(JSON.stringify({ loggedIn: mode !== "logged_out", authMethod: method, subscriptionType: "stub", email: "stub@example.invalid" }, null, 2));
 	process.exit(mode === "logged_out" ? 1 : 0);
 }
 const session = flag("--session-id") ?? flag("--resume") ?? "none";
@@ -230,6 +241,17 @@ switch (mode) {
 	case "hang":
 		await hang(false);
 		break;
+	case "escape": {
+		// a descendant that leaves the process group but keeps our stdout/stderr open
+		const { spawn } = await import("node:child_process");
+		const c = spawn("/bin/sleep", ["600"], { detached: true, stdio: ["ignore", "inherit", "inherit"] });
+		c.unref();
+		writeFileSync(join(dir, NAME + ".pids"), process.pid + " " + c.pid);
+		out(JSON.parse(init));
+		edit();
+		result({ subtype: "success", is_error: false, result: "done", structured_output: { contract: "agentcity.implementation/v1", status: "completed", summary: "escaped" } });
+		process.exit(0);
+	}
 	case "hang_ignore_term":
 		await hang(true);
 		break;
@@ -244,6 +266,20 @@ switch (mode) {
 	case "blocked":
 		out(JSON.parse(init));
 		result({ subtype: "success", is_error: false, result: "", structured_output: { contract: "agentcity.implementation/v1", status: "blocked", summary: "cannot do it" } });
+		break;
+	case "wrong_schema":
+		out(JSON.parse(init));
+		edit();
+		result({ subtype: "success", is_error: false, result: '{"status":"completed"}', structured_output: { contract: "agentcity.implementation/v1", status: "done", summary: 7 } });
+		break;
+	case "empty_success":
+		out(JSON.parse(init));
+		edit();
+		result({ subtype: "success", is_error: false, result: "" });
+		break;
+	case "blocked_text":
+		out(JSON.parse(init));
+		result({ subtype: "success", is_error: false, result: "blocked: I cannot do this" });
 		break;
 	case "plain_text":
 		out(JSON.parse(init));
@@ -269,7 +305,16 @@ const mode = read("codex.mode") || "success";
 const stdin = args[0] === "exec" ? await Bun.stdin.text() : "";
 appendFileSync(join(dir, "codex.calls.jsonl"), JSON.stringify({ argv: args, stdin, env: Object.keys(process.env).sort(), cwd: process.cwd() }) + "\\n");
 if (args[0] === "--version") { console.log("codex-cli 0.0.0-stub"); process.exit(0); }
-if (args[0] === "login") process.exit(mode === "logged_out" ? 1 : 0);
+if (args[0] === "exec" && args[1] === "--help") {
+	const flags = ["--json", "-s, --sandbox <MODE>", "-m, --model <MODEL>", "-C, --cd <DIR>", "--ignore-user-config", "--ignore-rules", "--output-schema <FILE>", "-o, --output-last-message <FILE>"];
+	console.log("Usage: codex exec [OPTIONS] [PROMPT]\\n" + flags.filter((f) => mode !== "no_ignore_config" || f !== "--ignore-user-config").map((f) => "  " + f).join("\\n"));
+	process.exit(0);
+}
+if (args[0] === "login") {
+	if (mode === "logged_out") process.exit(1);
+	console.log(mode === "api_key_auth" ? "Logged in using an API key (stub)" : "Logged in using ChatGPT (stub)");
+	process.exit(0);
+}
 const sha = /- commit: ([0-9a-f]{40})/.exec(stdin)?.[1] ?? "";
 const manifest = /- evidence manifest: ([0-9a-f]{64})/.exec(stdin)?.[1] ?? "";
 const outFile = flag("--output-last-message") ?? "";

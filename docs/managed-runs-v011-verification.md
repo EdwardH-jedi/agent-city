@@ -27,3 +27,16 @@ Pre-existing failures: none.
 Red first: the file failed to load against `923854d` (quarantine / hooks / evidence APIs absent); after
 the first implementation pass the P1.2 review-resume case still failed (`human_ready` with changed
 `limits`) — the approval hash did not cover limits; fixed in `config.ts policyHash`.
+
+## Phase 2 (after fixes)
+
+| Command | Result | Duration |
+| --- | --- | --- |
+| `bun test apps/hub/src/managed/provider-hardening.test.ts` ×2 | PASS 24/24 each run | ~10 s |
+| `HOME=<tmp> AGENTCITY_HOME=<tmp> bun test` | PASS 505 / 0 fail | 60 s |
+| `bun run lint` / `typecheck` / `check:secrets` | PASS (after removing literal key markers from a test) | — |
+
+Behaviour intentionally changed (tests updated with the reason in the test name): a Claude success
+without a valid implementation contract is now `provider_output_invalid` (was: fabricated
+`completed`); the Codex review call is no longer the first `codex exec` call (capability check runs
+first); the scratch schema/last-message files no longer exist after a review.

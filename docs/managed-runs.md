@@ -125,8 +125,31 @@ the bound review are.
 - `/api/managed` needs `Bearer $MANAGED_TOKEN` on every route. Mutations need a JSON content type
   and an allowed `Origin`. The token is pasted into the UI and kept in `sessionStorage`. `/ws`
   broadcasts only a task id.
-- Child processes get an allowlisted environment (`PATH`, `HOME`, locale, `TMPDIR`…). API keys and
-  hub tokens are not inherited, so a CLI cannot silently fall back to metered API billing.
+- Child processes get an allowlisted environment (`PATH`, `HOME`, locale, `TMPDIR`…). API-key
+  variables and hub tokens are not inherited. That alone does **not** guarantee subscription
+  billing: `HOME` still holds whatever login a CLI saved, which may be an API-key / Console login.
+  What refuses those (v0.1.1) is the positive auth check before any prompt — Claude: `auth status
+  --json` must report an `authMethod` listed in `allowed_auth_methods` (empty by default = always
+  blocked); Codex: `login status` must match `auth_status_pattern` (unset by default = always
+  blocked, because Codex documents no machine-readable status). Both are unverified against real
+  binaries.
+- Inherited provider configuration (v0.1.1): the Claude implementer runs with `--safe-mode
+  --restricted --strict-mcp-config --disable-slash-commands` (no CLAUDE.md, hooks, plugins, skills,
+  MCP servers; only managed settings); the Codex reviewer with `--ignore-user-config
+  --ignore-rules`. Each required control must appear in the installed `--help` or nothing is
+  launched. Organisation-managed policy still applies (CLI behaviour). Provider-owned session files
+  (Claude transcripts for `--resume`, Codex session logs) are kept by the CLIs in their own home
+  directories; Agent City does not manage or delete them.
+- Unresolved processes (v0.1.1): a child whose termination cannot be proven is **quarantined**
+  (`managed_quarantine`): no task is claimed, the task cannot be run again, and Cancel only records
+  the intent, until objective evidence exists (process + group gone, terminated by Agent City, or a
+  recycled pid proving the group is gone). A descendant that left its process group and still holds
+  the output pipes is released only when the *same* hub process sees the pipes close; after a
+  restart that cannot be observed and the quarantine stays — stop the stray process yourself. There
+  is deliberately no dismiss button.
+- Evidence integrity (v0.1.1): reviews and artifact views use one verified read of the full stored
+  bytes (size + sha256 + manifest links). Changed, truncated, missing or symlinked evidence blocks the
+  review (`evidence_invalid`) and the artifact API answers `409 artifact_integrity`.
 - Artifacts are read by `(task id, artifact id)`; the stored path is canonicalized and must be a
   regular file under `artifacts_root`.
 - Stored text: the task's title/objective/criteria (redacted), review findings and summaries
@@ -141,11 +164,15 @@ the bound review are.
 
 Not done as part of this work. When you decide to:
 
-1. Check billing and auth yourself: `claude auth status`, and that Codex is installed and logged in.
-   Live runs use your subscription quota. Agent City never passes API keys to the CLIs and never
-   uses `--bare`, a fallback model, or a permission bypass.
+1. Check billing and auth yourself: `claude auth status`, and that Codex is installed and logged in
+   with ChatGPT (not an API key). Live runs use your subscription quota. Agent City never passes
+   API-key variables to the CLIs and never uses `--bare`, a fallback model, or a permission bypass —
+   but it cannot see which login a CLI saved except through the auth checks below.
 2. In your managed config (a sandbox repo, not a real project): set `live.enabled: true` and fill
-   the `claude` and `codex` blocks with absolute executable paths and models.
+   the `claude` and `codex` blocks with absolute executable paths and models. Set
+   `claude.allowed_auth_methods` to the `authMethod` value your subscription login reports, and
+   `codex.auth_status_pattern` to a pattern matching only the ChatGPT-login output of `codex login
+   status` — both from your own no-model check. Changing either voids pending approvals.
 3. `bun run managed:preflight` — executable, version and login checks; it calls no model. Fix
    whatever it reports as BLOCKED.
 4. Restart the hub, create **one** small task with mode *live*, approve it, and watch it.
@@ -158,10 +185,13 @@ Unverified assumptions a live smoke must check:
   `result.subtype|is_error|result|structured_output|usage|modelUsage|total_cost_usd`); that
   `--json-schema` yields `structured_output` with `stream-json`; that `--tools` + `--allowedTools`
   with `acceptEdits` and `--permission-prompts none` is enough to edit files unattended; that
-  `--resume <id>` keeps the session id; that `claude auth status --json` makes no model request.
-- Codex: every flag (`exec --json --sandbox read-only --cd --output-schema --output-last-message -`,
-  `exec resume <id>`), the JSONL event names, `codex login status`, and whether the strict JSON
-  Schema is accepted. None of it has been run against a real binary.
+  `--resume <id>` keeps the session id; that `claude auth status --json` makes no model request and
+  which `authMethod` values exist; that `--safe-mode --restricted --strict-mcp-config
+  --disable-slash-commands` combine with the rest as intended and still allow file edits.
+- Codex: every flag (`exec --json --sandbox read-only --ignore-user-config --ignore-rules --cd
+  --output-schema --output-last-message -`, `exec resume <id>`), the JSONL event names, the exact
+  `codex login status` output, and whether the strict JSON Schema is accepted. None of it has been
+  run against a real binary.
 - Failure classification (auth / quota / model) is a text heuristic on top of structured categories.
 
 ## Verification

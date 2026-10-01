@@ -55,8 +55,28 @@ const ClaudeProvider = CliProvider.extend({
 		.min(1)
 		.max(20)
 		.default(["Read", "Edit", "Write", "Glob", "Grep"]),
+	/**
+	 * `authMethod` values of `claude auth status --json` that count as subscription sign-in. The CLI
+	 * does not document the possible values, so this starts EMPTY = every live run is blocked until
+	 * a person records the value a no-model capability check reported (never an API-key method).
+	 */
+	allowed_auth_methods: z
+		.array(z.string().regex(/^[A-Za-z0-9._:-]{1,60}$/))
+		.max(10)
+		.default([]),
 });
 export type ClaudeProviderConfig = z.infer<typeof ClaudeProvider>;
+
+const CodexProvider = CliProvider.extend({
+	/**
+	 * Codex documents no machine-readable login status. A regular expression that `codex login
+	 * status` output must match to count as ChatGPT (subscription) sign-in, established by a
+	 * no-model capability check against the installed version. null (default) = cannot be verified →
+	 * every live review is blocked.
+	 */
+	auth_status_pattern: z.string().min(1).max(200).nullable().default(null),
+});
+export type CodexProviderConfig = z.infer<typeof CodexProvider>;
 
 const Limits = z.strictObject({
 	max_log_bytes: z.number().int().min(1024).max(8_000_000).default(262_144),
@@ -76,7 +96,7 @@ export const ManagedConfig = z.strictObject({
 			/** Master switch. false (default) → live tasks are refused and no CLI adapter is built. */
 			enabled: z.boolean().default(false),
 			claude: ClaudeProvider.optional(),
-			codex: CliProvider.optional(),
+			codex: CodexProvider.optional(),
 		})
 		.default({ enabled: false }),
 	limits: Limits.default(Limits.parse({})),

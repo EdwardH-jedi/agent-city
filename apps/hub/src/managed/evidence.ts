@@ -19,6 +19,7 @@ import {
 	type ArtifactKind,
 	EVIDENCE_CONTRACT,
 	EvidenceManifest,
+	isSecretName,
 	type ManagedArtifact,
 	REDACTED,
 	redact,
@@ -38,24 +39,114 @@ const SAFE_ID = /^(task|run)-[0-9a-f-]{36}$/;
 const KEY_BEGIN = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----/;
 const KEY_END = /-----END [A-Z ]{0,40}PRIVATE KEY-----/;
 
+/** Longest piece handed to redact() at once (it clips at INPUT_MAX = 4096). */
+const SEGMENT = 3_500;
+/** A run of non-whitespace this long is not plausibly prose or code; it is masked whole. */
+const UNBROKEN_MAX = 1_024;
+/** `name: |` / `name: >-` … — a YAML block scalar header. */
+const YAML_HEAD =
+	/^([ \t]*)(?:-[ \t]+)?(["']?)([A-Za-z_][A-Za-z0-9_.-]{0,63})\2[ \t]*:[ \t]*[|>][-+0-9]{0,2}[ \t]*$/;
+const CONTINUED = /\\[ \t]*$/;
+
+/** Drop a trailing partial word: what a byte cap cut off mid-token must not survive half-masked. */
+export function dropTrailingFragment(text: string): string {
+	const m = /[^\s"'=:,;]{1,4096}$/.exec(text);
+	return m ? `${text.slice(0, m.index)}…` : text;
+}
+
+/** Last `max` characters without a leading partial word (for `tail`-style excerpts). */
+export function clipTail(text: string, max: number): string {
+	if (text.length <= max) return text;
+	const tail = text.slice(-max);
+	const m = /^[^\s"'=:,;]{1,4096}/.exec(tail);
+	return `…${m ? tail.slice(m[0].length) : tail}`;
+}
+
+/** One logical line, any length, through redact() in whitespace-aligned segments. */
+function redactLine(line: string): string {
+	if (line.length <= SEGMENT) return redact(line);
+	const parts: string[] = [];
+	let rest = line;
+	while (rest.length > SEGMENT) {
+		const window = rest.slice(0, SEGMENT);
+		const cut = Math.max(window.lastIndexOf(" "), window.lastIndexOf("\t"));
+		if (cut <= 0) {
+			// no whitespace in the window: take the whole unbroken run
+			const run = /^\S+/.exec(rest)?.[0] ?? window;
+			parts.push(
+				run.length > UNBROKEN_MAX
+					? `${REDACTED}(long unbroken text)`
+					: redact(run),
+			);
+			rest = rest.slice(run.length);
+		} else {
+			parts.push(redact(rest.slice(0, cut)));
+			rest = rest.slice(cut);
+		}
+	}
+	parts.push(redact(rest));
+	return parts.join("");
+}
+
 /**
- * Redact a log / diff line by line (redact() clips one string at 4 KB, so a whole log cannot go
- * through it at once). A private-key block is dropped through its END line.
+ * Redact a whole log / diff (any size) without losing the multi-line protections redact() has for
+ * a single string: CRLF/LF line splitting; private-key blocks dropped through their END line; YAML
+ * block scalars under a secret-looking key masked as a unit; backslash-continued lines joined
+ * (bounded) before matching, so a token split by `\` + newline is still recognised; long lines
+ * redacted in whitespace-aligned segments instead of being silently clipped at 4 KB. With
+ * `truncated`, a trailing partial token left by a byte cap is dropped.
  */
-export function redactLog(text: string): string {
+export function redactLog(
+	text: string,
+	o: { truncated?: boolean } = {},
+): string {
+	const src = o.truncated ? dropTrailingFragment(text) : text;
+	const lines = src.split(/\r?\n/);
 	const out: string[] = [];
 	let inKey = false;
-	for (const line of text.split("\n")) {
+	let yamlIndent: number | null = null;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i] as string;
 		if (inKey) {
 			if (KEY_END.test(line)) inKey = false;
 			continue;
+		}
+		if (yamlIndent !== null) {
+			const indent = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+			if (line.trim() === "" || indent > yamlIndent) continue; // still inside the block
+			yamlIndent = null;
 		}
 		if (KEY_BEGIN.test(line)) {
 			out.push(REDACTED);
 			inKey = !KEY_END.test(line);
 			continue;
 		}
-		out.push(redact(line));
+		const head = YAML_HEAD.exec(line);
+		if (head && isSecretName(head[3] ?? "")) {
+			out.push(redactLine(line), `${head[1] ?? ""}  ${REDACTED}`);
+			yamlIndent = (head[1] ?? "").length;
+			continue;
+		}
+		if (CONTINUED.test(line)) {
+			// join `\`-continued lines (bounded) and redact them as one unit
+			let joined = line;
+			let j = i;
+			while (
+				CONTINUED.test(joined) &&
+				j + 1 < lines.length &&
+				j - i < 20 &&
+				joined.length < 8_000
+			) {
+				j++;
+				joined =
+					joined.replace(CONTINUED, "") +
+					(lines[j] as string).replace(/^[ \t]+/, "");
+			}
+			out.push(redactLine(joined));
+			i = j;
+			continue;
+		}
+		out.push(redactLine(line));
 	}
 	return out.join("\n");
 }
@@ -356,9 +447,9 @@ export async function runVerification(
 		[
 			`# ${cmd.name}: ${header}`,
 			"## stdout",
-			r.stdout,
+			r.stdoutTruncated ? dropTrailingFragment(r.stdout) : r.stdout,
 			"## stderr",
-			r.stderr,
+			r.stderrTruncated ? dropTrailingFragment(r.stderr) : r.stderr,
 		].join("\n"),
 	);
 	return {

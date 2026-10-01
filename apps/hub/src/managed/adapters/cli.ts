@@ -1,6 +1,14 @@
 // Shared pieces of the real CLI adapters (Claude implement, Codex review): executable preflight,
 // JSONL parsing, failure classification, prompts and the JSON Schemas handed to the CLIs.
-import { accessSync, constants, statSync } from "node:fs";
+import {
+	accessSync,
+	closeSync,
+	constants,
+	fstatSync,
+	openSync,
+	readSync,
+	statSync,
+} from "node:fs";
 import { basename } from "node:path";
 import {
 	type FailureKind,
@@ -13,11 +21,124 @@ import { childEnv } from "../proc.ts";
 import type { AdapterContext, Preflight } from "./types.ts";
 
 /**
- * Environment for a provider CLI: the allowlist only. API keys are deliberately NOT passed
- * (ANTHROPIC_API_KEY, OPENAI_API_KEY, CODEX_API_KEY, …), so a CLI uses its own saved login and
- * cannot silently switch to metered API billing.
+ * Environment for a provider CLI: the allowlist only. API-key variables (ANTHROPIC_API_KEY,
+ * OPENAI_API_KEY, CODEX_API_KEY, …) are not passed. That alone does NOT guarantee subscription
+ * billing — HOME still holds whatever login the CLI saved (which may be an API-key / Console
+ * login). The positive auth check in each adapter's preflight is what refuses those; see
+ * docs/managed-runs.md for what remains unverified against real binaries.
  */
 export const providerEnv = () => childEnv();
+
+/**
+ * Append-only diagnostic text with a hard byte budget: many small events cannot grow it past
+ * `maxBytes`. Each entry is clipped; once the budget is spent further entries only bump a counter.
+ */
+export class BoundedLog {
+	private entries: string[] = [];
+	private bytes = 0;
+	private dropped = 0;
+	constructor(
+		private readonly maxBytes: number,
+		private readonly maxEntry = 300,
+	) {}
+	push(entry: string): void {
+		const e =
+			entry.length > this.maxEntry
+				? `${entry.slice(0, this.maxEntry)}…`
+				: entry;
+		const size = Buffer.byteLength(e) + 1;
+		if (this.bytes + size > this.maxBytes) {
+			this.dropped++;
+			return;
+		}
+		this.entries.push(e);
+		this.bytes += size;
+	}
+	get truncated(): boolean {
+		return this.dropped > 0;
+	}
+	text(): string {
+		return this.dropped > 0
+			? `${this.entries.join("\n")}\n[${this.dropped} further events not kept]`
+			: this.entries.join("\n");
+	}
+}
+
+/**
+ * Read at most `maxBytes` of a file: the buffer is allocated from the real (bounded) size, not from
+ * the whole file. Missing / unreadable → "". `truncated` when the file is larger.
+ */
+export function readFileBounded(
+	path: string,
+	maxBytes: number,
+): { text: string; truncated: boolean } {
+	let fd: number;
+	try {
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+	} catch {
+		return { text: "", truncated: false };
+	}
+	try {
+		const st = fstatSync(fd);
+		if (!st.isFile()) return { text: "", truncated: false };
+		const len = Math.min(st.size, maxBytes);
+		const buf = Buffer.alloc(len);
+		let off = 0;
+		while (off < len) {
+			const n = readSync(fd, buf, off, len - off, off);
+			if (n <= 0) break;
+			off += n;
+		}
+		return {
+			text: buf.subarray(0, off).toString("utf8"),
+			truncated: st.size > maxBytes,
+		};
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/**
+ * Version-supported capability policy: every required control must appear in the executable's
+ * own help output (no model call). A missing control blocks the run — the isolation it provides
+ * cannot be established, so nothing is launched. Help text is matched as whole flags only.
+ */
+export async function checkCapabilities(
+	ctx: AdapterContext,
+	helpArgv: readonly string[],
+	required: readonly string[],
+	cwd: string,
+): Promise<Preflight> {
+	const name = basename(helpArgv[0] ?? "provider");
+	const r = await ctx.run({
+		argv: helpArgv,
+		cwd,
+		env: providerEnv(),
+		timeoutMs: PREFLIGHT_TIMEOUT_MS,
+		maxOutputBytes: 262_144,
+	});
+	if (!r.spawned || r.timedOut || r.exitCode !== 0)
+		return {
+			ok: false,
+			kind: "provider_unavailable",
+			detail: `${name}: help output unavailable; required controls cannot be verified`,
+		};
+	const text = `${r.stdout}\n${r.stderr}`;
+	const missing = required.filter(
+		(flag) =>
+			!new RegExp(
+				`(^|[\\s,])${flag.replace(/[-]/g, "\\-")}(?=[\\s,=<\\[]|$)`,
+				"m",
+			).test(text),
+	);
+	if (missing.length > 0)
+		return {
+			ok: false,
+			kind: "provider_unavailable",
+			detail: `${name}: this version does not offer required controls: ${missing.join(", ")}`,
+		};
+	return { ok: true, detail: `${name}: required controls present` };
+}
 
 const PREFLIGHT_TIMEOUT_MS = 10_000;
 

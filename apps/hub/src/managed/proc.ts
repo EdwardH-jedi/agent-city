@@ -55,6 +55,13 @@ export interface RunResult {
 	 * outside the group still holds them). Callers must quarantine `pid`.
 	 */
 	unresolved: string | null;
+	/** `pipe`: the leader exited but something outside its group still held the output pipes. */
+	unresolvedKind: "kill" | "pipe" | null;
+	/**
+	 * Resolves when both output pipes reached EOF — i.e. every process that held them (including a
+	 * descendant that left the process group) closed them. The only evidence for the `pipe` case.
+	 */
+	pipesClosed: Promise<void>;
 }
 
 export const MAX_LINE_BYTES = 1_048_576;
@@ -288,6 +295,8 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 		durationMs: 0,
 		terminationConfirmed: true,
 		unresolved: null,
+		unresolvedKind: null,
+		pipesClosed: Promise.resolve(),
 	};
 	const [file, ...args] = opts.argv;
 
@@ -303,6 +312,10 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 			return;
 		}
 
+		let markClosed: () => void = () => {};
+		result.pipesClosed = new Promise<void>((r) => {
+			markClosed = r;
+		});
 		const child = spawn(file, args, {
 			cwd: opts.cwd,
 			env: opts.env,
@@ -328,7 +341,10 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 				// SIGTERM grace + SIGKILL wait + slack; after that we stop waiting for 'close'.
 				settleTimer ??= setTimeout(
 					() =>
-						void finish("the process did not finish after it was terminated"),
+						void finish(
+							"the process did not finish after it was terminated",
+							"kill",
+						),
 					opts.killGraceMs +
 						Math.max(opts.killGraceMs, 1_000) +
 						PIPE_CLOSE_GRACE_MS,
@@ -348,19 +364,18 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 			opts.onStdoutLine?.(line.toString("utf8"));
 		};
 
-		const finish = async (unresolved: string | null = null) => {
+		const finish = async (
+			unresolved: string | null = null,
+			kind: "kill" | "pipe" | null = null,
+		) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			clearTimeout(settleTimer);
 			clearTimeout(pipeTimer);
 			opts.signal?.removeEventListener("abort", onAbort);
-			if (unresolved) {
-				// stop reading; whatever still holds the pipes is outside our control
-				child.stdout?.destroy();
-				child.stderr?.destroy();
-				child.stdin?.destroy();
-			}
+			// The pipes stay attached on purpose: their EOF is the evidence that whatever still holds
+			// them has gone (pipesClosed). Output after settling is no longer captured.
 			if (pid !== undefined) {
 				// The leader is gone (or abandoned); nothing of its group may outlive the run.
 				const confirmed = killing
@@ -373,8 +388,10 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 					confirmed || (await ops.terminateGroup(pid, opts.killGraceMs));
 				if (!result.terminationConfirmed)
 					unresolved ??= "the process group could not be confirmed terminated";
+				if (!result.terminationConfirmed) kind ??= "kill";
 			}
 			result.unresolved = unresolved;
+			result.unresolvedKind = unresolved ? (kind ?? "kill") : null;
 			if (unresolved) result.terminationConfirmed = false;
 			if (partial.length > 0 && !dropping) emitLine(partial);
 			result.stdout = out.text();
@@ -387,7 +404,10 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 
 		child.on("error", (e) => {
 			// ENOENT / EACCES: never started
-			if (!result.spawned) result.spawnError = (e as Error).message;
+			if (!result.spawned) {
+				result.spawnError = (e as Error).message;
+				markClosed();
+			}
 			void finish();
 		});
 
@@ -447,11 +467,15 @@ export function runProcess(opts: RunOptions): Promise<RunResult> {
 				() =>
 					void finish(
 						"the output pipes stayed open after the process exited (a descendant outside its process group may still be running)",
+						"pipe",
 					),
 				opts.killGraceMs + PIPE_CLOSE_GRACE_MS,
 			);
 		});
-		child.on("close", () => void finish());
+		child.on("close", () => {
+			markClosed();
+			void finish();
+		});
 
 		timer = setTimeout(() => {
 			result.timedOut = true;

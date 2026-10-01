@@ -2,7 +2,7 @@
 // protocol fixtures. No real `claude` / `codex` binary is started and no model is called; these
 // tests prove process/protocol handling, not a live model run.
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ManagedRun, ManagedTask } from "@agent-city/schema";
 import {
@@ -11,7 +11,7 @@ import {
 	foldClaudeLine,
 	newClaudeStream,
 } from "./adapters/claude.ts";
-import { classifyFailure } from "./adapters/cli.ts";
+import { classifyFailure, REVIEW_JSON_SCHEMA } from "./adapters/cli.ts";
 import {
 	codexArgs,
 	createCodexReviewer,
@@ -244,13 +244,14 @@ describe("claude adapter: protocol handling (stub executable)", () => {
 		expect(res.model_resolved).toBeNull();
 	});
 
-	test("no structured output → plain result text, noted in the log", async () => {
+	test("no structured output → provider_output_invalid, never a fabricated 'completed' (v0.1.1 P2.8)", async () => {
 		const { fx, claudeCfg } = live();
 		setStubMode(fx, "claude", "plain_text");
 		const res = await implement(fx, claudeCfg);
-		if (!res.ok) throw new Error(res.detail);
-		expect(res.output.summary).toBe("I made the change.");
-		expect(res.log).toContain("no structured output");
+		expect(res.ok).toBe(false);
+		if (res.ok) return;
+		expect(res.kind).toBe("provider_output_invalid");
+		expect(res.log).toContain("I made the change."); // kept as redacted diagnostics
 	});
 
 	const failures: [string, string][] = [
@@ -324,6 +325,7 @@ describe("claude adapter: protocol handling (stub executable)", () => {
 		const ok = await createClaudeImplementer(claudeCfg).preflight(ctxFor(fx));
 		expect(ok.ok).toBe(true);
 		expect(ok.detail).toContain("9.9.9");
+		expect(ok.detail).toContain("required controls present");
 		expect(ok.detail).not.toContain("@"); // the account email is never kept
 		for (const call of stubCalls(fx, "claude"))
 			expect(call.argv).not.toContain("-p");
@@ -356,6 +358,8 @@ describe("codex adapter (stub executable; flags are docs-derived, unverified aga
 			"--json",
 			"--sandbox",
 			"read-only",
+			"--ignore-user-config",
+			"--ignore-rules",
 			"--model",
 			"stub-review-model",
 			"--cd",
@@ -397,12 +401,14 @@ describe("codex adapter (stub executable; flags are docs-derived, unverified aga
 		expect(call?.stdin).toContain(OBJECTIVE);
 		expect(call?.argv.join(" ")).not.toContain("OBJECTIVE-TEXT-MARKER");
 		for (const k of call?.env ?? []) expect(k).not.toMatch(/KEY|TOKEN|SECRET/);
-		// scratch files are outside the worktree
+		// scratch files are outside the worktree, and gone once the review returned (P2.6)
 		const schema = call?.argv[call.argv.indexOf("--output-schema") + 1] ?? "";
+		const last =
+			call?.argv[call.argv.indexOf("--output-last-message") + 1] ?? "";
 		expect(schema.startsWith(fx.repoPath)).toBe(false);
-		expect(JSON.parse(readFileSync(schema, "utf8")).additionalProperties).toBe(
-			false,
-		);
+		expect(existsSync(schema)).toBe(false);
+		expect(existsSync(last)).toBe(false);
+		expect(REVIEW_JSON_SCHEMA.additionalProperties).toBe(false);
 	});
 
 	test("non-JSON final message is passed on as-is (the orchestrator rejects it)", async () => {
@@ -546,7 +552,9 @@ describe("live-mode pipeline through the CLI adapters (stub executables)", () =>
 		expect(
 			stubCalls(fx, "claude").find((c) => c.argv.includes("-p"))?.cwd,
 		).toBe(d.runs[0]?.workspace_path ?? "");
-		const reviewCall = stubCalls(fx, "codex").find((c) => c.argv[0] === "exec");
+		const reviewCall = stubCalls(fx, "codex").find(
+			(c) => c.argv[0] === "exec" && c.argv.includes("--json"),
+		);
 		expect(reviewCall?.stdin).toContain(d.runs[0]?.candidate_sha ?? "x");
 		expect(reviewCall?.stdin).toContain(d.runs[0]?.manifest_hash ?? "x");
 	});

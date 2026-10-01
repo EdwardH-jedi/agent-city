@@ -15,8 +15,8 @@
 //   - Cancel is a persisted intent; the task is `cancelled` only once the child group is gone.
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
 	type FailureKind,
 	type Finding,
@@ -123,7 +123,15 @@ interface Claim {
 	signal: AbortSignal;
 	/** Children whose process group could not be confirmed gone. */
 	unconfirmed: number[];
+	/** Private scratch directories created for this claim; removed when it ends. */
+	scratch: string[];
 }
+
+/** Quarantine reason prefix for the escaped-descendant (held pipe) case. */
+const PIPE_REASON = "[pipe] ";
+
+/** `<run id>-<8 hex>`: the only names the orchestrator creates (and removes) under _scratch. */
+const SCRATCH_NAME = /^run-[0-9a-f-]{36}-[0-9a-f]{8}$/;
 
 const PROC_CLEARED = {
 	proc_phase: null,
@@ -145,6 +153,11 @@ export class Orchestrator {
 
 	private readonly d: OrchestratorDeps;
 	private readonly ops: ProcessOps;
+	/**
+	 * In-process evidence for `pipe` quarantines: task:pid → true once the held pipes reached EOF.
+	 * Lost on restart — such a quarantine then cannot be proven resolved and stays open.
+	 */
+	private readonly pipeWatch = new Map<string, boolean>();
 
 	constructor(deps: OrchestratorDeps) {
 		// The effective configuration is an immutable snapshot taken once: the policy that approvals
@@ -179,6 +192,7 @@ export class Orchestrator {
 
 	/** Reconcile dead leases, then claim and drive at most one task. true = a task was worked on. */
 	async tick(): Promise<boolean> {
+		this.cleanupScratch();
 		await this.resolveQuarantines();
 		await this.reconcile();
 		const task = claimNext(this.d.db, this.workerId, this.leaseUntil());
@@ -209,6 +223,22 @@ export class Orchestrator {
 	async resolveQuarantines(): Promise<void> {
 		const { db, config } = this.d;
 		for (const q of listQuarantine(db, { open: true })) {
+			if (q.reason.startsWith(PIPE_REASON)) {
+				// A descendant outside the group held our pipes: only their EOF, observed by this
+				// process, proves it is gone. After a restart that cannot be observed any more.
+				const closed = this.pipeWatch.get(`${q.task_id}:${q.pid}`);
+				if (closed !== true) {
+					noteQuarantineCheck(
+						db,
+						q.id,
+						closed === false
+							? "the escaped descendant still holds the output pipes"
+							: "cannot be verified: the held pipes are no longer observable (hub restarted); stop the stray process and see docs/managed-runs.md",
+						this.now(),
+					);
+					continue;
+				}
+			}
 			const res = await resolveRecorded(
 				{ pid: q.pid, started: q.started },
 				config.limits.kill_grace_ms,
@@ -325,6 +355,7 @@ export class Orchestrator {
 			fence: claimed.fence_token,
 			signal: ac.signal,
 			unconfirmed: [],
+			scratch: [],
 		};
 		const beat = setInterval(
 			() => {
@@ -391,6 +422,50 @@ export class Orchestrator {
 		} finally {
 			clearInterval(beat);
 			this.current = null;
+			// raw provider scratch (schemas, last messages) is never retained past the claim
+			for (const dir of claim.scratch) this.removeScratch(dir);
+		}
+	}
+
+	private get scratchRoot(): string {
+		return join(this.d.config.artifacts_root, "_scratch");
+	}
+
+	/** Remove one scratch directory — only a real directory directly under our scratch root. */
+	private removeScratch(dir: string): void {
+		try {
+			const st = lstatSync(dir);
+			if (
+				!st.isDirectory() ||
+				dirname(dir) !== this.scratchRoot ||
+				!SCRATCH_NAME.test(basename(dir))
+			)
+				return;
+			rmSync(dir, { recursive: true, force: true });
+		} catch {
+			// already gone
+		}
+	}
+
+	/**
+	 * Crash leftovers: scratch directories of runs no live worker holds. Restricted to entries we
+	 * create (`<run id>-<8 hex>` directly under `<artifacts_root>/_scratch`, real directories).
+	 */
+	cleanupScratch(): void {
+		const { db } = this.d;
+		let entries: string[];
+		try {
+			entries = readdirSync(this.scratchRoot);
+		} catch {
+			return;
+		}
+		const now = this.now();
+		for (const name of entries) {
+			if (!SCRATCH_NAME.test(name)) continue;
+			const run = getRun(db, name.slice(0, -9));
+			const task = run ? getTask(db, run.task_id) : null;
+			const held = task?.lease_owner != null && (task.lease_until ?? "") > now;
+			if (!held) this.removeScratch(join(this.scratchRoot, name));
 		}
 	}
 
@@ -403,8 +478,12 @@ export class Orchestrator {
 	/** The adapter's view of the process boundary: owned, recorded, bounded, abortable. */
 	private ctx(claim: Claim, run: ManagedRun): AdapterContext {
 		const { db, config } = this.d;
-		const scratchDir = join(config.artifacts_root, "_scratch", run.id);
+		const scratchDir = join(
+			this.scratchRoot,
+			`${run.id}-${randomUUID().slice(0, 8)}`,
+		);
 		mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
+		claim.scratch.push(scratchDir);
 		const record = (patch: Parameters<typeof patchRun>[2]) =>
 			withFence(db, claim.id, claim.fence, () => patchRun(db, run.id, patch));
 		return {
@@ -427,15 +506,21 @@ export class Orchestrator {
 						claim.unconfirmed.push(r.pid);
 						// Persist immediately and unfenced: safety data outlives this worker's lease.
 						const current = getRun(db, run.id);
+						const pipe = r.unresolvedKind === "pipe";
 						openQuarantine(db, {
 							task_id: claim.id,
 							run_id: run.id,
 							pid: r.pid,
 							started:
 								current?.child_pid === r.pid ? current.child_started : null,
-							reason: r.unresolved ?? "termination could not be confirmed",
+							reason: `${pipe ? PIPE_REASON : ""}${r.unresolved ?? "termination could not be confirmed"}`,
 							now: this.now(),
 						});
+						if (pipe) {
+							const key = `${claim.id}:${r.pid}`;
+							this.pipeWatch.set(key, false);
+							void r.pipesClosed.then(() => this.pipeWatch.set(key, true));
+						}
 					} else
 						try {
 							record({ child_pid: null, child_started: null });
@@ -813,7 +898,7 @@ export class Orchestrator {
 			candidate,
 			config.limits.max_diff_bytes,
 		);
-		const diffStored = redactLog(diff.text);
+		const diffStored = redactLog(diff.text, { truncated: diff.truncated });
 		const files = await changedFiles(this.git, worktree, t.base_sha, candidate);
 		const results = runs.map((r) => r.result);
 		const { json, hash } = buildManifest({

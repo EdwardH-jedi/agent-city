@@ -33,10 +33,14 @@ live:
   #   model: opus
   #   timeout_s: 1800
   #   tools: [Read, Edit, Write, Glob, Grep]   # no Bash: verification is run by Agent City
+  #   allowed_auth_methods: []   # authMethod values of `claude auth status --json` that are your
+  #                              # SUBSCRIPTION login; empty = every live run is blocked
   # codex:
   #   executable: /absolute/path/to/codex
   #   model: <a model your Codex login can use>
   #   timeout_s: 900
+  #   auth_status_pattern: null  # regex matching ONLY the ChatGPT-login output of `codex login status`;
+  #                              # null = every live review is blocked (Codex has no JSON status)
 
 # Optional limits (defaults shown).
 # limits:
