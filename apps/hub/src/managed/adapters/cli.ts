@@ -17,6 +17,7 @@ import {
 	type ManagedTask,
 	REVIEW_CONTRACT,
 } from "@agent-city/schema";
+import { SAFE_READ_FLAGS } from "../evidence.ts";
 import { childEnv, type RunResult } from "../proc.ts";
 import type { AdapterContext, Preflight } from "./types.ts";
 
@@ -85,21 +86,30 @@ export class BoundedLog {
 
 /**
  * Read at most `maxBytes` of a file: the buffer is allocated from the real (bounded) size, not from
- * the whole file. Missing / unreadable → "". `truncated` when the file is larger.
+ * the whole file. Missing → "". Anything that is not a regular file (symlink, FIFO, device,
+ * directory) or cannot be opened → "" with `rejected` set. `truncated` when the file is larger.
  */
 export function readFileBounded(
 	path: string,
 	maxBytes: number,
-): { text: string; truncated: boolean } {
+): { text: string; truncated: boolean; rejected?: string } {
 	let fd: number;
 	try {
-		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-	} catch {
-		return { text: "", truncated: false };
+		fd = openSync(path, SAFE_READ_FLAGS);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return { text: "", truncated: false };
+		return {
+			text: "",
+			truncated: false,
+			rejected:
+				code === "ELOOP" ? "is a symlink" : `cannot be opened (${code})`,
+		};
 	}
 	try {
 		const st = fstatSync(fd);
-		if (!st.isFile()) return { text: "", truncated: false };
+		if (!st.isFile())
+			return { text: "", truncated: false, rejected: "not a regular file" };
 		const len = Math.min(st.size, maxBytes);
 		const buf = Buffer.alloc(len);
 		let off = 0;

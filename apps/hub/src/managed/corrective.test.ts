@@ -550,3 +550,210 @@ describe("C3 redactDiff over real git diffs", () => {
 		expect(out.split("\n").length).toBe(7);
 	});
 });
+
+// ── C4 ──────────────────────────────────────────────────────────────────────
+// A blocking open() of a FIFO freezes the whole process, timers included — so every probe runs in
+// a separate process and the deadline is enforced HERE, from outside (SIGKILL), never inside it.
+
+const HERE = import.meta.dir;
+const childEnvForProbe = () => ({
+	PATH: process.env.PATH ?? "/usr/bin:/bin",
+	HOME: process.env.HOME ?? "/tmp",
+	TMPDIR: process.env.TMPDIR ?? "/tmp",
+});
+
+async function isolated(code: string, deadlineMs: number) {
+	const p = Bun.spawn([process.execPath, "-e", code], {
+		stdout: "pipe",
+		stderr: "pipe",
+		env: childEnvForProbe(),
+	});
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		p.kill("SIGKILL");
+	}, deadlineMs);
+	const [stdout, stderr] = await Promise.all([
+		new Response(p.stdout).text(),
+		new Response(p.stderr).text(),
+	]);
+	const exitCode = await p.exited;
+	clearTimeout(timer);
+	return { timedOut, stdout, stderr, exitCode };
+}
+
+function mkfifo(path: string): void {
+	const r = Bun.spawnSync(["/usr/bin/mkfifo", path]);
+	if (r.exitCode !== 0) throw new Error(`mkfifo failed: ${r.stderr}`);
+}
+
+const lastJson = (stdout: string) =>
+	JSON.parse(stdout.trim().split("\n").pop() ?? "null") as Record<
+		string,
+		unknown
+	>;
+
+describe("C4 FIFO evidence and scratch files cannot freeze the hub", () => {
+	test("artifact reader: a FIFO in place of an artifact is refused promptly (isolated probe)", async () => {
+		const fx = makeFixture();
+		fixtures.push(fx);
+		const rel =
+			"task-00000000-0000-0000-0000-000000000000/run-00000000-0000-0000-0000-000000000000/diff.patch";
+		mkdirSync(join(fx.config.artifacts_root, rel, ".."), { recursive: true });
+		mkfifo(join(fx.config.artifacts_root, rel));
+		const started = Date.now();
+		const r = await isolated(
+			`const { readArtifactBytes } = await import(${JSON.stringify(join(HERE, "evidence.ts"))});
+			 try { readArtifactBytes(${JSON.stringify(fx.config.artifacts_root)}, { rel_path: ${JSON.stringify(rel)}, byte_len: 0, sha256: "0".repeat(64), name: "diff.patch" });
+			   console.log(JSON.stringify({ read: true })); }
+			 catch (err) { console.log(JSON.stringify({ code: err.code, message: err.message })); }`,
+			5_000,
+		);
+		expect(r.timedOut).toBe(false);
+		expect(Date.now() - started).toBeLessThan(5_000);
+		expect(lastJson(r.stdout)).toEqual({
+			code: "integrity",
+			message: "diff.patch: not a regular file",
+		});
+	}, 15_000);
+
+	test("reviewer last-message reader: a FIFO is refused promptly, not read (isolated probe)", async () => {
+		const fx = makeFixture();
+		fixtures.push(fx);
+		const fifo = join(fx.dir, "review-last-message.json");
+		mkfifo(fifo);
+		const r = await isolated(
+			`const { readFileBounded } = await import(${JSON.stringify(join(HERE, "adapters", "cli.ts"))});
+			 console.log(JSON.stringify(readFileBounded(${JSON.stringify(fifo)}, 1024)));`,
+			5_000,
+		);
+		expect(r.timedOut).toBe(false);
+		const out = lastJson(r.stdout);
+		expect(out.text).toBe("");
+		expect(out.rejected).toContain("not a regular file");
+	}, 15_000);
+
+	test("end to end: a reviewer that swaps its last-message file for a FIFO → provider_output_invalid, no approval", async () => {
+		// the whole pipeline runs in a child process: before the fix it blocks there, not here
+		const r = await isolated(
+			`const tk = await import(${JSON.stringify(join(HERE, "testkit.ts"))});
+			 const svc = await import(${JSON.stringify(join(HERE, "service.ts"))});
+			 const { Orchestrator } = await import(${JSON.stringify(join(HERE, "orchestrator.ts"))});
+			 const { createAdapters } = await import(${JSON.stringify(join(HERE, "worker.ts"))});
+			 const fx = tk.makeFixture({ liveStubs: {} });
+			 try {
+			   tk.setStubMode(fx, "codex", "fifo_last_message");
+			   const deps = { db: fx.db, config: fx.config };
+			   const { task } = await svc.submitTask(deps, { idempotency_key: "fifo-e2e", repo_id: fx.repoId, title: "t", objective: "o", acceptance_criteria: ["c"], approved_scope: ["."], execution_mode: "live" });
+			   svc.runTask(deps, task.id);
+			   const orch = new Orchestrator({ db: fx.db, config: fx.config, adapters: createAdapters(fx.config), heartbeatMs: 40 });
+			   while (await orch.tick()) {}
+			   const d = await svc.taskDetail(deps, task.id);
+			   console.log(JSON.stringify({ state: d.task.state, kind: d.task.failure_kind, valid: d.reviews.filter((x) => x.valid).length }));
+			 } finally { fx.cleanup(); }`,
+			45_000,
+		);
+		expect(r.timedOut).toBe(false);
+		expect(lastJson(r.stdout)).toEqual({
+			state: "failed", // outcomeStateFor("provider_output_invalid")
+			kind: "provider_output_invalid",
+			valid: 0,
+		});
+	}, 60_000);
+
+	test("HTTP: a FIFO artifact → 409 promptly while unrelated requests keep being answered (hub in a child process)", async () => {
+		const fx = makeFixture({ dbFile: true });
+		fixtures.push(fx);
+		const run = await submitAndRun(fx);
+		expect(getTask(fx.db, run.id)?.state).toBe("human_ready");
+		const diffArt = listArtifacts(fx.db, run.id).find(
+			(a) => a.name === "diff.patch",
+		);
+		if (!diffArt) throw new Error("no diff artifact");
+		const abs = join(fx.config.artifacts_root, diffArt.rel_path);
+		Bun.spawnSync(["/bin/rm", "-f", abs]);
+		mkfifo(abs);
+		const cfgFile = join(fx.dir, "managed-config.json");
+		writeFileSync(cfgFile, JSON.stringify(fx.config));
+
+		const hub = Bun.spawn(
+			[
+				process.execPath,
+				"-e",
+				`const { openDb } = await import(${JSON.stringify(join(HERE, "..", "db.ts"))});
+				 const { startHub } = await import(${JSON.stringify(join(HERE, "..", "index.ts"))});
+				 const { parseManagedConfig } = await import(${JSON.stringify(join(HERE, "config.ts"))});
+				 const { readFileSync } = await import("node:fs");
+				 const config = parseManagedConfig(JSON.parse(readFileSync(${JSON.stringify(cfgFile)}, "utf8")));
+				 const h = startHub({ db: openDb(${JSON.stringify(fx.dbPath)}), ingestToken: ${JSON.stringify(INGEST)}, hostname: "127.0.0.1", port: 0, managed: { config, token: ${JSON.stringify(TOKEN)} }, managedIdleMs: 50 });
+				 console.log("PORT " + h.server.port);`,
+			],
+			{ stdout: "pipe", stderr: "pipe", env: childEnvForProbe() },
+		);
+		// external deadline for the whole probe: the hub process is killed from here no matter what
+		const kill = setTimeout(() => hub.kill("SIGKILL"), 30_000);
+		stops.push(() => {
+			clearTimeout(kill);
+			hub.kill("SIGKILL");
+		});
+		const reader = hub.stdout.getReader();
+		let seen = "";
+		while (!/PORT (\d+)/.test(seen)) {
+			const { value, done } = await reader.read();
+			if (done) throw new Error("hub child exited before listening");
+			seen += new TextDecoder().decode(value);
+		}
+		const base = `http://127.0.0.1:${/PORT (\d+)/.exec(seen)?.[1]}`;
+		const get = async (path: string) => {
+			try {
+				const res = await fetch(`${base}${path}`, {
+					headers: { authorization: `Bearer ${TOKEN}` },
+					signal: AbortSignal.timeout(3_000),
+				});
+				return { status: res.status, body: await res.text() };
+			} catch (err) {
+				return { status: 0, body: (err as Error).name };
+			}
+		};
+		const [artifact, health] = await Promise.all([
+			get(`/api/managed/tasks/${run.id}/artifacts/${diffArt.id}`),
+			get("/healthz"),
+		]);
+		expect(artifact.status).toBe(409);
+		expect(artifact.body).toContain("artifact_integrity");
+		expect(health.status).toBe(200);
+		// still answering afterwards, including the task view that checks every artifact
+		const detail = await get(`/api/managed/tasks/${run.id}`);
+		expect(detail.status).toBe(200);
+		expect(
+			(JSON.parse(detail.body) as { evidence_integrity: { intact: boolean } })
+				.evidence_integrity.intact,
+		).toBe(false);
+		expect((await get("/healthz")).status).toBe(200);
+	}, 60_000);
+});
+
+describe("C4 reader protections that stay in place", () => {
+	test("last-message reader: symlink refused, missing stays absent, a regular file is read", async () => {
+		const fx = makeFixture();
+		fixtures.push(fx);
+		const { readFileBounded } = await import("./adapters/cli.ts");
+		const target = join(fx.dir, "target.json");
+		writeFileSync(target, '{"ok":true}');
+		const link = join(fx.dir, "link.json");
+		Bun.spawnSync(["/bin/ln", "-s", target, link]);
+		expect(readFileBounded(link, 100)).toEqual({
+			text: "",
+			truncated: false,
+			rejected: "is a symlink",
+		});
+		expect(readFileBounded(join(fx.dir, "missing.json"), 100)).toEqual({
+			text: "",
+			truncated: false,
+		});
+		expect(readFileBounded(target, 100)).toEqual({
+			text: '{"ok":true}',
+			truncated: false,
+		});
+	});
+});

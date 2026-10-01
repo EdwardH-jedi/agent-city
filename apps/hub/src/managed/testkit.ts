@@ -395,6 +395,12 @@ switch (mode) {
 		writeFileSync(outFile, verdict(existsSync(join(dir, "codex.rejected"))));
 		writeFileSync(join(dir, "codex.rejected"), "1");
 		break;
+	// the last-message file is replaced by a FIFO nobody writes to; the stream still "approves"
+	case "fifo_last_message":
+		Bun.spawnSync(["/bin/rm", "-f", outFile]);
+		Bun.spawnSync(["/usr/bin/mkfifo", outFile]);
+		out({ type: "item.completed", item: { type: "agent_message", text: verdict(true) } });
+		break;
 	// an explicit failure that is lost (oversized) or a broken record, then a valid approval + exit 0
 	case "oversized_failure":
 	case "malformed_then_approve":

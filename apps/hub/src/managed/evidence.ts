@@ -364,6 +364,15 @@ export class ArtifactAccessError extends Error {
 	}
 }
 
+/**
+ * open() flags for reading a file another party could have replaced: no symlink is followed, and
+ * O_NONBLOCK makes the open itself return at once for a FIFO / device (a blocking open of a FIFO
+ * without a writer would freeze the whole hub, timers included). The descriptor is then validated
+ * with fstat — never a separate stat of the path. On a regular file O_NONBLOCK changes nothing.
+ */
+export const SAFE_READ_FLAGS =
+	constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
 /** Hard cap on one artifact read (artifacts are written bounded far below this). */
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
@@ -404,7 +413,7 @@ export function readArtifactBytes(
 		throw new ArtifactAccessError("not_found", "outside the artifacts root");
 	let fd: number;
 	try {
-		fd = openSync(real, constants.O_RDONLY | constants.O_NOFOLLOW);
+		fd = openSync(real, SAFE_READ_FLAGS);
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
 		throw new ArtifactAccessError(

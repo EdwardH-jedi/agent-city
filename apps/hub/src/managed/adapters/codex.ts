@@ -317,6 +317,13 @@ export function createCodexReviewer(cfg: CodexProviderConfig): ReviewAdapter {
 					};
 
 				const fromFile = readFileBounded(outFile, LAST_MESSAGE_MAX_BYTES);
+				if (fromFile.rejected)
+					return {
+						...meta,
+						ok: false,
+						kind: "provider_output_invalid",
+						detail: `codex final message file was refused: ${fromFile.rejected}`,
+					};
 				if (fromFile.truncated)
 					return {
 						...meta,
