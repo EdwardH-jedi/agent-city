@@ -238,3 +238,38 @@ describe("resolveRecorded (orphans from an earlier hub process)", () => {
 		}
 	});
 });
+
+describe("start-time identity is stable across the hub's own environment", () => {
+	test("TZ / locale of the hub process do not change the recorded start time", async () => {
+		const child = spawn("/bin/sleep", ["30"], {
+			detached: true,
+			stdio: "ignore",
+		});
+		child.unref();
+		const pid = child.pid as number;
+		const saved = { TZ: process.env.TZ, LC_ALL: process.env.LC_ALL };
+		try {
+			const a = processStarted(pid);
+			process.env.TZ = "Pacific/Chatham";
+			process.env.LC_ALL = "de_DE.UTF-8";
+			const b = processStarted(pid);
+			expect(a).not.toBeNull();
+			expect(b).toBe(a);
+			// and therefore a still-running owned child is never mistaken for a recycled pid
+			const r = await resolveRecorded({ pid, started: a }, 100, {
+				...hostProcessOps,
+				terminateGroup: async () => false,
+			});
+			expect(r).toMatchObject({ resolved: false });
+		} finally {
+			for (const [k, v] of Object.entries(saved))
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			try {
+				process.kill(-pid, "SIGKILL");
+			} catch {
+				// gone
+			}
+		}
+	});
+});

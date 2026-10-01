@@ -108,10 +108,14 @@ the bound review are.
   run again, and Cancel only records the intent. Each worker tick re-checks open quarantines and
   releases one only on objective evidence (process + group gone, terminated here, or the pid now
   belongs to a different process — POSIX does not reuse a pid while its process group exists). An
-  inspection failure or an unrecorded start time keeps it open. Task detail shows open quarantines.
+  inspection failure or an unrecorded start time keeps it open. Start times are always read with
+  `ps` under a fixed locale/TZ (`LC_ALL=C TZ=UTC`), so a hub restarted in a different environment
+  compares like with like. Task detail shows open quarantines.
 - Every stage (start, implement, verify, review — resumed or not) re-checks the approval binding
   against the orchestrator's frozen config snapshot. A changed verification command, provider
   setting, model, limit or output root blocks the task (`approval_void`) before anything runs.
+  Note for operators: `limits` (e.g. `lease_ttl_ms`, `max_log_bytes`) are part of this binding, so
+  changing them voids the approval of every queued or in-progress task — run those again.
 - Cancel vs completion: the transaction that would commit a final state is the linearization
   point. A cancel recorded before it wins (the task ends `cancelled`, evidence written in that
   transaction stays); a cancel after completion leaves the finished task unchanged.

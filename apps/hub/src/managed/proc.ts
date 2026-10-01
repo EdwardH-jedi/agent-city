@@ -97,9 +97,18 @@ export function childEnv(
 	return { ...env, ...extra };
 }
 
+/**
+ * Fixed environment for `ps`: `lstart` is locale- and time-zone-dependent, and a start time is only
+ * comparable if it is always rendered the same way. Otherwise a hub restarted under a different
+ * TZ/locale would see a still-running owned child as a "recycled" pid and release its quarantine.
+ */
+const PS_ENV = { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" };
+
 export function processStarted(pid: number): string | null {
 	const r = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
 		encoding: "utf8",
+		timeout: 5_000,
+		env: PS_ENV,
 	});
 	const out = r.status === 0 ? r.stdout.trim() : "";
 	return out.length > 0 ? out : null;
@@ -115,6 +124,7 @@ export function inspectProcess(pid: number): Inspection {
 	const r = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
 		encoding: "utf8",
 		timeout: 5_000,
+		env: PS_ENV,
 	});
 	if (r.error) return { state: "error", error: r.error.message };
 	const out = (r.stdout ?? "").trim();
