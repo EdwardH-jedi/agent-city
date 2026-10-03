@@ -60,7 +60,6 @@ import {
 } from "./kit.ts";
 import {
 	briefing,
-	briefingControl,
 	briefingInfo,
 	documentRepo,
 	EngineGate,
@@ -860,7 +859,15 @@ async function scenario(main: Session): Promise<void> {
 			const item = (await briefingInfo(page)).items[i];
 			check(item, `item ${i} vanished`);
 			check(item.controls > 0, `item ${item.kind} has no navigating control`);
-			await briefingControl(page, i).click({ timeout: 4000 });
+			// by the item's frozen identity, not its index (a poll may re-render / reorder the items)
+			await expandBriefing(page);
+			await briefing(page)
+				.locator(
+					`[data-briefing-item="${item.kind}"][data-task-id="${item.taskId}"]`,
+				)
+				.locator("button, a[href]")
+				.first()
+				.click();
 			await until(
 				async () =>
 					(await page
@@ -1656,7 +1663,31 @@ async function briefingJourney(): Promise<void> {
 				taskRow(it.taskId)?.repo_id === A,
 				`claim ${i} names a task of another repository`,
 			);
-			await briefingControl(p, i).click({ timeout: 1500 });
+			// Target the claim by its frozen identity, not its index: a poll may legitimately re-render
+			// or reorder the claims between the read above and this click (other repositories' work keeps
+			// moving). Immediacy is asserted by allActionable (≤ 1 s per control); this click only proves
+			// where the claim leads, so it uses the normal action timeout. On failure, record this page
+			// (the harness's failure screenshot shows the suite's main page, not this one).
+			const claim = briefing(p)
+				.locator(
+					`[data-briefing-item="${it.kind}"][data-task-id="${it.taskId}"]`,
+				)
+				.locator("button, a[href]")
+				.first();
+			await expandBriefing(p);
+			await claim.click().catch(async (err: Error) => {
+				const now = await briefingInfo(p).catch(() => null);
+				const open = await briefing(p)
+					.locator("details[open]")
+					.count()
+					.catch(() => -1);
+				await run
+					.shot(p, `FAILED-J21-claim-${i}`, { checks: false })
+					.catch(() => undefined);
+				throw new Error(
+					`${err.message.split("\n")[0]}; claim ${it.kind}/${it.taskId.slice(-8)}; briefing present=${now?.present} repo=${now?.repo} state=${now?.state} items=${now?.items.length} details-open=${open}`,
+				);
+			});
 			await until(
 				async () =>
 					(await p

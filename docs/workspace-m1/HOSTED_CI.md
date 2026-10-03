@@ -152,6 +152,25 @@ a constant ≈ 26.3 s stall, longer than the 20 s budget. Local runs hit it inte
 reads those controls without waiting (a removed field keeps nothing; a removed button is not enabled); budget and
 assertions unchanged. The run of the commit with this repair is reported in the delivery handoff.
 
+## Run 5 — MR-R05 repair (`47c5cd0`)
+
+Run 37134841371 (push of `47c5cd0ca280d6863299c86db7c519e4482d0b82`): **failure** — 3 of 4 jobs green again
+(`checks`: unit 754 + integration 1105, secrets 374 files, legacy gate 32/32; HUB 110 / 0 / 0; FX 30 / 0 / 24;
+campus 36 / 0 / 0; repair 12 / 0). MULTI 26 / 1: **MR-R05 passed** on hosted; **BRW-J-21** failed with
+`click: Timeout 1500ms exceeded` on the click that follows one briefing claim to its task.
+
+What the evidence does and does not show: the uploaded "FAILED-BRW-J-21" screenshot is of the suite's main page,
+not J-21's own browser context (J-21 closes its context in `finally`, which hands the harness's failure
+screenshot back to the main page) — so it says nothing about J-21's state. J-21's immediacy assertion (every
+visible briefing control actionable within 1 s) passed; the failing step was the per-claim navigation click,
+which addressed the claim by index after reading it, with a tight 1.5 s timeout, while other repositories' work
+can legitimately re-render or reorder claims in between. Repair (test only): the claim is addressed by its frozen
+identity (`data-briefing-item` + `data-task-id`), the details are re-opened if a re-render closed them, the click
+uses the normal action timeout (immediacy stays asserted separately), and a failure now captures J-21's own page
+and the briefing state in the message. MR-08's identical index-based click is hardened the same way. The cause on
+the hosted runner is therefore not proven; the next run's evidence (own-page screenshot + state) would show it if
+it recurs. The run of that commit is reported in the delivery handoff.
+
 ## Limitations
 
 - Hosted runs are Linux x64; local runs are macOS arm64. Observed durations are observations, not bounds.
