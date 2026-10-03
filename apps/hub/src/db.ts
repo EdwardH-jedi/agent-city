@@ -8,9 +8,11 @@ export function openDb(path: string): Database {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
 
 	const db = new Database(path, { create: true, strict: true });
+	// busy_timeout first: switching to WAL takes a lock, and a second handle opening the same file
+	// at that moment must wait instead of failing with "database is locked".
+	db.run("PRAGMA busy_timeout = 5000");
 	db.run("PRAGMA journal_mode = WAL");
 	db.run("PRAGMA foreign_keys = ON");
-	db.run("PRAGMA busy_timeout = 5000");
 
 	migrate(db);
 	return db;
@@ -33,8 +35,13 @@ export function migrate(db: Database): void {
 
 		const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
 		db.transaction(() => {
+			// re-read inside the (immediate) transaction: another handle may have applied it meanwhile
+			const now =
+				db.query<{ user_version: number }, []>("PRAGMA user_version").get()
+					?.user_version ?? 0;
+			if (version <= now) return;
 			db.run(sql);
 			db.run(`PRAGMA user_version = ${version}`);
-		})();
+		}).immediate();
 	}
 }

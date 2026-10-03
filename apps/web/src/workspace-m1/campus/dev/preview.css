@@ -1,0 +1,82 @@
+/* Dev-only frame of the campus preview: the workspace grid at its real sizes (top 56, rail 56,
+   main padding 16, right panel 600 px ≥ 1361 wide / 560 px below), left pane = campus + tasks. */
+.wsm1.cmpv {
+	grid-template-columns: 56px minmax(0, 1fr);
+	grid-template-rows: 56px minmax(0, 1fr);
+	grid-template-areas:
+		"top top"
+		"rail main";
+}
+.cmpv-muted {
+	color: var(--ws-muted);
+	font-size: 12px;
+}
+.cmpv-top {
+	grid-area: top;
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	padding: 0 16px;
+	background: var(--ws-graphite);
+	color: var(--ws-on-graphite);
+}
+.cmpv-top .cmpv-muted {
+	color: var(--ws-on-graphite-2);
+}
+.cmpv-rail {
+	grid-area: rail;
+	background: var(--ws-graphite-2);
+}
+.cmpv-main {
+	grid-area: main;
+	padding: 16px;
+	min-height: 0;
+	min-width: 0;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 600px;
+	gap: 16px;
+	overflow: hidden;
+}
+@media (max-width: 1360px) {
+	.cmpv-main {
+		grid-template-columns: minmax(0, 1fr) 560px;
+	}
+}
+.cmpv-left {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	min-height: 0;
+	min-width: 0;
+}
+.cmpv-campus {
+	flex: 0 0 56%;
+	min-height: 300px;
+	display: flex;
+	flex-direction: column;
+}
+.cmpv-campus:empty {
+	display: none;
+}
+.cmpv-tasks {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+}
+.cmpv-panel {
+	min-height: 0;
+	overflow: auto;
+}
+.cmpv-log {
+	margin: 8px 0 0;
+	padding-left: 20px;
+	font-size: 12px;
+}
+.cmpv-log code {
+	font-family: var(--ws-mono);
+}
+/* without 3D the campus card sizes to its controls */
+.cmpv-campus:has(> .cmp[data-mode="static"]) {
+	flex: 0 0 auto;
+	min-height: 0;
+}

@@ -81,6 +81,26 @@ export type CodexProviderConfig = z.infer<typeof CodexProvider>;
 const Limits = z.strictObject({
 	max_log_bytes: z.number().int().min(1024).max(8_000_000).default(262_144),
 	max_diff_bytes: z.number().int().min(1024).max(8_000_000).default(1_048_576),
+	// complete old/new file context read to decide safe diff disclosure (M1 omitted-hunk guard)
+	max_context_file_bytes: z
+		.number()
+		.int()
+		.min(1024)
+		.max(16_777_216)
+		.default(1_048_576),
+	max_context_total_bytes: z
+		.number()
+		.int()
+		.min(1024)
+		.max(67_108_864)
+		.default(16_777_216),
+	// total bytes one sealed result may read (workspace evidence sealer)
+	max_evidence_bytes: z
+		.number()
+		.int()
+		.min(1024)
+		.max(268_435_456)
+		.default(67_108_864),
 	kill_grace_ms: z.number().int().min(50).max(30_000).default(2_000),
 	lease_ttl_ms: z.number().int().min(200).max(600_000).default(30_000),
 	max_infra_retries: z.number().int().min(0).max(5).default(2),

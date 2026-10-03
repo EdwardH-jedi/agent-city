@@ -1,0 +1,443 @@
+/* Campus presentation (Worker B). Scoped under .cmp; uses the workspace tokens (--ws-*) when
+   mounted inside .wsm1 and the approved handover tokens as fallbacks. Daylight only, borders over
+   shadows (shadows only on controls floating over the 3D view), radii 4/6/8, no transitions.
+   Layout: header · Headquarters strip (documents waiting) · stage with the building strip floating
+   at its bottom edge. Without 3D the same controls flow as plain lists. */
+
+.cmp {
+	--cmp-sky: #e6e9e4;
+	--cmp-surface: var(--ws-surface, #ffffff);
+	--cmp-surface-2: var(--ws-surface-2, #f7f6f3);
+	--cmp-ink: var(--ws-ink, #161b19);
+	--cmp-muted: var(--ws-muted, #525a56);
+	--cmp-line: var(--ws-line, #e0e3de);
+	--cmp-line-strong: #7f8681;
+	--cmp-running: #2650bd;
+	--cmp-attention: #8a5000;
+	--cmp-ready: #0a6b60;
+	--cmp-danger: #b3261e;
+	--cmp-danger-soft: #fbe9e7;
+	--cmp-brass: #85661a;
+	--cmp-focus: var(--ws-focus, #2a5bd7);
+	--cmp-shadow: 0 1px 2px rgb(22 27 25 / 6%), 0 2px 8px rgb(22 27 25 / 5%);
+
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	min-width: 0;
+	height: 100%;
+	background: var(--cmp-surface);
+	border: 1px solid var(--cmp-line);
+	border-radius: 6px;
+	overflow: hidden;
+	color: var(--cmp-ink);
+	font-size: 13px;
+	line-height: 1.4;
+}
+.cmp *,
+.cmp *::before,
+.cmp *::after {
+	box-sizing: border-box;
+	transition: none;
+	animation: none;
+}
+.cmp :focus-visible {
+	outline: 2px solid var(--cmp-focus);
+	outline-offset: 2px;
+}
+.cmp ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.cmp p {
+	margin: 0;
+}
+
+/* ── header ────────────────────────────────────────────────────────────────── */
+.cmp-head {
+	flex: none;
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	padding: 9px 14px 8px;
+	border-bottom: 1px solid var(--cmp-line);
+	min-width: 0;
+}
+.cmp-head h2 {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 650;
+	flex: none;
+}
+.cmp-sub {
+	flex: none;
+	color: var(--cmp-muted);
+	font-size: 12px;
+	white-space: nowrap;
+}
+.cmp-caption {
+	margin-left: auto;
+	min-width: 0;
+	color: var(--cmp-muted);
+	font-size: 11.5px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* ── Headquarters strip: the HQ button + one button per waiting document ─────── */
+.cmp-hq {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	border-bottom: 1px solid var(--cmp-line);
+	background: var(--cmp-surface-2);
+	overflow-x: auto;
+	scrollbar-width: thin;
+	min-width: 0;
+}
+.cmp-visits {
+	display: flex;
+	gap: 6px;
+	min-width: 0;
+}
+.cmp-visits > li {
+	flex: none;
+}
+
+.cmp .cmp-hq-button,
+.cmp .cmp-visit,
+.cmp .cmp-building,
+.cmp .cmp-restart {
+	font: inherit;
+	color: var(--cmp-ink);
+	text-align: left;
+	cursor: pointer;
+	min-height: 0;
+}
+.cmp .cmp-hq-button {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	border: 1px solid var(--cmp-line);
+	border-radius: 6px;
+	background: var(--cmp-surface);
+	font-size: 12.5px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+.cmp .cmp-hq-button:disabled {
+	cursor: default;
+	color: var(--cmp-ink);
+	background: var(--cmp-surface);
+	border-color: var(--cmp-line);
+}
+.cmp-hq-name {
+	color: var(--cmp-brass);
+}
+.cmp-hq-count {
+	font-weight: 500;
+	color: var(--cmp-muted);
+	font-size: 12px;
+}
+.cmp .cmp-hq-button:not(:disabled) .cmp-hq-count {
+	color: var(--cmp-attention);
+}
+
+.cmp .cmp-visit {
+	/* two lines: gate + repository, then the title (ellipsis; full text in name/tooltip) */
+	display: grid;
+	grid-template-columns: 16px auto minmax(0, 1fr);
+	grid-template-areas:
+		"glyph gate repo"
+		"glyph title title";
+	align-items: center;
+	column-gap: 6px;
+	row-gap: 1px;
+	width: 250px;
+	padding: 3px 8px 4px;
+	border: 1px solid var(--cmp-line);
+	border-radius: 6px;
+	background: var(--cmp-surface);
+	font-size: 12px;
+	font-weight: 500;
+}
+.cmp .cmp-visit[aria-current="true"] {
+	border-color: var(--cmp-ink);
+	box-shadow: inset 0 0 0 1px var(--cmp-ink);
+}
+.cmp-visit-gate {
+	grid-area: gate;
+	font-weight: 600;
+	color: var(--cmp-attention);
+	white-space: nowrap;
+}
+.cmp-visit-title {
+	grid-area: title;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--cmp-ink);
+}
+.cmp-visit[data-gate="result"] .cmp-visit-gate {
+	color: var(--cmp-ready);
+}
+.cmp-visit-repo {
+	grid-area: repo;
+	justify-self: end;
+	max-width: 100%;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--cmp-muted);
+	font-size: 11.5px;
+	white-space: nowrap;
+}
+
+.cmp-glyph {
+	width: 16px;
+	height: 16px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.6;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	flex: none;
+}
+.cmp-glyph-fill {
+	fill: currentColor;
+	stroke: none;
+}
+.cmp .cmp-badge .cmp-glyph {
+	width: 13px;
+	height: 13px;
+}
+.cmp .cmp-hq-button .cmp-glyph {
+	color: var(--cmp-brass);
+}
+.cmp .cmp-visit .cmp-glyph {
+	grid-area: glyph;
+	align-self: start;
+	margin-top: 1px;
+	color: var(--cmp-attention);
+}
+.cmp .cmp-visit[data-gate="result"] .cmp-glyph {
+	color: var(--cmp-ready);
+}
+
+/* ── stage ─────────────────────────────────────────────────────────────────── */
+.cmp-body {
+	position: relative;
+	flex: 1;
+	min-height: 200px;
+	min-width: 0;
+}
+.cmp-stage,
+.cmp-scene,
+.cmp-gl,
+.cmp-pins {
+	position: absolute;
+	inset: 0;
+}
+.cmp-stage {
+	background: var(--cmp-sky);
+	overflow: hidden;
+}
+.cmp[data-scene-state="paused"] .cmp-scene {
+	visibility: hidden;
+}
+.cmp-canvas {
+	display: block;
+}
+.cmp-pins {
+	pointer-events: none;
+	overflow: hidden;
+}
+.cmp-pin {
+	position: absolute;
+	left: 0;
+	top: 0;
+	translate: -50% 4px;
+	display: flex;
+	flex-direction: column;
+	padding: 2px 7px 3px;
+	background: var(--cmp-surface);
+	border: 1px solid var(--cmp-line);
+	border-radius: 6px;
+	box-shadow: var(--cmp-shadow);
+	white-space: nowrap;
+	font-size: 11px;
+	line-height: 14px;
+}
+.cmp-pin-name {
+	font-weight: 600;
+	font-size: 11.5px;
+	color: var(--cmp-ink);
+}
+.cmp-pin-state {
+	color: var(--cmp-muted);
+}
+.cmp-pin[data-tone="running"] .cmp-pin-state {
+	color: var(--cmp-running);
+}
+.cmp-pin[data-tone="attention"] .cmp-pin-state {
+	color: var(--cmp-attention);
+}
+.cmp-pin[data-tone="danger"] .cmp-pin-state {
+	color: var(--cmp-danger);
+}
+.cmp-pin-hq .cmp-pin-name {
+	color: var(--cmp-brass);
+}
+
+.cmp-note {
+	position: absolute;
+	top: 8px;
+	left: 8px;
+	max-width: min(380px, calc(100% - 16px));
+	padding: 6px 10px;
+	background: var(--cmp-surface);
+	border: 1px solid var(--cmp-line);
+	border-radius: 6px;
+	box-shadow: var(--cmp-shadow);
+	font-size: 12px;
+	line-height: 16px;
+}
+.cmp .cmp-restart {
+	margin-top: 6px;
+	padding: 3px 8px;
+	border: 1px solid var(--cmp-line-strong);
+	border-radius: 5px;
+	background: var(--cmp-surface);
+	font-size: 12px;
+	font-weight: 600;
+}
+
+/* building buttons float along the bottom edge of the stage (one scrollable line) */
+.cmp-buildings {
+	position: absolute;
+	left: 8px;
+	right: 8px;
+	bottom: 8px;
+	display: flex;
+	gap: 6px;
+	overflow-x: auto;
+	padding: 3px;
+	margin: -3px;
+	scrollbar-width: thin;
+	pointer-events: none;
+}
+.cmp-buildings > li {
+	flex: none;
+	pointer-events: auto;
+}
+.cmp .cmp-building {
+	display: grid;
+	grid-template-columns: 9px auto;
+	column-gap: 6px;
+	align-items: center;
+	min-width: 128px;
+	max-width: 240px;
+	padding: 3px 9px 4px 8px;
+	background: var(--cmp-surface);
+	border: 1px solid var(--cmp-line);
+	border-radius: 6px;
+	box-shadow: var(--cmp-shadow);
+}
+.cmp .cmp-building[aria-current="true"] {
+	border-color: var(--cmp-ink);
+	box-shadow:
+		inset 0 0 0 1px var(--cmp-ink),
+		var(--cmp-shadow);
+}
+.cmp-swatch {
+	width: 9px;
+	height: 9px;
+	border-radius: 1px;
+}
+.cmp-building-name {
+	font-weight: 600;
+	font-size: 12.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.cmp-building-stats,
+.cmp-badge {
+	grid-column: 2;
+	font-size: 11.5px;
+	color: var(--cmp-muted);
+	white-space: nowrap;
+}
+.cmp-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	justify-self: start;
+	margin-top: 2px;
+	padding: 0 5px 0 3px;
+	border-radius: 4px;
+	background: var(--cmp-danger-soft);
+	color: var(--cmp-danger);
+	font-weight: 600;
+}
+.cmp-empty {
+	color: var(--cmp-muted);
+	padding: 4px 2px;
+	pointer-events: auto;
+}
+
+/* ── no 3D (no WebGL / start failure): the same controls, in flow ──────────── */
+.cmp[data-mode="static"] {
+	height: auto;
+}
+.cmp[data-mode="static"] .cmp-hq {
+	flex-direction: column;
+	align-items: stretch;
+	overflow: visible;
+}
+.cmp[data-mode="static"] .cmp-visits {
+	flex-direction: column;
+	gap: 4px;
+}
+.cmp[data-mode="static"] .cmp-hq-button {
+	align-self: flex-start;
+}
+.cmp[data-mode="static"] .cmp-visit {
+	width: auto;
+	max-width: none;
+}
+.cmp[data-mode="static"] .cmp-visit-title {
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+.cmp[data-mode="static"] .cmp-body {
+	position: static;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 10px;
+}
+.cmp[data-mode="static"] .cmp-note {
+	position: static;
+	max-width: none;
+	box-shadow: none;
+}
+.cmp[data-mode="static"] .cmp-buildings {
+	position: static;
+	flex-wrap: wrap;
+	overflow: visible;
+	margin: 0;
+	padding: 0;
+	pointer-events: auto;
+}
+.cmp[data-mode="static"] .cmp-building {
+	box-shadow: none;
+}

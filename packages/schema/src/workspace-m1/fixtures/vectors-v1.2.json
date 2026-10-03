@@ -1,0 +1,339 @@
+{
+	"description": "Workspace-m1 contract delta v1.2 vectors (CONTRACT_V1_2.md §A): criterion ids (sha256 of the UTF-8 criterion text) and input -> canonical string -> sha256 (UTF-8) for the v1.2 proposal, the derived criterion coverage and the v1.2 result envelope. fixtures/vectors.json (v1) is unchanged. Regenerating requires a lead-approved versioned delta.",
+	"criterion_ids": [
+		{
+			"text": "Prints \"hello, world\" (comma included)",
+			"sha256": "a85aea43047d970c2b45ebcc604515ce5b04492f5f0d7948b667e90cf076042c",
+			"id": "crit-a85aea43047d970c"
+		},
+		{
+			"text": "Exit code stays 0, even on empty input",
+			"sha256": "887cdb82a8c1e96281cf63125415f759dcd425c65d30af2f609d91b6aa249c76",
+			"id": "crit-887cdb82a8c1e962"
+		},
+		{
+			"text": "Handles naïve café input — ünïcode, 日本語, 😀",
+			"sha256": "587f3503b8aa1a7b678540e29b8e1e39a8c81fdf533697c73716db11a5702e96",
+			"id": "crit-587f3503b8aa1a7b"
+		}
+	],
+	"contracts": [
+		{
+			"name": "proposal_snapshot_v1_2",
+			"input": {
+				"contract": "agentcity.proposal/v1.2",
+				"proposal_id": "wsp-22222222-2222-4222-8222-222222222223",
+				"workspace_task_id": "wst-11111111-1111-4111-8111-111111111111",
+				"version": 1,
+				"predecessor_proposal_id": null,
+				"repo_id": "local/fixture",
+				"base_ref": "main",
+				"base_sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+				"seed_sha": null,
+				"title": "Add a greeting, politely",
+				"objective": "Print a greeting from the CLI.\nKeep the output stable:\n\t- one line\n\t- no colour",
+				"criteria": [
+					{
+						"id": "crit-a85aea43047d970c",
+						"text": "Prints \"hello, world\" (comma included)"
+					},
+					{
+						"id": "crit-887cdb82a8c1e962",
+						"text": "Exit code stays 0, even on empty input"
+					},
+					{
+						"id": "crit-587f3503b8aa1a7b",
+						"text": "Handles naïve café input — ünïcode, 日本語, 😀"
+					}
+				],
+				"scope": {
+					"allowed": ["src", "test"],
+					"protected": ["config"]
+				},
+				"execution_mode": "simulated",
+				"simulation_scenario": "reject_then_approve",
+				"provider_profiles": {
+					"implementer": {
+						"profile_id": "fake-implementer",
+						"provider": "fake",
+						"mode": "simulated",
+						"model": null
+					},
+					"reviewer": {
+						"profile_id": "fake-reviewer",
+						"provider": "fake",
+						"mode": "simulated",
+						"model": null
+					}
+				},
+				"verification_plan": {
+					"required_checks": ["unit", "lint"]
+				},
+				"context_policy": {
+					"source": "base_snapshot",
+					"refs": []
+				},
+				"budgets": {
+					"max_attempts": 2,
+					"max_model_invocations": 4
+				},
+				"repair_policy": {
+					"max_repairs": 1
+				},
+				"coverage_plan": [
+					{
+						"criterion_id": "crit-a85aea43047d970c",
+						"checks": ["unit"]
+					},
+					{
+						"criterion_id": "crit-887cdb82a8c1e962",
+						"checks": ["lint", "unit"]
+					},
+					{
+						"criterion_id": "crit-587f3503b8aa1a7b",
+						"checks": ["unit"]
+					}
+				]
+			},
+			"canonical": "{\"base_ref\":\"main\",\"base_sha\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"budgets\":{\"max_attempts\":2,\"max_model_invocations\":4},\"context_policy\":{\"refs\":[],\"source\":\"base_snapshot\"},\"contract\":\"agentcity.proposal/v1.2\",\"coverage_plan\":[{\"checks\":[\"unit\"],\"criterion_id\":\"crit-a85aea43047d970c\"},{\"checks\":[\"lint\",\"unit\"],\"criterion_id\":\"crit-887cdb82a8c1e962\"},{\"checks\":[\"unit\"],\"criterion_id\":\"crit-587f3503b8aa1a7b\"}],\"criteria\":[{\"id\":\"crit-a85aea43047d970c\",\"text\":\"Prints \\\"hello, world\\\" (comma included)\"},{\"id\":\"crit-887cdb82a8c1e962\",\"text\":\"Exit code stays 0, even on empty input\"},{\"id\":\"crit-587f3503b8aa1a7b\",\"text\":\"Handles naïve café input — ünïcode, 日本語, 😀\"}],\"execution_mode\":\"simulated\",\"objective\":\"Print a greeting from the CLI.\\nKeep the output stable:\\n\\t- one line\\n\\t- no colour\",\"predecessor_proposal_id\":null,\"proposal_id\":\"wsp-22222222-2222-4222-8222-222222222223\",\"provider_profiles\":{\"implementer\":{\"mode\":\"simulated\",\"model\":null,\"profile_id\":\"fake-implementer\",\"provider\":\"fake\"},\"reviewer\":{\"mode\":\"simulated\",\"model\":null,\"profile_id\":\"fake-reviewer\",\"provider\":\"fake\"}},\"repair_policy\":{\"max_repairs\":1},\"repo_id\":\"local/fixture\",\"scope\":{\"allowed\":[\"src\",\"test\"],\"protected\":[\"config\"]},\"seed_sha\":null,\"simulation_scenario\":\"reject_then_approve\",\"title\":\"Add a greeting, politely\",\"verification_plan\":{\"required_checks\":[\"unit\",\"lint\"]},\"version\":1,\"workspace_task_id\":\"wst-11111111-1111-4111-8111-111111111111\"}",
+			"sha256": "9cdc314cec507406b902eaa731bef3a9fe6dde34fe9d71174354bcac1a74d82b"
+		},
+		{
+			"name": "criterion_coverage_v1_2",
+			"input": [
+				{
+					"criterion_id": "crit-a85aea43047d970c",
+					"status": "satisfied",
+					"checks": [
+						{
+							"check": "unit",
+							"outcome": "passed",
+							"log_artifact_id": "art-77777777-7777-4777-8777-777777777777",
+							"log_sha256": "0707070707070707070707070707070707070707070707070707070707070707"
+						}
+					]
+				},
+				{
+					"criterion_id": "crit-887cdb82a8c1e962",
+					"status": "satisfied",
+					"checks": [
+						{
+							"check": "lint",
+							"outcome": "passed",
+							"log_artifact_id": "art-77777777-7777-4777-8777-777777777778",
+							"log_sha256": "0808080808080808080808080808080808080808080808080808080808080808"
+						},
+						{
+							"check": "unit",
+							"outcome": "passed",
+							"log_artifact_id": "art-77777777-7777-4777-8777-777777777777",
+							"log_sha256": "0707070707070707070707070707070707070707070707070707070707070707"
+						}
+					]
+				},
+				{
+					"criterion_id": "crit-587f3503b8aa1a7b",
+					"status": "satisfied",
+					"checks": [
+						{
+							"check": "unit",
+							"outcome": "passed",
+							"log_artifact_id": "art-77777777-7777-4777-8777-777777777777",
+							"log_sha256": "0707070707070707070707070707070707070707070707070707070707070707"
+						}
+					]
+				}
+			],
+			"canonical": "[{\"checks\":[{\"check\":\"unit\",\"log_artifact_id\":\"art-77777777-7777-4777-8777-777777777777\",\"log_sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"outcome\":\"passed\"}],\"criterion_id\":\"crit-a85aea43047d970c\",\"status\":\"satisfied\"},{\"checks\":[{\"check\":\"lint\",\"log_artifact_id\":\"art-77777777-7777-4777-8777-777777777778\",\"log_sha256\":\"0808080808080808080808080808080808080808080808080808080808080808\",\"outcome\":\"passed\"},{\"check\":\"unit\",\"log_artifact_id\":\"art-77777777-7777-4777-8777-777777777777\",\"log_sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"outcome\":\"passed\"}],\"criterion_id\":\"crit-887cdb82a8c1e962\",\"status\":\"satisfied\"},{\"checks\":[{\"check\":\"unit\",\"log_artifact_id\":\"art-77777777-7777-4777-8777-777777777777\",\"log_sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"outcome\":\"passed\"}],\"criterion_id\":\"crit-587f3503b8aa1a7b\",\"status\":\"satisfied\"}]",
+			"sha256": "159dbb1d4e8ce0988097478966f3c26a5eacc0b00e4eed8e1a3c12c26b753116"
+		},
+		{
+			"name": "result_envelope_v1_2",
+			"input": {
+				"contract": "agentcity.result/v1.2",
+				"workspace_task_id": "wst-11111111-1111-4111-8111-111111111111",
+				"proposal_id": "wsp-22222222-2222-4222-8222-222222222223",
+				"proposal_hash": "9cdc314cec507406b902eaa731bef3a9fe6dde34fe9d71174354bcac1a74d82b",
+				"execution_binding_hash": "fd3d364367ac7dffc84a7065c79cd873b5e54209a407369e72e7f1e001389214",
+				"run_decision_id": "wsd-44444444-4444-4444-8444-444444444441",
+				"managed_task_id": "task-55555555-5555-4555-8555-555555555555",
+				"run_id": "run-66666666-6666-4666-8666-666666666662",
+				"attempt_no": 2,
+				"max_repairs": 1,
+				"base_sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+				"parent_sha": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+				"candidate_sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+				"candidate_tree": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+				"manifest_hash": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+				"execution_mode": "simulated",
+				"policy_hash": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+				"required_checks": ["unit", "lint"],
+				"artifacts": [
+					{
+						"name": "changed-files.json",
+						"kind": "changed_files",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777771",
+						"sha256": "0101010101010101010101010101010101010101010101010101010101010101",
+						"byte_len": 101,
+						"truncated": false
+					},
+					{
+						"name": "diff.patch",
+						"kind": "diff",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777772",
+						"sha256": "0202020202020202020202020202020202020202020202020202020202020202",
+						"byte_len": 102,
+						"truncated": false
+					},
+					{
+						"name": "implementation.log",
+						"kind": "implementation_log",
+						"status": "truncated",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777773",
+						"sha256": "0303030303030303030303030303030303030303030303030303030303030303",
+						"byte_len": 103,
+						"truncated": true
+					},
+					{
+						"name": "manifest.json",
+						"kind": "manifest",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777774",
+						"sha256": "0404040404040404040404040404040404040404040404040404040404040404",
+						"byte_len": 104,
+						"truncated": false
+					},
+					{
+						"name": "review-output.json",
+						"kind": "review_output",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777775",
+						"sha256": "0505050505050505050505050505050505050505050505050505050505050505",
+						"byte_len": 105,
+						"truncated": false
+					},
+					{
+						"name": "review.log",
+						"kind": "review_log",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777776",
+						"sha256": "0606060606060606060606060606060606060606060606060606060606060606",
+						"byte_len": 106,
+						"truncated": false
+					},
+					{
+						"name": "verify-1-unit.log",
+						"kind": "verification_log",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777777",
+						"sha256": "0707070707070707070707070707070707070707070707070707070707070707",
+						"byte_len": 107,
+						"truncated": false
+					},
+					{
+						"name": "verify-2-lint.log",
+						"kind": "verification_log",
+						"status": "truncated",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777778",
+						"sha256": "0808080808080808080808080808080808080808080808080808080808080808",
+						"byte_len": 108,
+						"truncated": true
+					}
+				],
+				"verification": [
+					{
+						"name": "unit",
+						"completed": true,
+						"timed_out": false,
+						"exit_code": 0,
+						"duration_ms": 1234,
+						"log_sha256": "0707070707070707070707070707070707070707070707070707070707070707",
+						"log_truncated": false
+					},
+					{
+						"name": "lint",
+						"completed": true,
+						"timed_out": false,
+						"exit_code": 0,
+						"duration_ms": 321,
+						"log_sha256": "0808080808080808080808080808080808080808080808080808080808080808",
+						"log_truncated": true
+					}
+				],
+				"review": {
+					"review_id": "rev-88888888-8888-4888-8888-888888888888",
+					"review_hash": "ded692f28aee7eb6866656260864684b855c67dfab78b6716f4383192a8c46fd",
+					"verdict": "approve",
+					"valid": true,
+					"candidate_sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+					"manifest_hash": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+					"findings": 1,
+					"blocking_findings": 0
+				},
+				"provenance": {
+					"implementer": {
+						"provider": "fake",
+						"mode": "simulated",
+						"model_requested": null,
+						"model_resolved": null
+					},
+					"reviewer": {
+						"provider": "fake",
+						"mode": "simulated",
+						"model_requested": null,
+						"model_resolved": null
+					}
+				},
+				"evidence_status": "verified",
+				"criterion_coverage": [
+					{
+						"criterion_id": "crit-a85aea43047d970c",
+						"status": "satisfied",
+						"checks": [
+							{
+								"check": "unit",
+								"outcome": "passed",
+								"log_artifact_id": "art-77777777-7777-4777-8777-777777777777",
+								"log_sha256": "0707070707070707070707070707070707070707070707070707070707070707"
+							}
+						]
+					},
+					{
+						"criterion_id": "crit-887cdb82a8c1e962",
+						"status": "satisfied",
+						"checks": [
+							{
+								"check": "lint",
+								"outcome": "passed",
+								"log_artifact_id": "art-77777777-7777-4777-8777-777777777778",
+								"log_sha256": "0808080808080808080808080808080808080808080808080808080808080808"
+							},
+							{
+								"check": "unit",
+								"outcome": "passed",
+								"log_artifact_id": "art-77777777-7777-4777-8777-777777777777",
+								"log_sha256": "0707070707070707070707070707070707070707070707070707070707070707"
+							}
+						]
+					},
+					{
+						"criterion_id": "crit-587f3503b8aa1a7b",
+						"status": "satisfied",
+						"checks": [
+							{
+								"check": "unit",
+								"outcome": "passed",
+								"log_artifact_id": "art-77777777-7777-4777-8777-777777777777",
+								"log_sha256": "0707070707070707070707070707070707070707070707070707070707070707"
+							}
+						]
+					}
+				]
+			},
+			"canonical": "{\"artifacts\":[{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777771\",\"byte_len\":101,\"kind\":\"changed_files\",\"name\":\"changed-files.json\",\"sha256\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777772\",\"byte_len\":102,\"kind\":\"diff\",\"name\":\"diff.patch\",\"sha256\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777773\",\"byte_len\":103,\"kind\":\"implementation_log\",\"name\":\"implementation.log\",\"sha256\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"status\":\"truncated\",\"truncated\":true},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777774\",\"byte_len\":104,\"kind\":\"manifest\",\"name\":\"manifest.json\",\"sha256\":\"0404040404040404040404040404040404040404040404040404040404040404\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777775\",\"byte_len\":105,\"kind\":\"review_output\",\"name\":\"review-output.json\",\"sha256\":\"0505050505050505050505050505050505050505050505050505050505050505\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777776\",\"byte_len\":106,\"kind\":\"review_log\",\"name\":\"review.log\",\"sha256\":\"0606060606060606060606060606060606060606060606060606060606060606\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777777\",\"byte_len\":107,\"kind\":\"verification_log\",\"name\":\"verify-1-unit.log\",\"sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777778\",\"byte_len\":108,\"kind\":\"verification_log\",\"name\":\"verify-2-lint.log\",\"sha256\":\"0808080808080808080808080808080808080808080808080808080808080808\",\"status\":\"truncated\",\"truncated\":true}],\"attempt_no\":2,\"base_sha\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"candidate_sha\":\"c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\",\"candidate_tree\":\"d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4\",\"contract\":\"agentcity.result/v1.2\",\"criterion_coverage\":[{\"checks\":[{\"check\":\"unit\",\"log_artifact_id\":\"art-77777777-7777-4777-8777-777777777777\",\"log_sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"outcome\":\"passed\"}],\"criterion_id\":\"crit-a85aea43047d970c\",\"status\":\"satisfied\"},{\"checks\":[{\"check\":\"lint\",\"log_artifact_id\":\"art-77777777-7777-4777-8777-777777777778\",\"log_sha256\":\"0808080808080808080808080808080808080808080808080808080808080808\",\"outcome\":\"passed\"},{\"check\":\"unit\",\"log_artifact_id\":\"art-77777777-7777-4777-8777-777777777777\",\"log_sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"outcome\":\"passed\"}],\"criterion_id\":\"crit-887cdb82a8c1e962\",\"status\":\"satisfied\"},{\"checks\":[{\"check\":\"unit\",\"log_artifact_id\":\"art-77777777-7777-4777-8777-777777777777\",\"log_sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"outcome\":\"passed\"}],\"criterion_id\":\"crit-587f3503b8aa1a7b\",\"status\":\"satisfied\"}],\"evidence_status\":\"verified\",\"execution_binding_hash\":\"fd3d364367ac7dffc84a7065c79cd873b5e54209a407369e72e7f1e001389214\",\"execution_mode\":\"simulated\",\"managed_task_id\":\"task-55555555-5555-4555-8555-555555555555\",\"manifest_hash\":\"f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6\",\"max_repairs\":1,\"parent_sha\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"policy_hash\":\"e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5\",\"proposal_hash\":\"9cdc314cec507406b902eaa731bef3a9fe6dde34fe9d71174354bcac1a74d82b\",\"proposal_id\":\"wsp-22222222-2222-4222-8222-222222222223\",\"provenance\":{\"implementer\":{\"mode\":\"simulated\",\"model_requested\":null,\"model_resolved\":null,\"provider\":\"fake\"},\"reviewer\":{\"mode\":\"simulated\",\"model_requested\":null,\"model_resolved\":null,\"provider\":\"fake\"}},\"required_checks\":[\"unit\",\"lint\"],\"review\":{\"blocking_findings\":0,\"candidate_sha\":\"c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\",\"findings\":1,\"manifest_hash\":\"f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6\",\"review_hash\":\"ded692f28aee7eb6866656260864684b855c67dfab78b6716f4383192a8c46fd\",\"review_id\":\"rev-88888888-8888-4888-8888-888888888888\",\"valid\":true,\"verdict\":\"approve\"},\"run_decision_id\":\"wsd-44444444-4444-4444-8444-444444444441\",\"run_id\":\"run-66666666-6666-4666-8666-666666666662\",\"verification\":[{\"completed\":true,\"duration_ms\":1234,\"exit_code\":0,\"log_sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"log_truncated\":false,\"name\":\"unit\",\"timed_out\":false},{\"completed\":true,\"duration_ms\":321,\"exit_code\":0,\"log_sha256\":\"0808080808080808080808080808080808080808080808080808080808080808\",\"log_truncated\":true,\"name\":\"lint\",\"timed_out\":false}],\"workspace_task_id\":\"wst-11111111-1111-4111-8111-111111111111\"}",
+			"sha256": "3360d5629f9945b3797cd86666388240a9d41d8d5d547871bf9d6625cd580d5d"
+		}
+	]
+}

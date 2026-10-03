@@ -8,6 +8,12 @@ export default defineConfig(({ mode }) => {
 
 	return {
 		plugins: [react()],
+		// Workspace M1 UI when the hub is configured for it (WORKSPACE_ALLOWED_ORIGIN = this UI's origin)
+		define: {
+			__AGENTCITY_WORKSPACE_UI__: JSON.stringify(
+				Boolean(env.WORKSPACE_ALLOWED_ORIGIN),
+			),
+		},
 		server: {
 			host: "127.0.0.1",
 			proxy: {

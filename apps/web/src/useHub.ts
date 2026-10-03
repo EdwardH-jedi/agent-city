@@ -42,7 +42,7 @@ export function useHub(filter: EventFilter) {
 	const [events, setEvents] = useState<Event[]>([]);
 	const [conn, setConn] = useState<Conn>("connecting");
 	const [error, setError] = useState<string | null>(null);
-	// bumped on every (re)connect and on every `managed` frame → the Tasks view re-fetches
+	// bumped on every (re)connect → the Tasks view re-fetches (/ws carries no managed frames)
 	const [managedSeq, setManagedSeq] = useState(0);
 	const filterRef = useRef(filter);
 	filterRef.current = filter;
@@ -115,8 +115,6 @@ export function useHub(filter: EventFilter) {
 							setError(err.message),
 						);
 					if (msg.scope.includes("repos")) void loadSnapshot();
-				} else if (msg.kind === "managed") {
-					setManagedSeq((n) => n + 1);
 				} else if (msg.kind === "event") {
 					const e = msg.data as Event;
 					if (matchesFilter(e, filterRef.current))

@@ -133,6 +133,8 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `DB_PATH`                  | hub            | SQLite file (default `./data/agentcity.db`, gitignored).                                 |
 | `MANAGED_CONFIG`           | hub            | Path to your managed-runs config (YAML). Empty → managed runs off, `/api/managed` → 503. |
 | `MANAGED_TOKEN`            | hub, web UI    | Bearer token for `/api/managed` (it can start processes). Empty → 503. Not `INGEST_TOKEN`. |
+| `WORKSPACE_OPERATOR_CREDENTIAL` | hub | Ephemeral test-operator credential for the workspace UI (≥ 32 chars, never a real password). Empty → `/api/workspace` 503. Set → workspace mode (`/api/managed` 410, live forced off). |
+| `WORKSPACE_ALLOWED_ORIGIN` | hub | Exact workspace UI origin incl. port (e.g. `http://127.0.0.1:5173`). Empty → workspace disabled. |
 | `INGEST_TOKEN`             | hub, collector | Shared secret for `POST /ingest`. Unset on the hub → ingest disabled (503).              |
 | `HUB_URL`                  | collector, web | Where collectors POST and the Vite proxy points.                                         |
 | `AGENTCITY_MACHINE`        | collector, hub | `cockpit` \| `forge` \| `spine`.                                                         |
@@ -250,6 +252,17 @@ Runbook, state machine, security limits and the live-smoke checklist:
 bun run managed:demo            # prints the outcome of 8 simulated scenarios, leaves nothing behind
 bun run managed:demo --init     # fixture repo + config under ~/.agentcity/managed-demo for the UI
 ```
+
+## Workspace M1 (simulated)
+
+A persistent DOM workspace and Headquarters approval queue on top of the managed engine: draft →
+immutable hashed proposal → **Gate 1** (fresh exact `Edward` + authenticated operator session, exact Origin,
+CSRF, single-use challenge) queues exactly one bounded execution → fake implementation, verification and
+review → sealed result envelope → **Gate 2** records a separate human acceptance (engine `human_ready` is
+unchanged; nothing is merged, pushed or deployed). One allowlisted disposable fixture repo, fake providers
+only; live execution is forced off and `/api/managed` answers 410 in workspace mode. Contracts:
+`packages/schema/src/workspace-m1/`; modules: `apps/hub/src/workspace-m1/`, `apps/web/src/workspace-m1/`;
+isolated run instructions, restart/migration behaviour and limitations: `docs/workspace-m1/`.
 
 ## Security model
 

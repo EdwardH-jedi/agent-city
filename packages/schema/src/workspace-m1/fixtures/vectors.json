@@ -1,0 +1,365 @@
+{
+	"description": "Frozen workspace-m1 canonical encoding vectors: input -> canonical string -> sha256 (UTF-8). Regenerating requires a lead-approved versioned delta.",
+	"primitives": [
+		{
+			"name": "empty-object",
+			"input": {},
+			"canonical": "{}",
+			"sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+		},
+		{
+			"name": "key-order-utf16-code-units",
+			"input": {
+				"": 1,
+				"😀": 2,
+				"Z": 3,
+				"a": 4,
+				"é": 5
+			},
+			"canonical": "{\"Z\":3,\"a\":4,\"é\":5,\"😀\":2,\"\":1}",
+			"sha256": "24ff6b3fdaae30766522f30655419db72d8d74e58979439faf8218dbaab3baeb"
+		},
+		{
+			"name": "string-escapes",
+			"input": {
+				"s": "quote \" backslash \\ tab \t newline \n nul \u0000 del "
+			},
+			"canonical": "{\"s\":\"quote \\\" backslash \\\\ tab \\t newline \\n nul \\u0000 del \"}",
+			"sha256": "bba5c928a08ea23986b5f99169d576b65abeb1c8ea394b618153f5c4b8237785"
+		},
+		{
+			"name": "unicode-raw",
+			"input": ["naïve", "café", "日本語", "😀", " "],
+			"canonical": "[\"naïve\",\"café\",\"日本語\",\"😀\",\" \"]",
+			"sha256": "80ec81665b6b9d9803789728b6925b10b78c3e3bd6321ac39c0d904f3cb80220"
+		},
+		{
+			"name": "integers",
+			"input": [0, -1, 9007199254740991, -9007199254740991],
+			"canonical": "[0,-1,9007199254740991,-9007199254740991]",
+			"sha256": "d1f4b91349edc7ebd49ff1de73304f618c38a7456b5e36df82573d372466fff6"
+		},
+		{
+			"name": "nested",
+			"input": {
+				"z": {
+					"b": [true, false, null],
+					"a": ""
+				},
+				"a": [[], {}]
+			},
+			"canonical": "{\"a\":[[],{}],\"z\":{\"a\":\"\",\"b\":[true,false,null]}}",
+			"sha256": "35f55bccd852e81261ad0700ededb2e6260b07874a5d3bbe852f084aca100a12"
+		},
+		{
+			"name": "nfc-vs-nfd-distinct",
+			"input": ["café", "café"],
+			"canonical": "[\"café\",\"café\"]",
+			"sha256": "2fae038ac9bcd2a38ddb027cb4b0fd0692fc57342c48db80ecc1315f5cad7205"
+		}
+	],
+	"contracts": [
+		{
+			"name": "proposal_snapshot",
+			"input": {
+				"contract": "agentcity.proposal/v1",
+				"proposal_id": "wsp-22222222-2222-4222-8222-222222222221",
+				"workspace_task_id": "wst-11111111-1111-4111-8111-111111111111",
+				"version": 1,
+				"predecessor_proposal_id": null,
+				"repo_id": "local/fixture",
+				"base_ref": "main",
+				"base_sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+				"seed_sha": null,
+				"title": "Add a greeting, politely",
+				"objective": "Print a greeting from the CLI.\nKeep the output stable:\n\t- one line\n\t- no colour",
+				"criteria": [
+					"Prints \"hello, world\" (comma included)",
+					"Exit code stays 0, even on empty input",
+					"Handles naïve café input — ünïcode, 日本語, 😀"
+				],
+				"scope": {
+					"allowed": ["src", "test"],
+					"protected": ["config"]
+				},
+				"execution_mode": "simulated",
+				"simulation_scenario": "reject_then_approve",
+				"provider_profiles": {
+					"implementer": {
+						"profile_id": "fake-implementer",
+						"provider": "fake",
+						"mode": "simulated",
+						"model": null
+					},
+					"reviewer": {
+						"profile_id": "fake-reviewer",
+						"provider": "fake",
+						"mode": "simulated",
+						"model": null
+					}
+				},
+				"verification_plan": {
+					"required_checks": ["unit"]
+				},
+				"context_policy": {
+					"source": "base_snapshot",
+					"refs": []
+				},
+				"budgets": {
+					"max_attempts": 2,
+					"max_model_invocations": 4
+				},
+				"repair_policy": {
+					"max_repairs": 1
+				}
+			},
+			"canonical": "{\"base_ref\":\"main\",\"base_sha\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"budgets\":{\"max_attempts\":2,\"max_model_invocations\":4},\"context_policy\":{\"refs\":[],\"source\":\"base_snapshot\"},\"contract\":\"agentcity.proposal/v1\",\"criteria\":[\"Prints \\\"hello, world\\\" (comma included)\",\"Exit code stays 0, even on empty input\",\"Handles naïve café input — ünïcode, 日本語, 😀\"],\"execution_mode\":\"simulated\",\"objective\":\"Print a greeting from the CLI.\\nKeep the output stable:\\n\\t- one line\\n\\t- no colour\",\"predecessor_proposal_id\":null,\"proposal_id\":\"wsp-22222222-2222-4222-8222-222222222221\",\"provider_profiles\":{\"implementer\":{\"mode\":\"simulated\",\"model\":null,\"profile_id\":\"fake-implementer\",\"provider\":\"fake\"},\"reviewer\":{\"mode\":\"simulated\",\"model\":null,\"profile_id\":\"fake-reviewer\",\"provider\":\"fake\"}},\"repair_policy\":{\"max_repairs\":1},\"repo_id\":\"local/fixture\",\"scope\":{\"allowed\":[\"src\",\"test\"],\"protected\":[\"config\"]},\"seed_sha\":null,\"simulation_scenario\":\"reject_then_approve\",\"title\":\"Add a greeting, politely\",\"verification_plan\":{\"required_checks\":[\"unit\"]},\"version\":1,\"workspace_task_id\":\"wst-11111111-1111-4111-8111-111111111111\"}",
+			"sha256": "0ad6945b89e81fb019057a25fd2a73ee5bc97aee07bd2e8c5564244656f30e6d"
+		},
+		{
+			"name": "execution_binding",
+			"input": {
+				"contract": "agentcity.execution-binding/v1",
+				"proposal_id": "wsp-22222222-2222-4222-8222-222222222221",
+				"proposal_hash": "0ad6945b89e81fb019057a25fd2a73ee5bc97aee07bd2e8c5564244656f30e6d",
+				"managed_task_id": "task-55555555-5555-4555-8555-555555555555",
+				"base_sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+				"policy_hash": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+			},
+			"canonical": "{\"base_sha\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"contract\":\"agentcity.execution-binding/v1\",\"managed_task_id\":\"task-55555555-5555-4555-8555-555555555555\",\"policy_hash\":\"e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5\",\"proposal_hash\":\"0ad6945b89e81fb019057a25fd2a73ee5bc97aee07bd2e8c5564244656f30e6d\",\"proposal_id\":\"wsp-22222222-2222-4222-8222-222222222221\"}",
+			"sha256": "dda81188e0602eadc74a5ae8f5d7be8e895d490c2443162c152df91008f49963"
+		},
+		{
+			"name": "run_approval_binding",
+			"input": {
+				"contract": "agentcity.approval/v1",
+				"kind": "run",
+				"approval_request_id": "wsa-33333333-3333-4333-8333-333333333331",
+				"workspace_task_id": "wst-11111111-1111-4111-8111-111111111111",
+				"proposal_id": "wsp-22222222-2222-4222-8222-222222222221",
+				"proposal_hash": "0ad6945b89e81fb019057a25fd2a73ee5bc97aee07bd2e8c5564244656f30e6d",
+				"execution_binding_hash": "dda81188e0602eadc74a5ae8f5d7be8e895d490c2443162c152df91008f49963"
+			},
+			"canonical": "{\"approval_request_id\":\"wsa-33333333-3333-4333-8333-333333333331\",\"contract\":\"agentcity.approval/v1\",\"execution_binding_hash\":\"dda81188e0602eadc74a5ae8f5d7be8e895d490c2443162c152df91008f49963\",\"kind\":\"run\",\"proposal_hash\":\"0ad6945b89e81fb019057a25fd2a73ee5bc97aee07bd2e8c5564244656f30e6d\",\"proposal_id\":\"wsp-22222222-2222-4222-8222-222222222221\",\"workspace_task_id\":\"wst-11111111-1111-4111-8111-111111111111\"}",
+			"sha256": "7f4d88a29ac07e51e3ddb179cc271067ba4bf3e68600d08c3af45b0b395d26b0"
+		},
+		{
+			"name": "review_record",
+			"input": {
+				"contract": "agentcity.review-record/v1",
+				"review_id": "rev-88888888-8888-4888-8888-888888888888",
+				"managed_task_id": "task-55555555-5555-4555-8555-555555555555",
+				"run_id": "run-66666666-6666-4666-8666-666666666662",
+				"provider": "fake",
+				"mode": "simulated",
+				"model_requested": null,
+				"model_resolved": null,
+				"candidate_sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+				"manifest_hash": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+				"verdict": "approve",
+				"valid": true,
+				"invalidated_reason": null,
+				"findings": [
+					{
+						"severity": "minor",
+						"title": "Greeting could mention the date",
+						"detail": "Optional, not required by any criterion.",
+						"file": "src/greet.ts",
+						"line": 3,
+						"actionable": false
+					}
+				],
+				"summary": "Simulated review: approve."
+			},
+			"canonical": "{\"candidate_sha\":\"c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\",\"contract\":\"agentcity.review-record/v1\",\"findings\":[{\"actionable\":false,\"detail\":\"Optional, not required by any criterion.\",\"file\":\"src/greet.ts\",\"line\":3,\"severity\":\"minor\",\"title\":\"Greeting could mention the date\"}],\"invalidated_reason\":null,\"managed_task_id\":\"task-55555555-5555-4555-8555-555555555555\",\"manifest_hash\":\"f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6\",\"mode\":\"simulated\",\"model_requested\":null,\"model_resolved\":null,\"provider\":\"fake\",\"review_id\":\"rev-88888888-8888-4888-8888-888888888888\",\"run_id\":\"run-66666666-6666-4666-8666-666666666662\",\"summary\":\"Simulated review: approve.\",\"valid\":true,\"verdict\":\"approve\"}",
+			"sha256": "ded692f28aee7eb6866656260864684b855c67dfab78b6716f4383192a8c46fd"
+		},
+		{
+			"name": "result_envelope",
+			"input": {
+				"contract": "agentcity.result/v1",
+				"workspace_task_id": "wst-11111111-1111-4111-8111-111111111111",
+				"proposal_id": "wsp-22222222-2222-4222-8222-222222222221",
+				"proposal_hash": "0ad6945b89e81fb019057a25fd2a73ee5bc97aee07bd2e8c5564244656f30e6d",
+				"execution_binding_hash": "dda81188e0602eadc74a5ae8f5d7be8e895d490c2443162c152df91008f49963",
+				"run_decision_id": "wsd-44444444-4444-4444-8444-444444444441",
+				"managed_task_id": "task-55555555-5555-4555-8555-555555555555",
+				"run_id": "run-66666666-6666-4666-8666-666666666662",
+				"attempt_no": 2,
+				"max_repairs": 1,
+				"base_sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+				"parent_sha": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+				"candidate_sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+				"candidate_tree": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+				"manifest_hash": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+				"execution_mode": "simulated",
+				"policy_hash": "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+				"required_checks": ["unit"],
+				"artifacts": [
+					{
+						"name": "changed-files.json",
+						"kind": "changed_files",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777771",
+						"sha256": "0101010101010101010101010101010101010101010101010101010101010101",
+						"byte_len": 101,
+						"truncated": false
+					},
+					{
+						"name": "diff.patch",
+						"kind": "diff",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777772",
+						"sha256": "0202020202020202020202020202020202020202020202020202020202020202",
+						"byte_len": 102,
+						"truncated": false
+					},
+					{
+						"name": "implementation.log",
+						"kind": "implementation_log",
+						"status": "truncated",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777773",
+						"sha256": "0303030303030303030303030303030303030303030303030303030303030303",
+						"byte_len": 103,
+						"truncated": true
+					},
+					{
+						"name": "manifest.json",
+						"kind": "manifest",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777774",
+						"sha256": "0404040404040404040404040404040404040404040404040404040404040404",
+						"byte_len": 104,
+						"truncated": false
+					},
+					{
+						"name": "review-output.json",
+						"kind": "review_output",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777775",
+						"sha256": "0505050505050505050505050505050505050505050505050505050505050505",
+						"byte_len": 105,
+						"truncated": false
+					},
+					{
+						"name": "review.log",
+						"kind": "review_log",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777776",
+						"sha256": "0606060606060606060606060606060606060606060606060606060606060606",
+						"byte_len": 106,
+						"truncated": false
+					},
+					{
+						"name": "verify-1-unit.log",
+						"kind": "verification_log",
+						"status": "verified",
+						"artifact_id": "art-77777777-7777-4777-8777-777777777777",
+						"sha256": "0707070707070707070707070707070707070707070707070707070707070707",
+						"byte_len": 107,
+						"truncated": false
+					}
+				],
+				"verification": [
+					{
+						"name": "unit",
+						"completed": true,
+						"timed_out": false,
+						"exit_code": 0,
+						"duration_ms": 1234,
+						"log_sha256": "0707070707070707070707070707070707070707070707070707070707070707",
+						"log_truncated": false
+					}
+				],
+				"review": {
+					"review_id": "rev-88888888-8888-4888-8888-888888888888",
+					"review_hash": "ded692f28aee7eb6866656260864684b855c67dfab78b6716f4383192a8c46fd",
+					"verdict": "approve",
+					"valid": true,
+					"candidate_sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+					"manifest_hash": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+					"findings": 1,
+					"blocking_findings": 0
+				},
+				"provenance": {
+					"implementer": {
+						"provider": "fake",
+						"mode": "simulated",
+						"model_requested": null,
+						"model_resolved": null
+					},
+					"reviewer": {
+						"provider": "fake",
+						"mode": "simulated",
+						"model_requested": null,
+						"model_resolved": null
+					}
+				},
+				"evidence_status": "verified"
+			},
+			"canonical": "{\"artifacts\":[{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777771\",\"byte_len\":101,\"kind\":\"changed_files\",\"name\":\"changed-files.json\",\"sha256\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777772\",\"byte_len\":102,\"kind\":\"diff\",\"name\":\"diff.patch\",\"sha256\":\"0202020202020202020202020202020202020202020202020202020202020202\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777773\",\"byte_len\":103,\"kind\":\"implementation_log\",\"name\":\"implementation.log\",\"sha256\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"status\":\"truncated\",\"truncated\":true},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777774\",\"byte_len\":104,\"kind\":\"manifest\",\"name\":\"manifest.json\",\"sha256\":\"0404040404040404040404040404040404040404040404040404040404040404\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777775\",\"byte_len\":105,\"kind\":\"review_output\",\"name\":\"review-output.json\",\"sha256\":\"0505050505050505050505050505050505050505050505050505050505050505\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777776\",\"byte_len\":106,\"kind\":\"review_log\",\"name\":\"review.log\",\"sha256\":\"0606060606060606060606060606060606060606060606060606060606060606\",\"status\":\"verified\",\"truncated\":false},{\"artifact_id\":\"art-77777777-7777-4777-8777-777777777777\",\"byte_len\":107,\"kind\":\"verification_log\",\"name\":\"verify-1-unit.log\",\"sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"status\":\"verified\",\"truncated\":false}],\"attempt_no\":2,\"base_sha\":\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",\"candidate_sha\":\"c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\",\"candidate_tree\":\"d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4\",\"contract\":\"agentcity.result/v1\",\"evidence_status\":\"verified\",\"execution_binding_hash\":\"dda81188e0602eadc74a5ae8f5d7be8e895d490c2443162c152df91008f49963\",\"execution_mode\":\"simulated\",\"managed_task_id\":\"task-55555555-5555-4555-8555-555555555555\",\"manifest_hash\":\"f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6\",\"max_repairs\":1,\"parent_sha\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"policy_hash\":\"e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5\",\"proposal_hash\":\"0ad6945b89e81fb019057a25fd2a73ee5bc97aee07bd2e8c5564244656f30e6d\",\"proposal_id\":\"wsp-22222222-2222-4222-8222-222222222221\",\"provenance\":{\"implementer\":{\"mode\":\"simulated\",\"model_requested\":null,\"model_resolved\":null,\"provider\":\"fake\"},\"reviewer\":{\"mode\":\"simulated\",\"model_requested\":null,\"model_resolved\":null,\"provider\":\"fake\"}},\"required_checks\":[\"unit\"],\"review\":{\"blocking_findings\":0,\"candidate_sha\":\"c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\",\"findings\":1,\"manifest_hash\":\"f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6\",\"review_hash\":\"ded692f28aee7eb6866656260864684b855c67dfab78b6716f4383192a8c46fd\",\"review_id\":\"rev-88888888-8888-4888-8888-888888888888\",\"valid\":true,\"verdict\":\"approve\"},\"run_decision_id\":\"wsd-44444444-4444-4444-8444-444444444441\",\"run_id\":\"run-66666666-6666-4666-8666-666666666662\",\"verification\":[{\"completed\":true,\"duration_ms\":1234,\"exit_code\":0,\"log_sha256\":\"0707070707070707070707070707070707070707070707070707070707070707\",\"log_truncated\":false,\"name\":\"unit\",\"timed_out\":false}],\"workspace_task_id\":\"wst-11111111-1111-4111-8111-111111111111\"}",
+			"sha256": "c4175c5ebd24be057ddbfed28c10434475b672533ed01dcb6ddc3bd88c786fbc"
+		},
+		{
+			"name": "result_approval_binding",
+			"input": {
+				"contract": "agentcity.approval/v1",
+				"kind": "result",
+				"approval_request_id": "wsa-33333333-3333-4333-8333-333333333332",
+				"workspace_task_id": "wst-11111111-1111-4111-8111-111111111111",
+				"managed_task_id": "task-55555555-5555-4555-8555-555555555555",
+				"run_id": "run-66666666-6666-4666-8666-666666666662",
+				"result_envelope_hash": "c4175c5ebd24be057ddbfed28c10434475b672533ed01dcb6ddc3bd88c786fbc"
+			},
+			"canonical": "{\"approval_request_id\":\"wsa-33333333-3333-4333-8333-333333333332\",\"contract\":\"agentcity.approval/v1\",\"kind\":\"result\",\"managed_task_id\":\"task-55555555-5555-4555-8555-555555555555\",\"result_envelope_hash\":\"c4175c5ebd24be057ddbfed28c10434475b672533ed01dcb6ddc3bd88c786fbc\",\"run_id\":\"run-66666666-6666-4666-8666-666666666662\",\"workspace_task_id\":\"wst-11111111-1111-4111-8111-111111111111\"}",
+			"sha256": "475ea5ec403a94eac9a043ed1c107ae6988eff9c8bb77e3354eae3ac93f282f9"
+		},
+		{
+			"name": "decision_payload_run_approve",
+			"input": {
+				"contract": "agentcity.decision/v1",
+				"approval_request_id": "wsa-33333333-3333-4333-8333-333333333331",
+				"kind": "run",
+				"action": "approve",
+				"expected_request_rev": 2,
+				"binding_hash": "7f4d88a29ac07e51e3ddb179cc271067ba4bf3e68600d08c3af45b0b395d26b0",
+				"confirmation_text": "Edward",
+				"reason": null
+			},
+			"canonical": "{\"action\":\"approve\",\"approval_request_id\":\"wsa-33333333-3333-4333-8333-333333333331\",\"binding_hash\":\"7f4d88a29ac07e51e3ddb179cc271067ba4bf3e68600d08c3af45b0b395d26b0\",\"confirmation_text\":\"Edward\",\"contract\":\"agentcity.decision/v1\",\"expected_request_rev\":2,\"kind\":\"run\",\"reason\":null}",
+			"sha256": "c729a33aa5b1d42e7aec9b70feb2dae3e3414779134ee843b89c5f0a38b17930"
+		},
+		{
+			"name": "decision_payload_result_request_changes",
+			"input": {
+				"contract": "agentcity.decision/v1",
+				"approval_request_id": "wsa-33333333-3333-4333-8333-333333333332",
+				"kind": "result",
+				"action": "request_changes",
+				"expected_request_rev": 4,
+				"binding_hash": "475ea5ec403a94eac9a043ed1c107ae6988eff9c8bb77e3354eae3ac93f282f9",
+				"confirmation_text": null,
+				"reason": "Please also cover the empty-input case, with a test."
+			},
+			"canonical": "{\"action\":\"request_changes\",\"approval_request_id\":\"wsa-33333333-3333-4333-8333-333333333332\",\"binding_hash\":\"475ea5ec403a94eac9a043ed1c107ae6988eff9c8bb77e3354eae3ac93f282f9\",\"confirmation_text\":null,\"contract\":\"agentcity.decision/v1\",\"expected_request_rev\":4,\"kind\":\"result\",\"reason\":\"Please also cover the empty-input case, with a test.\"}",
+			"sha256": "faff0a746b502c92d18d28acc13aa6066c1bd6887261769bddbb0ed78d61a252"
+		},
+		{
+			"name": "challenge_binding",
+			"input": {
+				"contract": "agentcity.challenge/v1",
+				"token": "fixture-challenge-token-0000000000000000000",
+				"approval_request_id": "wsa-33333333-3333-4333-8333-333333333331",
+				"kind": "run",
+				"binding_hash": "7f4d88a29ac07e51e3ddb179cc271067ba4bf3e68600d08c3af45b0b395d26b0",
+				"request_rev": 2,
+				"operator_id": "operator:edward",
+				"session_generation": 1,
+				"boot_id": "boot-99999999-9999-4999-8999-999999999999",
+				"expires_at": "2026-10-02T00:05:00.000Z"
+			},
+			"canonical": "{\"approval_request_id\":\"wsa-33333333-3333-4333-8333-333333333331\",\"binding_hash\":\"7f4d88a29ac07e51e3ddb179cc271067ba4bf3e68600d08c3af45b0b395d26b0\",\"boot_id\":\"boot-99999999-9999-4999-8999-999999999999\",\"contract\":\"agentcity.challenge/v1\",\"expires_at\":\"2026-10-02T00:05:00.000Z\",\"kind\":\"run\",\"operator_id\":\"operator:edward\",\"request_rev\":2,\"session_generation\":1,\"token\":\"fixture-challenge-token-0000000000000000000\"}",
+			"sha256": "5bdac73db5a76e04f5965970c2d7f45b2ea18f6eb09c35fae143ad7af983eea9"
+		}
+	]
+}

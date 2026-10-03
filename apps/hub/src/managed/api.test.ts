@@ -339,7 +339,7 @@ interface Detail {
 }
 
 describe("end to end through the hub (HTTP + worker + /ws)", () => {
-	test("create → run → human_ready; /ws announces ids only; state survives a hub restart", async () => {
+	test("create → run → human_ready; /ws carries no managed frames or ids; state survives a hub restart", async () => {
 		const fx = makeFixture({ dbFile: true });
 		fixtures.push(fx);
 		const first = await hub(fx);
@@ -385,16 +385,12 @@ describe("end to end through the hub (HTTP + worker + /ws)", () => {
 		expect(art.text).toContain("agentcity-sim/verify.status");
 		expect(art.truncated).toBe(false);
 
-		// /ws: managed frames carry the task id and nothing else
+		// /ws (unauthenticated): no managed frame, no managed id, no managed content (M1 L4)
 		await Bun.sleep(50);
 		ws.close();
-		const managed = frames
-			.map(
-				(f) => JSON.parse(f) as { kind: string; data: Record<string, unknown> },
-			)
-			.filter((f) => f.kind === "managed");
-		expect(managed.length).toBeGreaterThan(3);
-		for (const f of managed) expect(f.data).toEqual({ task_id: task.id });
+		const kinds = frames.map((f) => (JSON.parse(f) as { kind: string }).kind);
+		expect(kinds).not.toContain("managed");
+		expect(frames.join("\n")).not.toContain(task.id);
 		expect(frames.join("\n")).not.toContain("Drive the pipeline");
 
 		// restart: a new hub process on the same DB shows the same task, and does not run it again

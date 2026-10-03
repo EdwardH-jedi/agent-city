@@ -173,6 +173,11 @@ export function listReviews(db: Database, taskId: string): ManagedReview[] {
 // ── submission / run / cancel (API side, no lease) ──────────────────────────
 
 export interface NewTask {
+	/**
+	 * Pre-minted id (`task-<uuid>`). The workspace path needs the managed task id before the insert,
+	 * because the request hash it stores (the execution binding) covers that id. Absent → minted here.
+	 */
+	id?: string;
 	submission: TaskSubmission;
 	request_hash: string;
 	base_ref: string;
@@ -184,6 +189,8 @@ export interface NewTask {
  * Idempotent on `idempotency_key`: the same key with the same request returns the existing task
  * (`created: false`); the same key with a different request is a conflict.
  */
+const MANAGED_TASK_ID = /^task-[0-9a-f-]{36}$/;
+
 export function createTask(
 	db: Database,
 	t: NewTask,
@@ -199,7 +206,9 @@ export function createTask(
 				throw new IdempotencyConflictError();
 			return { task: toTask(prev), created: false };
 		}
-		const id = newId("task");
+		if (t.id !== undefined && !MANAGED_TASK_ID.test(t.id))
+			throw new Error("invalid managed task id");
+		const id = t.id ?? newId("task");
 		const s = t.submission;
 		db.query(
 			`INSERT INTO managed_tasks (id, contract_version, idempotency_key, request_hash, repo_id, title,

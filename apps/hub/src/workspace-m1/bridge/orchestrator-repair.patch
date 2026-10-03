@@ -1,0 +1,119 @@
+--- a/apps/hub/src/managed/orchestrator.ts
++++ b/apps/hub/src/managed/orchestrator.ts
+@@ -161,6 +161,27 @@
+ 	model_resolved: m.model_resolved,
+ 	usage: m.usage,
+ });
++
++/**
++ * Paths named by review findings that a repair may not touch (L-11): absolute or home-relative,
++ * parent-traversing, backslash / NUL, or outside the approved scope. Unsafe paths are reported as
++ * "[unsafe path]", never echoed.
++ */
++function findingsOutsideScope(
++	findings: readonly Finding[],
++	scope: readonly string[],
++): string[] {
++	const unsafe: string[] = [];
++	const named: { status: string; path: string }[] = [];
++	for (const f of findings) {
++		const p = f.file?.trim();
++		if (!p) continue;
++		if (/^[/~]/.test(p) || /[\\\0]/.test(p) || p.split("/").includes(".."))
++			unsafe.push("[unsafe path]");
++		else named.push({ status: "M", path: p.replace(/^(\.\/)+/, "") });
++	}
++	return [...unsafe, ...outOfScope(named, scope)];
++}
+ 
+ export class Orchestrator {
+ 	readonly workerId: string;
+@@ -666,6 +687,46 @@
+ 		return false;
+ 	}
+ 
++	/** approvalHolds without failing: why the approval no longer holds for `t`, or null. */
++	private approvalRefusal(t: ManagedTask): string | null {
++		if (t.approval_hash !== approvalHashFor(t, this.d.config))
++			return "the task or the managed policy changed after Run was approved";
++		if (!this.d.authorize) return null;
++		try {
++			return this.d.authorize(t);
++		} catch {
++			return "the authorization check failed";
++		}
++	}
++
++	/**
++	 * Why a repair may not start now, or null (L-11). A repair only continues the approved operation:
++	 * the approval must still hold on the fresh row (a revocation during the stage stops here, before
++	 * a repair attempt exists) and no finding may need a path outside the approved scope (that needs
++	 * a new proposal + approval). Corrupt evidence, protocol / auth failures, scope violations and
++	 * candidate mutations already fail before any repair decision.
++	 */
++	private repairRefusal(
++		t: ManagedTask,
++		findings: readonly Finding[],
++	): { kind: FailureKind; detail: string } | null {
++		const fresh = getTask(this.d.db, t.id) ?? t;
++		const denied = this.approvalRefusal(fresh);
++		if (denied !== null)
++			return {
++				kind: "approval_void",
++				detail: `not authorized to repair: ${redact(denied)}; nothing more was executed`,
++			};
++		const outside = findingsOutsideScope(findings, fresh.approved_scope);
++		if (outside.length === 0) return null;
++		const named = outside.slice(0, 5).map((p) => redact(p));
++		if (outside.length > 5) named.push(`+${outside.length - 5} more`);
++		return {
++			kind: "scope_violation",
++			detail: `a finding needs changes outside the approved scope (${named.join(", ")}); no repair was started — a broader scope needs a new proposal and approval`,
++		};
++	}
++
+ 	private finishCancel(t: ManagedTask, claim: Claim): void {
+ 		const { db } = this.d;
+ 		const unconfirmed = claim.unconfirmed.length > 0;
+@@ -1082,8 +1143,19 @@
+ 				line: null,
+ 				actionable: true,
+ 			}));
+-			if (this.repairsLeft(t))
++			if (this.repairsLeft(t)) {
++				const refused = this.repairRefusal(t, findings);
++				if (refused)
++					return this.fail(
++						t,
++						claim,
++						run.id,
++						refused.kind,
++						refused.detail,
++						store,
++					);
+ 				return this.startRepair(t, claim, run, findings, store);
++			}
+ 			return this.fail(
+ 				t,
+ 				claim,
+@@ -1389,8 +1461,19 @@
+ 				"the reviewer rejected the candidate without actionable findings",
+ 				record,
+ 			);
+-		if (this.repairsLeft(t))
++		if (this.repairsLeft(t)) {
++			const refused = this.repairRefusal(t, actionable);
++			if (refused)
++				return this.fail(
++					t,
++					claim,
++					run.id,
++					refused.kind,
++					refused.detail,
++					record,
++				);
+ 			return this.startRepair(t, claim, run, actionable, record);
++		}
+ 		return this.fail(
+ 			t,
+ 			claim,

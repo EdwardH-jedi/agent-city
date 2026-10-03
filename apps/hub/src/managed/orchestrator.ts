@@ -28,6 +28,13 @@ import {
 	redact,
 	verificationPassed,
 } from "@agent-city/schema";
+import { loadDiffContexts } from "../workspace-m1/evidence/context-loader.ts";
+import { listDiffFiles } from "../workspace-m1/evidence/diff-parse.ts";
+import {
+	decideDiffDisclosure,
+	disclosureEvidence,
+	renderWithPlaceholders,
+} from "../workspace-m1/evidence/disclosure.ts";
 import type {
 	AdapterContext,
 	AdapterSet,
@@ -37,7 +44,6 @@ import { findRepo, type ManagedConfig, sha256Hex } from "./config.ts";
 import {
 	buildManifest,
 	EvidenceError,
-	redactDiff,
 	redactLog,
 	runVerification,
 	type VerificationRun,
@@ -50,6 +56,7 @@ import {
 	changedFiles,
 	diffText,
 	GitError,
+	gitRunner,
 	mutationSince,
 	outOfScope,
 	resolveCommit,
@@ -100,6 +107,13 @@ export interface OrchestratorDeps {
 	processOps?: ProcessOps;
 	/** Deterministic test boundaries (awaited at named points). Never set in production. */
 	hooks?: OrchestratorHooks;
+	/**
+	 * Additional authorization, checked with the approval binding before EVERY stage (so before any
+	 * preflight or launch). Returns null when the task may proceed, else why not. The workspace bridge
+	 * injects "linked to an approved, still-valid Gate-1 decision" here, which also stops rows queued
+	 * by any other path. A throw counts as a denial. Absent → the content-hash binding alone.
+	 */
+	authorize?: (task: ManagedTask) => string | null;
 }
 
 export interface OrchestratorHooks {
@@ -147,6 +161,27 @@ const metaPatch = (m: ProviderMeta) => ({
 	model_resolved: m.model_resolved,
 	usage: m.usage,
 });
+
+/**
+ * Paths named by review findings that a repair may not touch (L-11): absolute or home-relative,
+ * parent-traversing, backslash / NUL, or outside the approved scope. Unsafe paths are reported as
+ * "[unsafe path]", never echoed.
+ */
+function findingsOutsideScope(
+	findings: readonly Finding[],
+	scope: readonly string[],
+): string[] {
+	const unsafe: string[] = [];
+	const named: { status: string; path: string }[] = [];
+	for (const f of findings) {
+		const p = f.file?.trim();
+		if (!p) continue;
+		if (/^[/~]/.test(p) || /[\\\0]/.test(p) || p.split("/").includes(".."))
+			unsafe.push("[unsafe path]");
+		else named.push({ status: "M", path: p.replace(/^(\.\/)+/, "") });
+	}
+	return [...unsafe, ...outOfScope(named, scope)];
+}
 
 export class Orchestrator {
 	readonly workerId: string;
@@ -623,15 +658,73 @@ export class Orchestrator {
 		claim: Claim,
 		runId: string | null,
 	): boolean {
-		if (t.approval_hash === approvalHashFor(t, this.d.config)) return true;
+		if (t.approval_hash !== approvalHashFor(t, this.d.config)) {
+			this.fail(
+				t,
+				claim,
+				runId,
+				"approval_void",
+				"the task or the managed policy changed after Run was approved; nothing more was executed — run it again to re-approve",
+			);
+			return false;
+		}
+		let denied: string | null = null;
+		if (this.d.authorize) {
+			try {
+				denied = this.d.authorize(t);
+			} catch {
+				denied = "the authorization check failed";
+			}
+		}
+		if (denied === null) return true;
 		this.fail(
 			t,
 			claim,
 			runId,
 			"approval_void",
-			"the task or the managed policy changed after Run was approved; nothing more was executed — run it again to re-approve",
+			`not authorized: ${redact(denied)}; nothing more was executed`,
 		);
 		return false;
+	}
+
+	/** approvalHolds without failing: why the approval no longer holds for `t`, or null. */
+	private approvalRefusal(t: ManagedTask): string | null {
+		if (t.approval_hash !== approvalHashFor(t, this.d.config))
+			return "the task or the managed policy changed after Run was approved";
+		if (!this.d.authorize) return null;
+		try {
+			return this.d.authorize(t);
+		} catch {
+			return "the authorization check failed";
+		}
+	}
+
+	/**
+	 * Why a repair may not start now, or null (L-11). A repair only continues the approved operation:
+	 * the approval must still hold on the fresh row (a revocation during the stage stops here, before
+	 * a repair attempt exists) and no finding may need a path outside the approved scope (that needs
+	 * a new proposal + approval). Corrupt evidence, protocol / auth failures, scope violations and
+	 * candidate mutations already fail before any repair decision.
+	 */
+	private repairRefusal(
+		t: ManagedTask,
+		findings: readonly Finding[],
+	): { kind: FailureKind; detail: string } | null {
+		const fresh = getTask(this.d.db, t.id) ?? t;
+		const denied = this.approvalRefusal(fresh);
+		if (denied !== null)
+			return {
+				kind: "approval_void",
+				detail: `not authorized to repair: ${redact(denied)}; nothing more was executed`,
+			};
+		const outside = findingsOutsideScope(findings, fresh.approved_scope);
+		if (outside.length === 0) return null;
+		const named = outside.slice(0, 5).map((p) => redact(p));
+		if (outside.length > 5) named.push(`+${outside.length - 5} more`);
+		return {
+			kind: "scope_violation",
+			detail: `a finding needs changes outside the approved scope (${named.join(", ")}); no repair was started — a broader scope needs a new proposal and approval`,
+		};
 	}
 
 	private finishCancel(t: ManagedTask, claim: Claim): void {
@@ -922,8 +1015,34 @@ export class Orchestrator {
 			candidate,
 			config.limits.max_diff_bytes,
 		);
-		// diff-aware: +/-/context prefixes must not hide multi-line secrets (stored = reviewed = served)
-		const diffStored = redactDiff(diff.text, { truncated: diff.truncated });
+		// Disclosure is decided from the COMPLETE old/new file versions, not the diff text alone: a
+		// secret-named key outside the hunk still masks its block body inside it (M1 omitted-hunk
+		// guard). Anything that cannot be safely disclosed is withheld and the attempt fails before
+		// the reviewer sees it (stored = reviewed = served).
+		const contexts = await loadDiffContexts(
+			gitRunner(this.git, worktree),
+			listDiffFiles(diff.text, { truncated: diff.truncated }),
+			{ old_rev: t.base_sha, new_rev: candidate },
+			{
+				max_file_bytes: config.limits.max_context_file_bytes,
+				max_total_bytes: config.limits.max_context_total_bytes,
+			},
+		);
+		const disclosure = decideDiffDisclosure({
+			diff: diff.text,
+			truncated: diff.truncated,
+			contexts,
+			limits: {
+				max_diff_bytes: config.limits.max_diff_bytes,
+				max_file_bytes: config.limits.max_context_file_bytes,
+				max_total_context_bytes: config.limits.max_context_total_bytes,
+			},
+		});
+		const shown = disclosureEvidence(disclosure);
+		const diffStored =
+			disclosure.status === "disclosed"
+				? disclosure.text
+				: renderWithPlaceholders(disclosure);
 		const files = await changedFiles(this.git, worktree, t.base_sha, candidate);
 		const results = runs.map((r) => r.result);
 		const { json, hash } = buildManifest({
@@ -953,6 +1072,12 @@ export class Orchestrator {
 				name: "diff.patch",
 				content: diffStored,
 				truncated: diff.truncated,
+				meta: {
+					disclosure: {
+						status: shown.status === "verified" ? "disclosed" : "withheld",
+						reasons: shown.withheld_reasons,
+					},
+				},
 			});
 			writeArtifact(db, config.artifacts_root, {
 				...base,
@@ -988,6 +1113,15 @@ export class Orchestrator {
 				`verification changed the workspace (${after}); the evidence no longer describes the candidate`,
 				store,
 			);
+		if (shown.status !== "verified")
+			return this.fail(
+				t,
+				claim,
+				run.id,
+				"evidence_invalid",
+				`the diff cannot be safely disclosed (${shown.withheld_reasons.join(", ") || "withheld"}); nothing was sent to the reviewer`,
+				store,
+			);
 		const incomplete = results.filter((r) => !r.completed);
 		if (incomplete.length > 0)
 			return this.fail(
@@ -1009,8 +1143,19 @@ export class Orchestrator {
 				line: null,
 				actionable: true,
 			}));
-			if (this.repairsLeft(t))
+			if (this.repairsLeft(t)) {
+				const refused = this.repairRefusal(t, findings);
+				if (refused)
+					return this.fail(
+						t,
+						claim,
+						run.id,
+						refused.kind,
+						refused.detail,
+						store,
+					);
 				return this.startRepair(t, claim, run, findings, store);
+			}
 			return this.fail(
 				t,
 				claim,
@@ -1316,8 +1461,19 @@ export class Orchestrator {
 				"the reviewer rejected the candidate without actionable findings",
 				record,
 			);
-		if (this.repairsLeft(t))
+		if (this.repairsLeft(t)) {
+			const refused = this.repairRefusal(t, actionable);
+			if (refused)
+				return this.fail(
+					t,
+					claim,
+					run.id,
+					refused.kind,
+					refused.detail,
+					record,
+				);
 			return this.startRepair(t, claim, run, actionable, record);
+		}
 		return this.fail(
 			t,
 			claim,

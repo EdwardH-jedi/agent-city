@@ -70,8 +70,16 @@ export function hostGuard(cfg: SecurityConfig): MiddlewareHandler {
 	};
 }
 
+/** Paths that never get CORS: the workspace UI is same-origin (Vite proxy), its guard checks Origin. */
+const NO_CORS_PREFIX = "/api/workspace";
+
 export function corsGuard(cfg: SecurityConfig): MiddlewareHandler {
 	return async (c, next) => {
+		const path = c.req.path;
+		// No allow-origin echo and no preflight answer for the workspace API (M1): a cross-port page
+		// on loopback must not get credentialed CORS; a preflight then reaches the workspace guard.
+		if (path === NO_CORS_PREFIX || path.startsWith(`${NO_CORS_PREFIX}/`))
+			return next();
 		const origin = c.req.header("origin");
 		const allowed = origin !== undefined && isAllowedOrigin(origin, cfg);
 		if (c.req.method === "OPTIONS" && origin !== undefined) {

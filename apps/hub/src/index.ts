@@ -18,6 +18,15 @@ import {
 	type SecurityConfig,
 } from "./security.ts";
 import { listReposByDistrict, sweepStale } from "./store.ts";
+import {
+	createWorkspaceHub,
+	legacyManagedGone,
+	simulatedOnly,
+	type WorkspaceHub,
+	type WorkspaceHubOptions,
+	workspaceConfigured,
+	workspaceDisabled,
+} from "./workspace-hub.ts";
 
 export const STALE_SWEEP_MS = 60_000;
 
@@ -33,6 +42,11 @@ export interface AppDeps {
 		token: string | undefined;
 		poke?: () => void;
 	};
+	/**
+	 * Workspace M1 (/api/workspace). Present → workspace mode: the legacy /api/managed answers 410.
+	 * Absent → /api/workspace answers 503 `disabled` with this reason.
+	 */
+	workspace?: WorkspaceHub | { disabled: string };
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -55,11 +69,26 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	app.route("/ingest", createIngest({ ...deps, spoolDrops }));
+	const workspace =
+		deps.workspace && "api" in deps.workspace ? deps.workspace : null;
+	// before /api/managed and /api: the workspace sub-app carries its own guard (never mount order)
+	app.route(
+		"/api/workspace",
+		workspace
+			? workspace.api
+			: workspaceDisabled(
+					deps.workspace && "disabled" in deps.workspace
+						? deps.workspace.disabled
+						: "workspace mode is not configured on this hub",
+				),
+	);
 	app.route(
 		"/api/managed",
-		deps.managed
-			? createManagedApi({ ...deps.managed, security })
-			: managedDisabled("MANAGED_CONFIG is not set"),
+		workspace
+			? legacyManagedGone()
+			: deps.managed
+				? createManagedApi({ ...deps.managed, security })
+				: managedDisabled("MANAGED_CONFIG is not set"),
 	);
 	app.route("/api", createApi(deps.db));
 
@@ -82,6 +111,11 @@ export interface HubOptions {
 	/** Managed runs: trusted config + API token. Absent → no worker, /api/managed is 503. */
 	managed?: { config: ManagedConfig; token: string | undefined };
 	managedIdleMs?: number;
+	/**
+	 * Workspace M1: ephemeral operator credential + exact UI origin (+ test-only TTLs, clock, read-only
+	 * principal). Needs `managed`. Configured → workspace mode: simulated only, legacy API 410.
+	 */
+	workspace?: WorkspaceHubOptions;
 }
 
 /** Serve HTTP + /ws and run the stale sweep (once now, then every `staleSweepMs`). */
@@ -91,26 +125,50 @@ export function startHub(opts: HubOptions) {
 		hubHost: opts.hostname,
 		extraOrigins: opts.extraOrigins ?? [],
 	};
-	// One in-hub worker for managed tasks. Only task ids are broadcast; content stays behind the token.
-	const managedDeps: ManagedDeps | null = opts.managed
-		? {
-				db: opts.db,
-				config: opts.managed.config,
-				onChange: (taskId) =>
-					broadcaster.publish("managed", { task_id: taskId }),
-			}
+	// Workspace mode (M1): the orchestrator, the workspace and the approval hashes all use ONE
+	// simulated-only config snapshot.
+	const wsMode = !!opts.managed && workspaceConfigured(opts.workspace);
+	const managedConfig = opts.managed
+		? wsMode
+			? simulatedOnly(opts.managed.config)
+			: opts.managed.config
 		: null;
-	const worker = managedDeps
+	// One in-hub worker for managed tasks. Nothing about managed tasks — not even their ids — is
+	// published on the unauthenticated /ws (M1 L4); clients read managed state through authenticated
+	// HTTP only.
+	const managedDeps: ManagedDeps | null = managedConfig
+		? { db: opts.db, config: managedConfig }
+		: null;
+	let worker: ReturnType<typeof startWorker> | null = null;
+	const workspace: WorkspaceHub | null =
+		wsMode && managedConfig && opts.workspace
+			? createWorkspaceHub({
+					db: opts.db,
+					config: managedConfig,
+					options: opts.workspace,
+					onQueued: () => worker?.poke(),
+				})
+			: null;
+	worker = managedDeps
 		? startWorker(
 				new Orchestrator({
 					db: opts.db,
 					config: managedDeps.config,
 					adapters: createAdapters(managedDeps.config),
-					onChange: managedDeps.onChange,
+					// workspace mode: every stage needs an approved, still-valid Gate-1 decision (L3),
+					// and engine changes are reconciled into workspace stages (L6) — never broadcast
+					...(workspace
+						? {
+								authorize: workspace.bridge.authorize,
+								onChange: workspace.bridge.notify,
+							}
+						: { onChange: managedDeps.onChange }),
 				}),
 				opts.managedIdleMs,
 			)
 		: null;
+	// startup sweep (restart reconciliation, unsealed human_ready, stale Gate-1) + periodic
+	workspace?.bridge.start();
 	const app = createApp({
 		db: opts.db,
 		ingestToken: opts.ingestToken,
@@ -123,6 +181,11 @@ export function startHub(opts: HubOptions) {
 					poke: () => worker?.poke(),
 				}
 			: undefined,
+		workspace:
+			workspace ??
+			(opts.workspace && !opts.managed
+				? { disabled: "managed runs are not configured on this hub" }
+				: undefined),
 	});
 
 	const server = Bun.serve({
@@ -158,16 +221,14 @@ export function startHub(opts: HubOptions) {
 	return {
 		server,
 		publish: broadcaster.publish,
+		/** Workspace mode handles (tests: revoke sessions, inspect the store), or null. */
+		workspace,
 		/** Without a managed worker this stops synchronously; with one, after its child is stopped. */
-		stop(): Promise<void> {
+		async stop(): Promise<void> {
 			clearInterval(timer);
-			if (!worker) {
-				server.stop(true);
-				return Promise.resolve();
-			}
-			return worker.stop().then(() => {
-				server.stop(true);
-			});
+			await workspace?.bridge.stop();
+			await worker?.stop();
+			server.stop(true);
 		},
 	};
 }
@@ -224,6 +285,16 @@ if (import.meta.main) {
 		.filter(Boolean);
 
 	// Managed runs are off unless a trusted config file is named. Its contents are never logged.
+	// Workspace M1: both values are needed; the credential is never logged.
+	const workspaceOpts: WorkspaceHubOptions | undefined =
+		process.env.WORKSPACE_OPERATOR_CREDENTIAL ||
+		process.env.WORKSPACE_ALLOWED_ORIGIN
+			? {
+					operator_credential:
+						process.env.WORKSPACE_OPERATOR_CREDENTIAL || undefined,
+					allowed_origin: process.env.WORKSPACE_ALLOWED_ORIGIN || undefined,
+				}
+			: undefined;
 	const managedPath = process.env.MANAGED_CONFIG || undefined;
 	const managedToken = process.env.MANAGED_TOKEN || undefined;
 	let managed: HubOptions["managed"];
@@ -245,6 +316,7 @@ if (import.meta.main) {
 		port,
 		extraOrigins,
 		managed,
+		workspace: workspaceOpts,
 	});
 	console.log(
 		`[hub] listening on http://${server.hostname}:${server.port} (db: ${dbPath})`,
@@ -261,6 +333,13 @@ if (import.meta.main) {
 			stopping = true;
 			void stop().finally(() => process.exit(0));
 		});
+	if (workspaceOpts) {
+		console.log(
+			managed && workspaceConfigured(workspaceOpts)
+				? `[workspace] M1 workspace mode on (simulated only; /api/managed → 410; UI origin ${workspaceOpts.allowed_origin})`
+				: "[workspace] disabled: needs MANAGED_CONFIG, WORKSPACE_OPERATOR_CREDENTIAL and WORKSPACE_ALLOWED_ORIGIN",
+		);
+	}
 	if (!managed) {
 		console.log(
 			managedPath

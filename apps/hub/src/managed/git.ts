@@ -62,6 +62,15 @@ async function gitRaw(
 	});
 }
 
+/**
+ * The same hardened, bounded git invocation as every other read here, for modules that take a runner
+ * (the workspace evidence context loader / sealer). Read-only commands only are passed through it.
+ */
+export function gitRunner(ctx: GitCtx, cwd: string) {
+	return (args: readonly string[], maxOutputBytes: number) =>
+		gitRaw(ctx, cwd, args, maxOutputBytes);
+}
+
 async function gitOk(
 	ctx: GitCtx,
 	cwd: string,

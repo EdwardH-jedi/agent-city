@@ -110,6 +110,9 @@ bun run check:secrets    # scan tracked/untracked files for token patterns
   without a github.com origin is `local/<dir>` — the rule lives in `packages/schema/src/repo-slug.ts`
   and is shared by the hub's local scan and the collectors.
 - Session status transitions come only from `packages/schema/src/status.ts`.
+- Workspace (M1) stages and approval statuses come only from `packages/schema/src/workspace-m1/state.ts`;
+  workspace contracts (`agentcity.{workspace-task,proposal,execution-binding,approval,decision,result}/v1`)
+  live only in `packages/schema/src/workspace-m1/` and change only by a lead-approved versioned delta.
 - Session / agent ids come only from `packages/schema/src/ids.ts` (final scheme): a raw id is used
   verbatim only if it matches `[A-Za-z0-9._-]{1,128}` and holds no secret, else it becomes
   `redacted-<hash>`; session = `<provider>:<raw part>`, main agent = session id, subagent =

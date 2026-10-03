@@ -178,6 +178,20 @@ export async function submitTask(
 	}
 }
 
+/** Is this managed task linked to a workspace approval request (any status)? */
+export function isWorkspaceGoverned(
+	db: Database,
+	managedTaskId: string,
+): boolean {
+	return (
+		db
+			.query<{ n: number }, [string]>(
+				"SELECT count(*) AS n FROM managed_approval_requests WHERE managed_task_id = ?",
+			)
+			.get(managedTaskId)?.n !== 0
+	);
+}
+
 /** The explicit human Run action. Repeating it never queues the task twice. */
 export function runTask(
 	deps: ManagedDeps,
@@ -185,6 +199,14 @@ export function runTask(
 ): { task: ManagedTask; queued: boolean } {
 	const task = getTask(deps.db, id);
 	if (!task) throw new ServiceError(404, "not_found", "no such task");
+	// An execution governed by a workspace approval is queued only by its Gate-1 decision, and is
+	// never re-run on the same row (a rerun is a new execution + a new Gate 1). M1 legacy bypass.
+	if (isWorkspaceGoverned(deps.db, id))
+		throw new ServiceError(
+			409,
+			"workspace_governed",
+			"this execution is governed by a workspace approval; it cannot be run from here",
+		);
 	if (task.execution_mode === "live" && !liveConfigured(deps.config))
 		throw new ServiceError(
 			409,

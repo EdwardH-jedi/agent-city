@@ -1,6 +1,8 @@
 // Phase 0 2D view: repos by district · live sessions (waiting pinned) · event stream.
 // Data validation only — the 3D city comes in Phase 1.
 // A second tab holds managed tasks (Tasks.tsx); the telemetry view stays the default.
+// Workspace M1 builds (`__AGENTCITY_WORKSPACE_UI__`) render only the workspace/HQ app, with the
+// telemetry grid as its read-only "Observed only" activity view and no token-based Tasks tab.
 import type {
 	Event,
 	Provider,
@@ -17,6 +19,7 @@ import {
 	type RepoView,
 	useHub,
 } from "./useHub.ts";
+import { WorkspaceApp } from "./workspace-m1/WorkspaceApp.tsx";
 
 const LIVE: ReadonlySet<SessionStatus> = new Set(["active", "waiting", "idle"]);
 
@@ -40,7 +43,56 @@ function ago(iso: string | null, now: number): string {
 
 const repoName = (id: string | null) => (id ? (id.split("/")[1] ?? id) : "—");
 
+declare const __AGENTCITY_WORKSPACE_UI__: boolean | undefined;
+const WORKSPACE_UI =
+	typeof __AGENTCITY_WORKSPACE_UI__ !== "undefined" &&
+	__AGENTCITY_WORKSPACE_UI__ === true;
+
 export function App() {
+	return WORKSPACE_UI ? (
+		<WorkspaceApp activity={<ObservedView />} />
+	) : (
+		<LegacyApp />
+	);
+}
+
+/** The read-only telemetry grid without header/tabs (workspace "Observed only" view). */
+function ObservedView() {
+	const [filter, setFilter] = useState<EventFilter>({
+		repo: null,
+		provider: null,
+	});
+	const { districts, sessions, events, conn, error } = useHub(filter);
+	const now = useNow(5_000);
+	const liveByRepo = useMemo(() => liveCountByRepo(sessions), [sessions]);
+	const repoIds = useMemo(
+		() =>
+			Object.values(districts)
+				.flat()
+				.map((r) => r.id)
+				.sort((a, b) => a.localeCompare(b)),
+		[districts],
+	);
+	return (
+		<div className="observed">
+			<ConnBadge conn={conn} />
+			{error && <span className="err">{error}</span>}
+			<div className="grid">
+				<Repos districts={districts} liveByRepo={liveByRepo} />
+				<Sessions sessions={sessions} now={now} />
+				<Events
+					events={events}
+					filter={filter}
+					setFilter={setFilter}
+					repoIds={repoIds}
+					now={now}
+				/>
+			</div>
+		</div>
+	);
+}
+
+function LegacyApp() {
 	const [filter, setFilter] = useState<EventFilter>({
 		repo: null,
 		provider: null,

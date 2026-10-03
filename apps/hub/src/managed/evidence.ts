@@ -4,15 +4,19 @@
 // Artifact files live only under `<artifacts_root>/<task_id>/<run_id>/<name>`; names are generated
 // here, and reads re-check the canonical path, so no request can name an arbitrary host file.
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import {
 	closeSync,
 	constants,
 	fstatSync,
+	fsyncSync,
 	mkdirSync,
 	openSync,
 	readSync,
 	realpathSync,
-	writeFileSync,
+	renameSync,
+	rmSync,
+	writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import {
@@ -332,8 +336,39 @@ export function writeArtifact(
 	const rel = join(a.task_id, a.run_id, a.name);
 	const abs = join(root, rel);
 	mkdirSync(dirname(abs), { recursive: true, mode: 0o700 });
+	// The directory must really be inside the root (no symlinked task/run directory).
+	if (!isInside(realpathSync(root), realpathSync(dirname(abs))))
+		throw new Error("artifact directory escapes the artifacts root");
 	const bytes = Buffer.from(a.content, "utf8");
-	writeFileSync(abs, bytes, { mode: 0o600 });
+	// Atomic and symlink-safe (M1 L-14): write an exclusive, no-follow temp file, fsync it, rename it
+	// over the final name (which replaces a planted symlink itself, never its target), fsync the
+	// directory — and only then register the row, so a crash never leaves a row over partial bytes.
+	const tmp = `${abs}.tmp-${randomUUID()}`;
+	const fd = openSync(
+		tmp,
+		constants.O_WRONLY |
+			constants.O_CREAT |
+			constants.O_EXCL |
+			constants.O_NOFOLLOW,
+		0o600,
+	);
+	try {
+		let off = 0;
+		while (off < bytes.length) off += writeSync(fd, bytes, off);
+		fsyncSync(fd);
+	} catch (err) {
+		closeSync(fd);
+		rmSync(tmp, { force: true });
+		throw err;
+	}
+	closeSync(fd);
+	renameSync(tmp, abs);
+	const dfd = openSync(dirname(abs), constants.O_RDONLY);
+	try {
+		fsyncSync(dfd);
+	} finally {
+		closeSync(dfd);
+	}
 	return insertArtifact(db, {
 		task_id: a.task_id,
 		run_id: a.run_id,

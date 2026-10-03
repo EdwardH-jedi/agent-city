@@ -37,7 +37,13 @@ function codeKeys(): Set<string> {
 		for (const e of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
 			const p = join(dir, e.name);
 			if (e.isDirectory() && e.name !== "node_modules") walk(p);
-			else if (/\.tsx?$/.test(e.name) && !e.name.endsWith(".test.ts"))
+			// test code is not configuration: `*.test.ts` and the e2e browser suites (`*.suite.ts`)
+			// may read runner-only variables (e.g. a case filter) that the app never reads
+			else if (
+				/\.tsx?$/.test(e.name) &&
+				!e.name.endsWith(".test.ts") &&
+				!e.name.endsWith(".suite.ts")
+			)
 				files.push(p);
 		}
 	};
