@@ -4,7 +4,7 @@
 //
 // <root> holds one directory per `scripts/ci/isolated.ts` run. From each run only these are copied:
 //   run.json, suite.log                                      (the wrapper's outcome and the suite output)
-//   tmp/agentcity-m1-09-{hub,fx}-*/results.json and *.png     (workspace / campus / repair suites)
+//   tmp/agentcity-m1-09-{hub,fx,multi}-*/results.json and *.png (workspace / campus / repair / multi-repo suites)
 //   tmp/agentcity-browser-evidence-*/*.png                    (legacy browser gate screenshots)
 // Never copied: HOME, the fixture repository, SQLite files, browser profiles or storage, traces, HARs,
 // accessibility snapshots, Vite caches, anything else under tmp/. Symlinks are skipped. Every copied
@@ -26,7 +26,7 @@ import { SCAN_PATTERNS } from "../../packages/schema/src/secret-patterns.ts";
 const MAX_FILE = 10 * 1024 * 1024;
 const MAX_TOTAL = 250 * 1024 * 1024;
 const EVIDENCE_DIR =
-	/^agentcity-(m1-09-(hub|fx)|browser-evidence)-[A-Za-z0-9]+$/;
+	/^agentcity-(m1-09-(hub|fx|multi)|browser-evidence)-[A-Za-z0-9]+$/;
 const PNG = /^[A-Za-z0-9._-]+\.png$/;
 
 const args = process.argv.slice(2);

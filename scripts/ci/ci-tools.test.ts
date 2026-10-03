@@ -102,6 +102,159 @@ describe("isolated.ts", () => {
 		).toBe("time limit 1 s");
 	});
 
+	test("a failing command's own exit code passes through (not interrupted)", () => {
+		const r = wrap("fail7", 30, "bun", "-e", "process.exit(7)");
+		expect(r.code).toBe(7);
+		expect(
+			JSON.parse(readFileSync(join(root, "fail7", "run.json"), "utf8")),
+		).toMatchObject({
+			exit: 7,
+			child_exit: 7,
+			child_signal: null,
+			interrupted: false,
+			stopped_by: null,
+		});
+	});
+
+	test("a signal the wrapper did not send → 128 + its number (SIGHUP → 129)", () => {
+		const r = wrap(
+			"sighup",
+			30,
+			"bun",
+			"-e",
+			'process.kill(process.pid, "SIGHUP"); setInterval(() => {}, 1000)',
+		);
+		expect(r.code).toBe(129);
+		expect(
+			JSON.parse(readFileSync(join(root, "sighup", "run.json"), "utf8")),
+		).toMatchObject({
+			exit: 129,
+			child_exit: null,
+			child_signal: "SIGHUP",
+			interrupted: false,
+		});
+	});
+
+	/**
+	 * Interrupt the wrapper (job cancellation) once the command is demonstrably running: the command writes
+	 * a readiness marker, traps the signal and exits 0 — the run must still not count as a success.
+	 */
+	async function interrupt(label: string, signal: "SIGTERM" | "SIGINT") {
+		const ready = join(scratch, `${label}.ready`);
+		const child = [
+			'const fs = require("fs");',
+			'process.on("SIGTERM", () => process.exit(0));',
+			'process.on("SIGINT", () => process.exit(0));',
+			`fs.writeFileSync(${JSON.stringify(ready)}, "ready");`,
+			"setInterval(() => {}, 1000);",
+		].join(" ");
+		const p = Bun.spawn(
+			[
+				"bun",
+				join(HERE, "isolated.ts"),
+				"--root",
+				root,
+				"--label",
+				label,
+				"--timeout",
+				"60",
+				"--",
+				"bun",
+				"-e",
+				child,
+			],
+			{ stdout: "ignore", stderr: "ignore" },
+		);
+		const t0 = Date.now();
+		while (!existsSync(ready)) {
+			if (Date.now() - t0 > 20_000) throw new Error("child never became ready");
+			await Bun.sleep(25);
+		}
+		p.kill(signal);
+		const code = await p.exited;
+		return {
+			code,
+			meta: JSON.parse(readFileSync(join(root, label, "run.json"), "utf8")),
+		};
+	}
+
+	test("SIGTERM after the command is ready → 143 even though the command exits 0", async () => {
+		const { code, meta } = await interrupt("term-trap", "SIGTERM");
+		expect(code).toBe(143);
+		expect(meta).toMatchObject({
+			exit: 143,
+			child_exit: 0,
+			child_signal: null,
+			interrupted: true,
+			stopped_by: "SIGTERM",
+		});
+	});
+
+	test("SIGINT after the command is ready → 130 even though the command exits 0", async () => {
+		const { code, meta } = await interrupt("int-trap", "SIGINT");
+		expect(code).toBe(130);
+		expect(meta).toMatchObject({
+			exit: 130,
+			child_exit: 0,
+			interrupted: true,
+			stopped_by: "SIGINT",
+		});
+	});
+
+	test("--set passes only *_ONLY test selectors given on the command line", () => {
+		const r = run(
+			[
+				"bun",
+				join(HERE, "isolated.ts"),
+				"--root",
+				root,
+				"--label",
+				"set-ok",
+				"--timeout",
+				"30",
+				"--set",
+				"M1_ONLY=BRW-P-06|BRW-R-2[34]",
+				"--set",
+				"CAMPUS_ONLY=CAM-01",
+				"--",
+				"bun",
+				"-e",
+				"console.log(JSON.stringify({ m1: process.env.M1_ONLY, campus: process.env.CAMPUS_ONLY, keys: Object.keys(process.env).length }))",
+			],
+			{ M1_ONLY: "inherited-must-not-win" },
+		);
+		expect(r.code).toBe(0);
+		expect(JSON.parse(r.out.trim().split("\n").at(-1) ?? "{}")).toEqual({
+			m1: "BRW-P-06|BRW-R-2[34]",
+			campus: "CAM-01",
+			keys: 8,
+		});
+		const refused = (label: string, ...opt: string[]) =>
+			run([
+				"bun",
+				join(HERE, "isolated.ts"),
+				"--root",
+				root,
+				"--label",
+				label,
+				"--timeout",
+				"30",
+				...opt,
+				"--",
+				"bun",
+				"-e",
+				"0",
+			]).code;
+		expect(refused("set-home", "--set", "HOME=/tmp")).toBe(2);
+		expect(refused("set-token", "--set", "MANAGED_TOKEN=x")).toBe(2);
+		expect(refused("set-noeq", "--set", "M1_ONLY")).toBe(2);
+		expect(refused("set-nl", "--set", "M1_ONLY=a\nb")).toBe(2);
+		expect(refused("set-long", "--set", `M1_ONLY=${"x".repeat(201)}`)).toBe(2);
+		expect(refused("set-unknown", "--env", "M1_ONLY=x")).toBe(2);
+		// refused runs never created their directory
+		expect(existsSync(join(root, "set-home"))).toBe(false);
+	});
+
 	test("processes left behind are killed; the exit code is the command's", () => {
 		const marker = `agentcity-orphan-${process.pid}`;
 		const r = wrap(
@@ -136,6 +289,9 @@ describe("collect-browser-evidence.ts", () => {
 	put("hub/tmp/agentcity-m1-09-hub-Ab12/HUB-1440x900-01-shot.png");
 	put("legacy/suite.log", "\n27/27 browser checks passed\n");
 	put("legacy/tmp/agentcity-browser-evidence-Zz9/01-observed.png");
+	put("multi/run.json", JSON.stringify({ exit: 0, seconds: 30 }));
+	put("multi/tmp/agentcity-m1-09-multi-Mm1/results.json", clean);
+	put("multi/tmp/agentcity-m1-09-multi-Mm1/MULTI-1440x900-01-repos.png");
 	// never copied
 	put("hub/home/.bashrc");
 	put("hub/agentcity/spool.json");
@@ -174,6 +330,9 @@ describe("collect-browser-evidence.ts", () => {
 			"hub/suite.log",
 			"legacy/agentcity-browser-evidence-Zz9/01-observed.png",
 			"legacy/suite.log",
+			"multi/agentcity-m1-09-multi-Mm1/MULTI-1440x900-01-repos.png",
+			"multi/agentcity-m1-09-multi-Mm1/results.json",
+			"multi/run.json",
 		]);
 	});
 

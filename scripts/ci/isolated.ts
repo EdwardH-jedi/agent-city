@@ -1,17 +1,23 @@
 // Run one command in a cleared, disposable environment (CI and local), with a hard time limit.
 //
 //   bun scripts/ci/isolated.ts --root <dir> --label <name> --timeout <seconds> \
-//     [--browsers <playwright browsers dir>] -- <command> [args…]
+//     [--browsers <playwright browsers dir>] [--set NAME=VALUE …] -- <command> [args…]
 //
 // <root>/<label>/ is created fresh (an existing one is refused, so suites never share state) with
 // home/, agentcity/ and tmp/; the command runs with ONLY HOME, AGENTCITY_HOME, TMPDIR, a PATH of
 // bun + git + the system directories, LANG, TZ and (if given) PLAYWRIGHT_BROWSERS_PATH — no
-// inherited variables, so no provider credentials, tokens or personal config can reach it.
+// inherited variables, so no provider credentials, tokens or personal config can reach it. `--set`
+// (repeatable) adds an explicit test selector given on the command line — only names matching
+// ^[A-Z][A-Z0-9_]*_ONLY$ (e.g. M1_ONLY, CAMPUS_ONLY), never a value inherited from the environment.
 // The command runs in its own process group: on the time limit or a SIGINT/SIGTERM (job
 // cancellation) the whole group gets SIGTERM, then SIGKILL after a grace period; after a normal
 // exit any process left in the group is killed and reported. Output is streamed and also written
 // to <root>/<label>/suite.log; <root>/<label>/run.json records the outcome (no environment values).
-// Exit code: the command's, 124 on the time limit, 128+n when stopped by a signal.
+// Exit code: the command's own; 124 on the time limit; 130 / 143 when the wrapper itself received SIGINT /
+// SIGTERM (an interrupted suite never reports success, even if the command then exits 0); 128+n when the
+// command died of signal n that the wrapper did not send. run.json records the command's own exit code and
+// signal separately. This exit code describes the wrapper's run only — it does not say how a CI service
+// reports a cancelled job.
 import { spawn } from "node:child_process";
 import {
 	createWriteStream,
@@ -20,6 +26,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 const GRACE_MS = 15_000;
@@ -27,7 +34,7 @@ const GRACE_MS = 15_000;
 function usage(message: string): never {
 	console.error(`isolated: ${message}`);
 	console.error(
-		"usage: bun scripts/ci/isolated.ts --root <dir> --label <name> --timeout <seconds> [--browsers <dir>] -- <command…>",
+		"usage: bun scripts/ci/isolated.ts --root <dir> --label <name> --timeout <seconds> [--browsers <dir>] [--set NAME=VALUE …] -- <command…>",
 	);
 	process.exit(2);
 }
@@ -36,11 +43,26 @@ const argv = process.argv.slice(2);
 const sep = argv.indexOf("--");
 if (sep < 0 || sep === argv.length - 1) usage("missing -- <command>");
 const opts = new Map<string, string>();
+const sets: [string, string][] = [];
+const SET_NAME = /^[A-Z][A-Z0-9_]*_ONLY$/;
 for (let i = 0; i < sep; i += 2) {
 	const key = argv[i];
 	const value = argv[i + 1];
 	if (!key?.startsWith("--") || value === undefined || i + 1 >= sep)
 		usage(`bad option ${key ?? ""}`);
+	if (key === "--set") {
+		const eq = value.indexOf("=");
+		const name = eq > 0 ? value.slice(0, eq) : "";
+		const v = eq > 0 ? value.slice(eq + 1) : "";
+		if (!SET_NAME.test(name))
+			usage("--set only passes test selectors named *_ONLY (NAME=VALUE)");
+		if (v.length > 200 || /[\0\r\n]/.test(v))
+			usage(`--set ${name}: value must be one line of at most 200 characters`);
+		sets.push([name, v]);
+		continue;
+	}
+	if (!["--root", "--label", "--timeout", "--browsers"].includes(key))
+		usage(`unknown option ${key}`);
 	opts.set(key.slice(2), value);
 }
 const command = argv.slice(sep + 1);
@@ -78,6 +100,7 @@ const env: Record<string, string> = {
 	TZ: "UTC",
 };
 if (browsers) env.PLAYWRIGHT_BROWSERS_PATH = browsers;
+for (const [name, value] of sets) env[name] = value;
 
 const [cmd, ...args] = command as [string, ...string[]];
 const log = createWriteStream(join(dir, "suite.log"));
@@ -133,9 +156,18 @@ if (leftovers) group("SIGKILL");
 await Promise.race([closed, Bun.sleep(5_000)]); // remaining output, bounded
 await new Promise<void>((r) => log.end(r));
 
+const signalNumber = (s: string | null): number =>
+	s ? (osConstants.signals[s as keyof typeof osConstants.signals] ?? 0) : 0;
+const interrupted = stoppedBy === "SIGINT" || stoppedBy === "SIGTERM";
 const exit = stoppedBy?.startsWith("time limit")
 	? 124
-	: (code ?? 128 + (signal === "SIGKILL" ? 9 : 15));
+	: interrupted
+		? 128 + signalNumber(stoppedBy) // 130 / 143, whatever the command itself exited with
+		: code !== null
+			? code
+			: signalNumber(signal) > 0
+				? 128 + signalNumber(signal)
+				: 1;
 writeFileSync(
 	join(dir, "run.json"),
 	`${JSON.stringify(
@@ -143,7 +175,9 @@ writeFileSync(
 			label,
 			command: command.map((a) => (a.startsWith(dir) ? "<run dir>" : a)),
 			exit,
-			signal,
+			child_exit: code,
+			child_signal: signal,
+			interrupted,
 			stopped_by: stoppedBy,
 			leftover_processes_killed: leftovers,
 			seconds: Math.round((Date.now() - t0) / 100) / 10,
