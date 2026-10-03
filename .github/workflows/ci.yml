@@ -1,7 +1,13 @@
-# Read-only CI for Agent City. NOT yet run on hosted CI — it was written and checked locally only.
+# Read-only CI for Agent City — simulated only. Hosted results are recorded in
+# docs/workspace-m1/HOSTED_CI.md (first hosted run: 37090614170, push of 80a9a17).
 # No secrets, no write permissions, no deployment, no real provider CLIs or credentials: managed
-# tests use fake adapters and generated stub executables; the browser gate starts its own disposable
-# hub. Before enabling, pin the actions below to full commit SHAs.
+# tests use fake adapters and generated stub executables. Every browser suite runs through
+# scripts/ci/isolated.ts: cleared environment, fresh HOME / AGENTCITY_HOME / TMPDIR per suite, its own
+# disposable hub, SQLite file and fixture repository on free loopback ports (never 4317), a hard time
+# limit and process-group cleanup. Only an allowlist of synthetic evidence is uploaded
+# (scripts/ci/collect-browser-evidence.ts; secret-scanned; 7-day retention), also when a suite fails.
+# The three jobs share nothing (separate runners). checkout / setup-bun are still referenced by major
+# tag (pinning them to commit SHAs is open); upload-artifact is pinned to v7.0.1.
 name: ci
 
 on:
@@ -11,15 +17,20 @@ on:
 permissions:
   contents: read
 
+env:
+  # never let anything fall back to a provider login or a real hub
+  MANAGED_CONFIG: ""
+  MANAGED_TOKEN: ""
+
 jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      # never let anything fall back to a provider login or a real hub
-      MANAGED_CONFIG: ""
-      MANAGED_TOKEN: ""
     steps:
+      - name: Isolation paths
+        run: |
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/pw-browsers" >> "$GITHUB_ENV"
+          echo "ISO_ROOT=$RUNNER_TEMP/agentcity-iso" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -42,7 +53,125 @@ jobs:
         run: bun run build:web
       - name: Simulated managed demo
         run: bun run managed:demo
-      - name: Browser engine for the gate (headless shell only)
+      - name: Browser engine (headless shell only)
+        timeout-minutes: 10
         run: bunx playwright-core install --with-deps chromium-headless-shell
-      - name: Browser gate
-        run: bun run test:browser
+      - name: Legacy browser gate (managed-task UI, browser-gate.ts)
+        timeout-minutes: 10
+        run: >-
+          bun scripts/ci/isolated.ts --root "$ISO_ROOT" --label legacy-gate --timeout 540
+          --browsers "$PLAYWRIGHT_BROWSERS_PATH" -- bun --no-env-file run test:browser
+      - name: Collect sanitized browser evidence
+        if: always()
+        run: >-
+          bun scripts/ci/collect-browser-evidence.ts --root "$ISO_ROOT"
+          --out "$RUNNER_TEMP/evidence" --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload browser evidence (synthetic only)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-evidence-legacy-gate-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7
+          if-no-files-found: warn
+
+  workspace-hub:
+    name: workspace browser — real hub (hub.suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Isolation paths
+        run: |
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/pw-browsers" >> "$GITHUB_ENV"
+          echo "ISO_ROOT=$RUNNER_TEMP/agentcity-iso" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install (lockfile)
+        run: bun install --frozen-lockfile
+      - name: Browser engine (headless shell only)
+        timeout-minutes: 10
+        run: bunx playwright-core install --with-deps chromium-headless-shell
+      - name: Workspace UI against the isolated real hub (hub.suite.ts)
+        timeout-minutes: 40
+        run: >-
+          bun scripts/ci/isolated.ts --root "$ISO_ROOT" --label workspace-hub --timeout 2340
+          --browsers "$PLAYWRIGHT_BROWSERS_PATH" -- bun --no-env-file run test:browser:hub
+      - name: Collect sanitized browser evidence
+        if: always()
+        run: >-
+          bun scripts/ci/collect-browser-evidence.ts --root "$ISO_ROOT"
+          --out "$RUNNER_TEMP/evidence" --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload browser evidence (synthetic only)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-evidence-workspace-hub-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7
+          if-no-files-found: warn
+
+  workspace-campus:
+    name: workspace browser — fixture, campus, production repair
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Isolation paths
+        run: |
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/pw-browsers" >> "$GITHUB_ENV"
+          echo "ISO_ROOT=$RUNNER_TEMP/agentcity-iso" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install (lockfile)
+        run: bun install --frozen-lockfile
+      - name: Browser engine (headless shell only)
+        id: browsers
+        timeout-minutes: 10
+        run: bunx playwright-core install --with-deps chromium-headless-shell
+      # The suites below run one after another, each in its own isolated directory; a failing suite
+      # does not hide the next one's result, and any failure still fails the job.
+      - name: Workspace UI on the fixture transport, no hub (fx.suite.ts)
+        timeout-minutes: 12
+        run: >-
+          bun scripts/ci/isolated.ts --root "$ISO_ROOT" --label workspace-fx --timeout 660
+          --browsers "$PLAYWRIGHT_BROWSERS_PATH" -- bun --no-env-file run test:browser:fx
+      - name: Business campus against the isolated real hub (campus.suite.ts)
+        if: ${{ !cancelled() && steps.browsers.outcome == 'success' }}
+        timeout-minutes: 20
+        run: >-
+          bun scripts/ci/isolated.ts --root "$ISO_ROOT" --label workspace-campus --timeout 1140
+          --browsers "$PLAYWRIGHT_BROWSERS_PATH" -- bun --no-env-file run test:browser:campus
+      - name: Isolated production build of the workspace UI
+        id: prodbuild
+        if: ${{ !cancelled() && steps.browsers.outcome == 'success' }}
+        timeout-minutes: 5
+        run: >-
+          bun scripts/ci/isolated.ts --root "$ISO_ROOT" --label workspace-prod-build --timeout 240
+          -- bun --no-env-file run build:web:workspace-prod "$RUNNER_TEMP/prod-workspace"
+      - name: Production repair on the production output + isolated real hub (campus-recovery.suite.ts)
+        if: ${{ !cancelled() && steps.prodbuild.outcome == 'success' }}
+        timeout-minutes: 12
+        run: >-
+          bun scripts/ci/isolated.ts --root "$ISO_ROOT" --label workspace-recovery --timeout 660
+          --browsers "$PLAYWRIGHT_BROWSERS_PATH" --
+          bun --no-env-file run test:browser:recovery "$RUNNER_TEMP/prod-workspace"
+      - name: Collect sanitized browser evidence
+        if: always()
+        run: >-
+          bun scripts/ci/collect-browser-evidence.ts --root "$ISO_ROOT"
+          --out "$RUNNER_TEMP/evidence" --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload browser evidence (synthetic only)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-evidence-workspace-campus-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7
+          if-no-files-found: warn

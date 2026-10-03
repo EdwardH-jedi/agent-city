@@ -25,6 +25,11 @@
 		"collector:codex": "bun --no-env-file apps/collector/src/codex-tail.ts",
 		"collector:hooks": "bun --no-env-file apps/collector/src/install-hooks.ts",
 		"test:browser": "bun apps/web/e2e/browser-gate.ts",
+		"test:browser:hub": "bun --no-env-file apps/web/e2e/workspace-m1/hub.suite.ts",
+		"test:browser:fx": "bun --no-env-file apps/web/e2e/workspace-m1/fx.suite.ts",
+		"test:browser:campus": "bun --no-env-file apps/web/e2e/workspace-m1/campus.suite.ts",
+		"test:browser:recovery": "bun --no-env-file apps/web/e2e/workspace-m1/campus-recovery.suite.ts",
+		"build:web:workspace-prod": "bun --no-env-file apps/web/e2e/workspace-m1/build-production.ts",
 		"managed:demo": "bun --no-env-file apps/hub/src/managed/demo.ts",
 		"managed:preflight": "bun apps/hub/src/managed/preflight-cli.ts",
 		"check:secrets": "bun scripts/check-secrets.ts"
