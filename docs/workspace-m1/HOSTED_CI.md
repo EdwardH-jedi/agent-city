@@ -131,6 +131,27 @@ the suites are synthetic per run, never printed, and typed only into password fi
 The commit that adds this record and the R-23/R-24 repair is verified by the next run; a commit cannot contain
 its own CI result, so that run is reported in the delivery handoff.
 
+## Run 4 — multi-repository milestone (`eeac451`)
+
+Run 37131292854 (push of `eeac451bb2ddfa12d20fc97038e0f254a27c5ab4`; run 3 was 37101861244 on `eeeef85`, green,
+recorded in the handoff): **failure** — 3 of 4 jobs green.
+
+| Job | Result |
+| --- | --- |
+| `checks` (111226767116) | success — lint, typecheck, unit 754 + integration 1105 (= the same 1859 `bun test` cases as locally), secret scan (374 files), web build, demo, legacy browser gate **32/32** |
+| `workspace-hub` (111226767178) | success — **110 PASS / 0 FAIL / 0 NOT RUN** (P-06 ran; R-01/J-21 now in MULTI) |
+| `workspace-campus` (111226767013) | success — FX 30 / 0 / 24 delegated; campus 36 / 0 / 0; production build ok; repair 12 / 0 |
+| `workspace-multirepo` (111226767075) | **failure** — MULTI 26 PASS / 1 FAIL (MR-R05) / 0 NOT RUN |
+
+Cause (test, not product — reproduced locally with instrumentation, then fixed): in MR-R05's committed-then-lost
+variant the hub commits the decision (~55 ms after the click) and the UI reconciles it from the first detail read
+(~110 ms), which closes the request and removes the signature field and Approve. When the predicate's first tick
+had already seen "Check decision outcome", it then called `inputValue()` / `isEnabled()` on those now-removed
+controls, and Playwright waited for them for the suite's 12 s default timeout each (+ the 2 s click attempt):
+a constant ≈ 26.3 s stall, longer than the 20 s budget. Local runs hit it intermittently (from 0 of 14 to 4 of 10 targeted runs per batch). The case now
+reads those controls without waiting (a removed field keeps nothing; a removed button is not enabled); budget and
+assertions unchanged. The run of the commit with this repair is reported in the delivery handoff.
+
 ## Limitations
 
 - Hosted runs are Linux x64; local runs are macOS arm64. Observed durations are observations, not bounds.

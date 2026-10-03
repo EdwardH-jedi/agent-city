@@ -1324,12 +1324,20 @@ async function races(main: Session): Promise<void> {
 					});
 					if (!attempted && (await chk.count()) > 0) {
 						attempted = true;
-						fieldWhileUnknown = await sigField(page, "run")
-							.inputValue()
-							.catch(() => "");
-						grantWhileUnknown = await grantButton(page, "run")
-							.isEnabled()
-							.catch(() => false);
+						// Read the gate controls WITHOUT waiting: the first detail read may reconcile the committed
+						// decision right now, closing the request and removing the signature field and Approve
+						// (a removed field keeps nothing; a removed button is not enabled). Waiting on them
+						// used to stall this predicate for two default timeouts (12 s each).
+						const sig = sigField(page, "run");
+						fieldWhileUnknown =
+							(await sig.count()) > 0
+								? await sig.inputValue({ timeout: 500 }).catch(() => "")
+								: "";
+						const grant = grantButton(page, "run");
+						grantWhileUnknown =
+							(await grant.count()) > 0
+								? await grant.isEnabled({ timeout: 500 }).catch(() => false)
+								: false;
 						// committed-then-lost: the page's next poll may reconcile the committed decision and
 						// remove the button between the count and the click — a legitimate path (the status
 						// and DB checks below decide). A vanished button is never counted as a use, and it

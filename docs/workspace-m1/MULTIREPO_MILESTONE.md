@@ -143,15 +143,18 @@ FX cases the HUB set decides (as at baseline).
 | Real-hub suite (`hub.suite.ts`) | **110 PASS / 0 FAIL / 0 NOT RUN** (R-01 / J-21 moved to MULTI; R-23 / R-24 now a + b; P-06 runs) |
 | Fixture suite (`fx.suite.ts`) | 30 PASS / 0 FAIL / 24 delegated (v1 and again on the final UI) |
 | Campus suite · production build + repair suite | 36 / 0 / 0 · ok + 12 / 0 |
-| **Multi-repository suite (`multirepo.suite.ts`)** | **27 PASS / 0 FAIL / 0 NOT RUN**, twice on the final tree (v1: 26 / 1 — MR-R05, a check-then-click race in the test, fixed below) |
+| **Multi-repository suite (`multirepo.suite.ts`)** | **27 PASS / 0 FAIL / 0 NOT RUN** twice after the final MR-R05 repair (and twice after the first one); MR-R05 alone 10 / 10, two of them hitting the reconciliation race and staying bounded (v1 and hosted run 4: 26 / 1 — MR-R05, a test stall, fixed below) |
 | Backend multi-repo tests | `multi-repo.test.ts` 11 / 0 · `multirepo.adv.test.ts` 16 / 0 (ADV-MR-12/-16 failed until the queue defect was fixed) |
 | `ci-tools.test.ts` | 11 / 0 |
 | Preview (`dev/preview-hub.ts`) | starts: UI URL, hub URL, three allowlisted fixture repositories, one observed-only repository; clean stop |
 
-Test-only repairs during verification (no product change): MR-R05 clicked "Check decision outcome" after a
-count, but when the hub had committed the lost decision the page's next poll legitimately reconciled it and
-removed the button first; the click now has a short timeout, a vanished button must really be gone and is
-never counted as a use (the lost-before-hub variant still must use it). ADV-INPUT-01/-05 (pre-existing flake)
+Test-only repairs during verification (no product change): MR-R05 (committed-then-lost) raced the UI's
+legitimate reconciliation of the committed decision, which closes the request and removes "Check decision
+outcome", the signature field and Approve: first the click on the vanished button waited 12 s (v1, local), then —
+on hosted run 37131292854 — reads of the removed signature field / Approve button each waited 12 s (≈ 26.3 s, past
+the 20 s budget). Instrumented local runs showed the hub committing ~55 ms and the store reconciling ~110 ms after
+the click every time. The case now clicks with a short timeout and reads those controls without waiting; a vanished
+button must really be gone and is never counted as a use (the lost-before-hub variant still must use it). ADV-INPUT-01/-05 (pre-existing flake)
 now take their "before" dump only once the engine and bridge are idle and the dump is stable — the after-dump is
 still the full dump. QA measured 12 failures in 20 runs on the frozen tree before that fix versus 1 in 8 at the
 baseline; the cause of the rate difference was not isolated (the engine's claim order is verified unchanged by
@@ -166,7 +169,9 @@ campus "running" label (fixed). Aesthetic choices for Edward are listed below.
 
 ## Not run / limits
 
-- Hosted CI for this milestone: reported in the handoff (a commit cannot contain its own run).
+- Hosted CI: run 37131292854 on `eeac451` — 3 of 4 jobs green, MULTI 26 / 1 (MR-R05, the test stall above);
+  `HOSTED_CI.md` run 4. The run of the repair commit is reported in the handoff (a commit cannot contain its
+  own run).
 - Simulated only. No real provider, no personal-repository execution, no merge/push/deploy by managed runs;
   `live_integration_verified` stays false. This milestone does **not** establish safe real-provider execution.
 - One active managed execution globally (unchanged); no multi-worker scheduling, no cross-repository writes, no
