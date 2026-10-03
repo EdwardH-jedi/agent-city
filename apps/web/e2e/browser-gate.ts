@@ -306,8 +306,9 @@ async function main(): Promise<number> {
 		const provoked =
 			/WebSocket/.test(text) ||
 			(/Failed to load resource/.test(text) &&
-				// 401: token tests · 404: unknown deep link · 409: tampered evidence · 502: hub restart
-				/(status of (401|404|409|502)\b|ERR_CONNECTION_RESET|ERR_CONNECTION_REFUSED|ERR_FAILED)/.test(
+				// 401: token tests · 404: unknown deep link · 409: tampered evidence · 502: hub restart ·
+				// 503: the "managed runs unavailable" focus probe
+				/(status of (401|404|409|502|503)\b|ERR_CONNECTION_RESET|ERR_CONNECTION_REFUSED|ERR_FAILED)/.test(
 					text,
 				));
 		if (m.type() === "error" && !provoked) consoleErrors.push(text);
@@ -971,6 +972,197 @@ async function main(): Promise<number> {
 			await page.unrouteAll();
 			await page.locator(`[data-testid=task-row][data-task-id="${b}"]`).click();
 			await page.getByTestId("offline").waitFor({ state: "detached" });
+		},
+	);
+
+	// ── focus recovery probes (multi-repository milestone, concern D) ─────────────────────────
+	const activeDesc = (p: Page) =>
+		p.evaluate(() => {
+			const el = document.activeElement;
+			if (!el || el === document.body) return "body";
+			const owner = el
+				.closest("[data-testid=task-detail]")
+				?.getAttribute("data-task-id");
+			return `${el.tagName.toLowerCase()}[data-testid=${el.getAttribute("data-testid")}]${owner ? ` in ${owner}` : ""}`;
+		});
+
+	await step(
+		"focus: closing the evidence viewer returns focus to the link that opened it",
+		async () => {
+			await select(page, ok);
+			const link = page
+				.locator(
+					`[data-testid=task-detail][data-task-id="${ok}"] [data-testid=artifact-link][data-name="manifest.json"]`,
+				)
+				.last();
+			await link.focus();
+			await page.keyboard.press("Enter");
+			await page.getByTestId("viewer").waitFor();
+			await page.getByTestId("viewer-close").focus();
+			await page.keyboard.press("Enter");
+			await page.getByTestId("viewer").waitFor({ state: "detached" });
+			await sleep(150);
+			const back = await link.evaluate((el) => el === document.activeElement);
+			assert(
+				back,
+				`focus after closing the viewer is on ${await activeDesc(page)}`,
+			);
+		},
+	);
+
+	await step(
+		"focus: rapid selection A→B→A lands on A's heading; late answers never move it",
+		async () => {
+			await page.route(`**/api/managed/tasks/${a}`, async (route) => {
+				await sleep(800);
+				await route.continue();
+			});
+			try {
+				const rowA = page.locator(
+					`[data-testid=task-row][data-task-id="${a}"]`,
+				);
+				const rowB = page.locator(
+					`[data-testid=task-row][data-task-id="${b}"]`,
+				);
+				await rowA.click();
+				await rowB.click();
+				await rowA.click();
+				await page
+					.locator(`[data-testid=task-detail][data-task-id="${a}"]`)
+					.waitFor();
+				await focusedDetail(page, a);
+				await sleep(1_400); // every delayed answer has landed and rendered
+				await focusedDetail(page, a, 500);
+				assert(
+					(await page
+						.locator("[data-testid=task-detail]")
+						.getAttribute("data-task-id")) === a,
+					"a late answer replaced the selected task",
+				);
+			} finally {
+				await page.unrouteAll();
+			}
+		},
+	);
+
+	await step(
+		"focus: a deep-linked detail never takes focus from a field the user is already typing in",
+		async () => {
+			await page.route(`**/api/managed/tasks/${b}`, async (route) => {
+				await sleep(1_500);
+				await route.continue();
+			});
+			try {
+				await page.goto(`${base}/#tasks/${b}`);
+				await page.reload();
+				const title = page.getByTestId("new-title");
+				await title.waitFor();
+				assert(
+					(await page
+						.locator(`[data-testid=task-detail][data-task-id="${b}"]`)
+						.count()) === 0,
+					"the detail answered before typing started (race not reproduced)",
+				);
+				await title.focus();
+				await page.keyboard.type("typing before the detail");
+				await page
+					.locator(`[data-testid=task-detail][data-task-id="${b}"]`)
+					.waitFor({ timeout: 10_000 });
+				await sleep(300);
+				const where = await activeDesc(page);
+				const value = await title.inputValue();
+				await title.fill("");
+				assert(
+					where === "input[data-testid=new-title]",
+					`focus moved to ${where}`,
+				);
+				assert(value === "typing before the detail", "typed text lost");
+			} finally {
+				await page.unrouteAll();
+			}
+		},
+	);
+
+	await step(
+		"focus: managed runs unavailable (503) → Retry → available lands on the open task's heading",
+		async () => {
+			await select(page, ok);
+			await focusedDetail(page, ok);
+			let unavailable = true;
+			await page.route("**/api/managed/**", async (route) => {
+				if (unavailable)
+					return route.fulfill({
+						status: 503,
+						contentType: "application/json",
+						body: JSON.stringify({
+							error: "managed runs are not configured on this hub",
+						}),
+					});
+				await route.continue();
+			});
+			try {
+				// reload on #tasks/<id>: the token check meets the 503 (a tab switch would drop the id)
+				await page.reload();
+				const retry = page.getByRole("button", { name: "Retry" });
+				try {
+					await retry.waitFor({ timeout: 8_000 });
+				} catch {
+					throw new Error(
+						`no "Retry" gate after the 503 (page shows: ${((await page.locator("main, body").first().textContent()) ?? "").replace(/\s+/g, " ").slice(0, 160)})`,
+					);
+				}
+				unavailable = false;
+				await retry.focus();
+				await page.keyboard.press("Enter");
+				try {
+					await page
+						.locator(`[data-testid=task-detail][data-task-id="${ok}"]`)
+						.waitFor({ timeout: 8_000 });
+				} catch {
+					throw new Error(
+						`the open task did not come back after Retry (url ${page.url().replace(base, "")}; focus ${await activeDesc(page)})`,
+					);
+				}
+				await focusedDetail(page, ok);
+			} finally {
+				await page.unrouteAll();
+			}
+		},
+	);
+
+	await step(
+		"focus: auth recovery — a deep link opened without a token lands on its heading once a token is accepted",
+		async () => {
+			// a new tab has no token (sessionStorage is per tab)
+			const p2 = await context.newPage();
+			p2.setDefaultTimeout(15_000);
+			try {
+				await p2.goto(`${base}/#tasks/${ok}`);
+				await p2.getByTestId("token-input").waitFor();
+				await p2.getByTestId("token-input").fill(TOKEN);
+				await p2.getByTestId("token-input").press("Enter");
+				await p2.getByTestId("new-title").waitFor();
+				let detail = false;
+				try {
+					await p2
+						.locator(`[data-testid=task-detail][data-task-id="${ok}"]`)
+						.waitFor({ timeout: 5_000 });
+					detail = true;
+				} catch {
+					// reported below
+				}
+				const where = await activeDesc(p2);
+				const errorText = (await p2.getByTestId("auth-error").count())
+					? await p2.getByTestId("auth-error").textContent()
+					: "";
+				assert(
+					detail,
+					`the deep-linked task was not restored after the token was accepted (url ${p2.url().replace(base, "")}; focus ${where}; gate error "${errorText ?? ""}")`,
+				);
+				await focusedDetail(p2, ok);
+			} finally {
+				await p2.close();
+			}
 		},
 	);
 

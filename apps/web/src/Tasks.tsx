@@ -156,6 +156,12 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	const [loaded, setLoaded] = useState(false);
 	const [offline, setOffline] = useState(false);
 	const detailHeading = useRef<HTMLHeadingElement | null>(null);
+	/**
+	 * How the next shown detail takes focus: after a selection made in this view (row, create) always;
+	 * when restoring a deep link (mount / reload / token or availability recovery) only if the user is
+	 * not already typing in a field — a late detail must never pull focus out of the form.
+	 */
+	const focusMode = useRef<"always" | "unless-typing">("unless-typing");
 
 	// refs read by async callbacks: the CURRENT token / epoch / selection, not the captured ones
 	const epochRef = useRef(0);
@@ -208,6 +214,9 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 
 	const loadDetail = useCallback(
 		async (id: string) => {
+			// no token yet (a deep link opened in a new tab): asking would earn a 401 that purges the
+			// selection; the refresh after the token is accepted loads it instead
+			if (!tokenRef.current) return;
 			const seq = ++detailSeq.current;
 			try {
 				const d = await call<Detail>(`/tasks/${id}`);
@@ -277,6 +286,7 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	}, [busy, refresh]);
 
 	const select = (id: string) => {
+		focusMode.current = "always";
 		setTaskHash(id);
 		if (id === selected) {
 			void loadDetail(id); // re-clicking refreshes; it never blanks the view
@@ -293,7 +303,15 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 			? selected
 			: null;
 	useEffect(() => {
-		if (shownDetailId) detailHeading.current?.focus({ preventScroll: true });
+		if (!shownDetailId) return;
+		const active = document.activeElement;
+		if (
+			focusMode.current === "unless-typing" &&
+			active instanceof HTMLElement &&
+			active.matches("input, textarea, select, [contenteditable='true']")
+		)
+			return;
+		detailHeading.current?.focus({ preventScroll: true });
 	}, [shownDetailId]);
 
 	if (auth === "none")
@@ -411,6 +429,7 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 						info={info}
 						call={call}
 						onCreated={(t) => {
+							focusMode.current = "always";
 							setDetail(null);
 							setSelected(t.id);
 							void refresh();
@@ -760,6 +779,8 @@ function TaskDetail({
 	const [pending, setPending] = useState<"run" | "cancel" | null>(null);
 	const [viewer, setViewer] = useState<Viewer | null>(null);
 	const viewSeq = useRef(0);
+	/** The evidence link that opened the viewer: closing it returns focus there (else the heading). */
+	const viewerOpener = useRef<HTMLElement | null>(null);
 	const [files, setFiles] = useState<{ status: string; path: string }[] | null>(
 		null,
 	);
@@ -786,8 +807,9 @@ function TaskDetail({
 	);
 
 	/** Open an artifact; a late answer can neither reopen a closed viewer nor replace a newer one. */
-	const open = async (a: ManagedArtifact) => {
+	const open = async (a: ManagedArtifact, opener: HTMLElement | null) => {
 		const seq = ++viewSeq.current;
+		viewerOpener.current = opener;
 		const attempt = runs.find((r) => r.id === a.run_id)?.attempt_no ?? null;
 		setViewer({
 			artifact: a,
@@ -820,6 +842,10 @@ function TaskDetail({
 	const close = () => {
 		viewSeq.current++;
 		setViewer(null);
+		const back = viewerOpener.current;
+		viewerOpener.current = null;
+		if (back?.isConnected) back.focus({ preventScroll: true });
+		else headingRef.current?.focus({ preventScroll: true });
 	};
 
 	// changed files of the newest attempt that has evidence
@@ -1078,7 +1104,7 @@ function TaskDetail({
 								data-testid="artifact-link"
 								data-name={a.name}
 								data-attempt={run?.attempt_no ?? ""}
-								onClick={() => void open(a)}
+								onClick={(e) => void open(a, e.currentTarget)}
 							>
 								{a.name}
 							</button>{" "}
