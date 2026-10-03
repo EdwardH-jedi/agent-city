@@ -4609,10 +4609,13 @@ async function persistenceCases(): Promise<void> {
 		);
 		await page.goto(`${env.uiUrl}/#/hq/${pending.wt}/${pending.id}`);
 		await page.reload();
-		await region(page, "Approval document").waitFor();
-		const docStatus = await region(page, "Approval document").getAttribute(
-			"data-request-status",
+		// the region first renders as a "Loading request…" placeholder without a status; read the
+		// status only from THIS request's loaded document
+		const doc = page.locator(
+			`section[aria-label="Approval document"][data-request-id="${pending.id}"]`,
 		);
+		await doc.waitFor();
+		const docStatus = await doc.getAttribute("data-request-status");
 		check(
 			docStatus === "pending",
 			`forged storage changed status → ${docStatus}`,

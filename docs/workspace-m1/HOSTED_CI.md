@@ -171,6 +171,19 @@ and the briefing state in the message. MR-08's identical index-based click is ha
 the hosted runner is therefore not proven; the next run's evidence (own-page screenshot + state) would show it if
 it recurs. The run of that commit is reported in the delivery handoff.
 
+## Run 6 — briefing-claim repair (`bf6786c`)
+
+Run 37136802531 (push of `bf6786c11e9bf73f8d428d4c10614b4c1ba1d3dd`): **failure** — 3 of 4 jobs green. The
+multi-repository job is green for the first time: **MULTI 27 PASS / 0 FAIL / 0 NOT RUN** (BRW-J-21 actionable
+368 ms after the click). `checks` (unit 754 + integration 1105, secrets 374 files, legacy gate 32/32), FX 30 / 0 /
+24, campus 36 / 0 / 0, repair 12 / 0 green. **HUB 109 / 1**: BRW-P-09 ("forged storage changed status → null").
+
+Cause (test, pre-existing since `80a9a17`; the case and the placeholder are unchanged by this milestone): after
+the reload P-09 waited for any "Approval document" region and read its `data-request-status` at once, but until
+the request's data arrives that region is the "Loading request…" placeholder, which has no status → `null`. P-09
+now waits for that request's loaded document (`[data-request-id=…]`) before reading the status, as the other
+restart cases already do. The run of that commit is reported in the delivery handoff.
+
 ## Limitations
 
 - Hosted runs are Linux x64; local runs are macOS arm64. Observed durations are observations, not bounds.

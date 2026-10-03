@@ -171,8 +171,9 @@ campus "running" label (fixed). Aesthetic choices for Edward are listed below.
 
 - Hosted CI: run 37131292854 on `eeac451` — 3 of 4 jobs green, MULTI 26 / 1 (MR-R05, the test stall above);
   run 37134841371 on `47c5cd0` — MR-R05 passed, MULTI 26 / 1 on BRW-J-21's per-claim navigation click (index-
-  based, 1.5 s; hardened, cause on the hosted runner not proven — `HOSTED_CI.md` runs 4–5). The run of the latest
-  commit is reported in the handoff (a commit cannot contain its own run).
+  based, 1.5 s; hardened, cause on the hosted runner not proven); run 37136802531 on `bf6786c` — **MULTI 27 / 0 /
+  0** on hosted, HUB 109 / 1 on BRW-P-09, a pre-existing placeholder race in that test (fixed) — `HOSTED_CI.md`
+  runs 4–6. The run of the latest commit is reported in the handoff (a commit cannot contain its own run).
 - Simulated only. No real provider, no personal-repository execution, no merge/push/deploy by managed runs;
   `live_integration_verified` stays false. This milestone does **not** establish safe real-provider execution.
 - One active managed execution globally (unchanged); no multi-worker scheduling, no cross-repository writes, no
