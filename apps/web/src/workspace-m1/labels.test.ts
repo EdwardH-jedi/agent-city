@@ -5,7 +5,12 @@ import type {
 	EngineView,
 	WorkspaceTaskDetail,
 } from "@agent-city/schema/workspace-m1";
-import { cancellationStatus, engineAheadNote } from "./labels.ts";
+import {
+	cancellationStatus,
+	engineAheadNote,
+	QUARANTINE_PAUSE_NOTE,
+	queueLine,
+} from "./labels.ts";
 
 const AT = "2026-10-02T00:00:00.000Z";
 const engine = (state: EngineView["state"], over: Partial<EngineView> = {}) =>
@@ -146,5 +151,75 @@ describe("sealed statuses after revalidation", () => {
 				invalidation_reason: "integrity_failed",
 			}),
 		).toBeNull();
+	});
+});
+
+describe("global queue line (multi-repository milestone)", () => {
+	const entry = (m: string, repo: string, w: string | null) => ({
+		managed_task_id: m,
+		workspace_task_id: w,
+		repo_id: repo,
+		state: "queued" as const,
+		run_requested_at: AT,
+	});
+	const titles: Record<string, string> = { "wst-a": "Alpha task" };
+	const titleOf = (id: string | null) => (id ? (titles[id] ?? null) : null);
+
+	test("the slot holder, positions, and who it waits behind (another repository named)", () => {
+		const q = {
+			active: entry("m-a", "local/a", "wst-a"),
+			queued: [entry("m-b", "local/b", "wst-b"), entry("m-c", "local/a", null)],
+			claims_paused_by_quarantine: false,
+		};
+		expect(queueLine(q, "m-a", "executing", "local/a", titleOf)).toEqual({
+			kind: "slot",
+			text: "Holds the engine slot: the only execution running across all repositories.",
+		});
+		expect(queueLine(q, "m-b", "queued", "local/b", titleOf)?.text).toBe(
+			"Queued · position 1 of 2 · waiting behind local/a · Alpha task (another repository)",
+		);
+		expect(queueLine(q, "m-c", "queued", "local/a", titleOf)?.text).toBe(
+			"Queued · position 2 of 2 · waiting behind local/a · Alpha task",
+		);
+	});
+
+	test("no active execution: next to be claimed / earlier executions; unlinked rows are named as such", () => {
+		const q = {
+			active: null,
+			queued: [entry("m-1", "local/a", null), entry("m-2", "local/a", null)],
+			claims_paused_by_quarantine: false,
+		};
+		expect(queueLine(q, "m-1", "queued", "local/a", titleOf)?.text).toBe(
+			"Queued · position 1 of 2 · next to be claimed",
+		);
+		expect(queueLine(q, "m-2", "queued", "local/a", titleOf)?.text).toBe(
+			"Queued · position 2 of 2 · waiting behind 1 earlier execution",
+		);
+		const q2 = { ...q, active: entry("m-0", "local/z", null) };
+		expect(queueLine(q2, "m-1", "queued", "local/a", titleOf)?.text).toBe(
+			"Queued · position 1 of 2 · waiting behind local/z · an execution not linked to a workspace task (another repository)",
+		);
+	});
+
+	test("quarantine pause, unknown position, and nothing to say", () => {
+		const paused = {
+			active: null,
+			queued: [entry("m-1", "local/a", null)],
+			claims_paused_by_quarantine: true,
+		};
+		expect(queueLine(paused, "m-1", "queued", "local/a", titleOf)?.text).toBe(
+			`Queued · position 1 of 1 · next to be claimed · ${QUARANTINE_PAUSE_NOTE}`,
+		);
+		expect(queueLine(paused, "m-9", "queued", "local/a", titleOf)).toEqual({
+			kind: "unknown",
+			text: `Queued · ${QUARANTINE_PAUSE_NOTE}`,
+		});
+		expect(queueLine(null, "m-9", "queued", "local/a", titleOf)).toEqual({
+			kind: "unknown",
+			text: "Queued · queue position unknown",
+		});
+		expect(queueLine(paused, "m-9", "human_ready", "local/a", titleOf)).toBe(
+			null,
+		);
 	});
 });

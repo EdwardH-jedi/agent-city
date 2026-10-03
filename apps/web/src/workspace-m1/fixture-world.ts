@@ -51,11 +51,13 @@ import {
 	type EvidenceStatus,
 	EXECUTION_BINDING_CONTRACT,
 	type ExecutionBinding,
+	type ExecutionQueue,
 	type InvalidationReason,
 	isDraftEditable,
 	isProposalV1_2,
 	MANIFEST_ARTIFACT_NAME,
 	type ManagedProposalRow,
+	type ObservedRepo,
 	OPERATOR_ID,
 	type OperatorScope,
 	overallEvidenceStatus,
@@ -64,6 +66,7 @@ import {
 	ProposalDraft,
 	PUBLISHABLE_STAGES,
 	PublishProposalRequest,
+	type QueueEntry,
 	RERUNNABLE_STAGES,
 	RESULT_CONTRACT,
 	RESULT_CONTRACT_V1_2,
@@ -102,11 +105,27 @@ type FailureKind = NonNullable<EngineView["failure_kind"]>;
 type ArtifactKind = ArtifactListItem["kind"];
 type Scenario = WorkspaceTaskSummary["draft"]["simulation_scenario"];
 
-/** The single allowlisted fixture repository (SOL §H: `local/fixture`). */
+/** The primary allowlisted fixture repository (SOL §H: `local/fixture`). */
 export const FIXTURE_REPO: WorkspaceRepo = {
 	repo_id: "local/fixture",
 	base_ref: "main",
 	required_checks: ["unit", "lint"],
+};
+
+/**
+ * A second allowlisted fixture repository (multi-repository milestone), left empty by default so the
+ * UI's empty-repository states are visible. Its id never matches `local/fixture` as a substring.
+ */
+export const FIXTURE_REPO_EMPTY: WorkspaceRepo = {
+	repo_id: "local/empty-sandbox",
+	base_ref: "main",
+	required_checks: ["unit"],
+};
+
+/** An observed-only repository (telemetry): shown read-only, never assignable or executable. */
+export const FIXTURE_OBSERVED: ObservedRepo = {
+	repo_id: "observed-example/telemetry-only",
+	source: "telemetry",
 };
 
 /** What the evidence of the next sealed result looks like (fixture control). */
@@ -173,6 +192,8 @@ interface FxExecution {
 	failure_kind: FailureKind | null;
 	state_detail: string | null;
 	cancel_requested_at: string | null;
+	/** When an approved Gate 1 queued it (the engine's claim order key). */
+	run_requested_at: string | null;
 	quarantined: boolean;
 	rev: number;
 	runs: FxRun[];
@@ -258,8 +279,16 @@ export class FixtureWorld {
 	private generation = 0;
 	private session: (SessionView & { generation: number }) | null = null;
 	private scopes: OperatorScope[] = ["workspace:read", "workspace:decide"];
-	readonly repos: WorkspaceRepo[] = [structuredClone(FIXTURE_REPO)];
-	private readonly baseSha = synthHex("ba5e", 1, 40);
+	readonly repos: WorkspaceRepo[] = [
+		structuredClone(FIXTURE_REPO),
+		structuredClone(FIXTURE_REPO_EMPTY),
+	];
+	readonly observedRepos: ObservedRepo[] = [structuredClone(FIXTURE_OBSERVED)];
+	/** Visibly synthetic base commit per repository (distinct across repositories). */
+	private baseShaOf(repoId: string): string {
+		const i = this.repos.findIndex((r) => r.repo_id === repoId);
+		return synthHex("ba5e", i + 1, 40);
+	}
 	private readonly policyHash = synthHex("90", 1, 64);
 	private readonly tasks = new Map<string, FxTask>();
 	private readonly order: string[] = [];
@@ -622,10 +651,22 @@ export class FixtureWorld {
 		const tasks = [...this.order].reverse().map((id) => {
 			const t = this.tasks.get(id) as FxTask;
 			const e = this.exec(t);
+			const latest = t.requests.at(-1)?.view ?? null;
 			return {
 				task: t.summary,
 				phase: deriveWorkspacePhase(t.summary.stage, e?.state ?? null),
 				acceptance_validity: this.validity.get(t.summary.id) ?? null,
+				engine: this.engineView(e),
+				latest_request: latest
+					? {
+							id: latest.id,
+							kind: latest.kind,
+							status: latest.status,
+							invalidation_reason: latest.invalidation_reason,
+							created_at: latest.created_at,
+							closed_at: latest.closed_at,
+						}
+					: null,
 			};
 		});
 		const pending = [...this.tasks.values()]
@@ -642,10 +683,46 @@ export class FixtureWorld {
 				live_integration_verified: false,
 			},
 			repos: this.repos,
+			observed_repos: this.observedRepos,
 			tasks,
 			pending_requests: pending,
+			execution_queue: this.executionQueue(),
 			generated_at: this.ts(),
 		});
+	}
+
+	/**
+	 * The hub's global queue (claimOrder) as the fixture can model it: the fixture steps executions by
+	 * hand, so more than one may be active at once — the earliest-requested active one holds the slot
+	 * and the others are listed first in the waiting line (resumable before queued, like the engine).
+	 */
+	private executionQueue(): ExecutionQueue {
+		const byRequest = (a: FxExecution, b: FxExecution) =>
+			(a.run_requested_at ?? "") < (b.run_requested_at ?? "")
+				? -1
+				: (a.run_requested_at ?? "") > (b.run_requested_at ?? "")
+					? 1
+					: 0;
+		const all = [...this.executions.values()];
+		const active = all.filter((e) => ACTIVE.includes(e.state)).sort(byRequest);
+		const queued = all.filter((e) => e.state === "queued").sort(byRequest);
+		const entry = (e: FxExecution): QueueEntry => ({
+			managed_task_id: e.managed_task_id,
+			workspace_task_id: e.workspace_task_id,
+			repo_id:
+				this.tasks.get(e.workspace_task_id)?.summary.repo_id ??
+				FIXTURE_REPO.repo_id,
+			state: e.state,
+			run_requested_at: e.run_requested_at,
+		});
+		// like the hub: only an ACTIVE execution holds the slot; a merely queued one never does
+		const head = active.shift() ?? null;
+		const waiting = [...active, ...queued];
+		return {
+			active: head ? entry(head) : null,
+			queued: waiting.map(entry),
+			claims_paused_by_quarantine: all.some((e) => e.quarantined),
+		};
 	}
 
 	getTask(id: string): R<WorkspaceTaskDetail> {
@@ -825,7 +902,7 @@ export class FixtureWorld {
 			predecessor_proposal_id: t.summary.current_proposal_id,
 			repo_id: repo.repo_id,
 			base_ref: repo.base_ref,
-			base_sha: this.baseSha,
+			base_sha: this.baseShaOf(repo.repo_id),
 			required_checks: repo.required_checks,
 			draft: draft.data,
 		};
@@ -895,6 +972,7 @@ export class FixtureWorld {
 			failure_kind: null,
 			state_detail: null,
 			cancel_requested_at: null,
+			run_requested_at: null,
 			quarantined: false,
 			rev: 1,
 			runs: [],
@@ -1193,6 +1271,7 @@ export class FixtureWorld {
 		if (r.view.kind === "run") {
 			if (body.action === "approve") {
 				e.run_decision_id = decisionId;
+				e.run_requested_at = at;
 				this.touchExec(e, "queued");
 			} else {
 				e.failure_kind = "cancelled";

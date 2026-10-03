@@ -14,7 +14,9 @@ import type {
 	DecisionAction,
 	EngineView,
 	EvidenceStatus,
+	ExecutionQueue,
 	InvalidationReason,
+	ObservedRepo,
 	WorkspaceErrorBody,
 	WorkspacePhase,
 	WorkspaceStage,
@@ -765,6 +767,83 @@ export function requestStatusLine(
 	return APPROVAL_STATUS_LABEL[r.status];
 }
 
+// ── multiple repositories (API v1.2) ─────────────────────────────────────────
+
+/** Where the hub learned of an observed-only repository. */
+export const OBSERVED_SOURCE_LABEL: Readonly<
+	Record<ObservedRepo["source"], string>
+> = {
+	github: "GitHub metadata",
+	local_checkout: "local checkout",
+	telemetry: "session telemetry",
+};
+
+export const OBSERVED_GROUP_NOTE =
+	"Seen by the hub but not on the managed allowlist: these repositories cannot be assigned work, approved or run.";
+
+export const OBSERVED_REPO_NOTE =
+	"Observed only — not on the allowlist. No work can be assigned, approved or run in this repository.";
+
+export const UNKNOWN_REPO_NOTE =
+	"This repository is not on the allowlist and not known to this hub.";
+
+export const QUARANTINE_PAUSE_NOTE =
+	"claims paused: a process is quarantined (any repository)";
+
+export interface QueueLine {
+	/** slot = holds the single engine slot; queued = waiting (position known); unknown = queued, position not in the record. */
+	kind: "slot" | "queued" | "unknown";
+	text: string;
+}
+
+/**
+ * The global queue line of one execution (`[data-testid=queue-status]`, briefing): exactly what the
+ * hub's execution queue records — the engine runs ONE execution at a time across every repository.
+ * null when the execution is neither in the queue nor queued (nothing to say).
+ */
+export function queueLine(
+	queue: ExecutionQueue | null | undefined,
+	managedTaskId: string,
+	engineState: TaskState,
+	ownRepo: string,
+	titleOf: (workspaceTaskId: string | null) => string | null,
+): QueueLine | null {
+	const paused = queue?.claims_paused_by_quarantine ?? false;
+	if (queue?.active?.managed_task_id === managedTaskId)
+		return {
+			kind: "slot",
+			text: "Holds the engine slot: the only execution running across all repositories.",
+		};
+	const idx =
+		queue?.queued.findIndex((q) => q.managed_task_id === managedTaskId) ?? -1;
+	if (queue && idx >= 0) {
+		const parts = [`Queued · position ${idx + 1} of ${queue.queued.length}`];
+		const a = queue.active;
+		if (a) {
+			const title =
+				titleOf(a.workspace_task_id) ??
+				"an execution not linked to a workspace task";
+			parts.push(
+				`waiting behind ${a.repo_id} · ${title}${a.repo_id !== ownRepo ? " (another repository)" : ""}`,
+			);
+		} else if (idx === 0) parts.push("next to be claimed");
+		else
+			parts.push(
+				`waiting behind ${idx} earlier execution${idx === 1 ? "" : "s"}`,
+			);
+		if (paused) parts.push(QUARANTINE_PAUSE_NOTE);
+		return { kind: "queued", text: parts.join(" · ") };
+	}
+	if (engineState === "queued")
+		return {
+			kind: "unknown",
+			text: paused
+				? `Queued · ${QUARANTINE_PAUSE_NOTE}`
+				: "Queued · queue position unknown",
+		};
+	return null;
+}
+
 /** UTC clock time for "last confirmed" and history lines (deterministic, no locale). */
 export function clockTime(iso: string | null): string {
 	if (!iso) return "never";
@@ -847,6 +926,10 @@ export function allStaticCopy(): string[] {
 		SIMULATION_NOTE,
 		FIXTURE_NOTE,
 		OUTCOME_UNKNOWN,
+		OBSERVED_GROUP_NOTE,
+		OBSERVED_REPO_NOTE,
+		UNKNOWN_REPO_NOTE,
+		QUARANTINE_PAUSE_NOTE,
 	];
 	const tables = [
 		PHASE_LABEL,
@@ -864,6 +947,7 @@ export function allStaticCopy(): string[] {
 		ACCEPTED_HISTORY_EVIDENCE_LABEL,
 		CRITERION_STATUS_LABEL,
 		CHECK_OUTCOME_LABEL,
+		OBSERVED_SOURCE_LABEL,
 	] as Record<string, string | undefined>[];
 	for (const table of tables)
 		for (const v of Object.values(table)) if (v) out.push(v);

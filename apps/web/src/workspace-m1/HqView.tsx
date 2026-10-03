@@ -58,19 +58,47 @@ function titleOf(
 	return tasks.find((t) => t.task.id === taskId)?.task.draft.title ?? "";
 }
 
+/** The repository of a task as the one cache knows it (detail first, else the snapshot row). */
+function repoOf(
+	taskId: string | null,
+	d: WorkspaceTaskDetail | null,
+	tasks: { task: { id: string; repo_id: string } }[],
+): string | null {
+	if (!taskId) return null;
+	if (d?.task.id === taskId) return d.task.repo_id;
+	return tasks.find((t) => t.task.id === taskId)?.task.repo_id ?? null;
+}
+
 function Inbox() {
 	const { store, state } = useWs();
 	const [gate, setGate] = useState<GateFilter>("all");
+	const [repo, setRepo] = useState<string>("all");
 	const [query, setQuery] = useState("");
 	const id = useId();
 	const tasks = state.snapshot?.tasks ?? [];
 	const all = state.snapshot?.pending_requests ?? [];
+	const repoFor = (taskId: string) =>
+		tasks.find((x) => x.task.id === taskId)?.task.repo_id ?? "";
+	// repositories with pending requests, in allowlist order (stable across polls)
+	const order = (state.snapshot?.repos ?? []).map((r) => r.repo_id);
+	const pendingRepos = [
+		...new Set(all.map((r) => repoFor(r.workspace_task_id)).filter(Boolean)),
+	].sort((a, b) => {
+		const ia = order.indexOf(a);
+		const ib = order.indexOf(b);
+		return (ia < 0 ? order.length : ia) - (ib < 0 ? order.length : ib);
+	});
+	// a filter for a repository that no longer has pending requests still applies (shows none) and stays selectable
+	const repoOptions =
+		repo !== "all" && !pendingRepos.includes(repo)
+			? [...pendingRepos, repo]
+			: pendingRepos;
 	const q = query.trim().toLowerCase();
 	const items = all.filter((r) => {
 		if (gate !== "all" && r.kind !== gate) return false;
+		if (repo !== "all" && repoFor(r.workspace_task_id) !== repo) return false;
 		if (!q) return true;
-		const t = tasks.find((x) => x.task.id === r.workspace_task_id);
-		return `${titleOf(r.workspace_task_id, tasks)} ${t?.task.repo_id ?? ""}`
+		return `${titleOf(r.workspace_task_id, tasks)} ${repoFor(r.workspace_task_id)}`
 			.toLowerCase()
 			.includes(q);
 	});
@@ -90,6 +118,19 @@ function Inbox() {
 					<option value="all">All gates</option>
 					<option value="run">Execution approval</option>
 					<option value="result">Result acceptance</option>
+				</select>
+				<label htmlFor={`${id}-repo`}>Repository</label>
+				<select
+					id={`${id}-repo`}
+					value={repo}
+					onChange={(e) => setRepo(e.target.value)}
+				>
+					<option value="all">All repositories</option>
+					{repoOptions.map((r) => (
+						<option key={r} value={r}>
+							{r}
+						</option>
+					))}
 				</select>
 				<label htmlFor={`${id}-q`}>Search</label>
 				<input
@@ -117,6 +158,8 @@ function Inbox() {
 									type="button"
 									className="wsm1-item"
 									data-request-id={r.id}
+									data-gate={GATE_ATTR[r.kind]}
+									data-repo-id={t?.task.repo_id ?? undefined}
 									aria-current={selected ? "true" : undefined}
 									onClick={() =>
 										store.navigate({
@@ -130,9 +173,11 @@ function Inbox() {
 									<span className="wsm1-item-title wsm1-wrap">
 										{inboxItemName(r, titleOf(r.workspace_task_id, tasks))}
 									</span>
-									<span className="wsm1-muted">
-										{t?.task.repo_id ?? ""} · waiting since{" "}
-										{dateTime(r.created_at)}
+									<span className="wsm1-muted wsm1-wrap">
+										<span data-testid="inbox-repo">
+											{t?.task.repo_id ?? "repository unknown"}
+										</span>{" "}
+										· waiting since {dateTime(r.created_at)}
 									</span>
 								</button>
 							</li>
@@ -409,6 +454,11 @@ function ApprovalDocument() {
 	const acc = d ? acceptanceStatus(d) : "none";
 	const obsoleteRecord = isObsoleteGrant(request);
 	const obsoletePending = pendingObsolete(d, request);
+	const repoId = repoOf(
+		request.workspace_task_id,
+		d,
+		state.snapshot?.tasks ?? [],
+	);
 	return (
 		<section
 			aria-label="Approval document"
@@ -423,7 +473,12 @@ function ApprovalDocument() {
 					{GATE_NAME[request.kind]} · {title || "Untitled task"}
 				</h2>
 				<div className="wsm1-identity">
-					<span>{d?.task.repo_id ?? ""}</span>
+					<span className="wsm1-repo-label">
+						Repository{" "}
+						<strong data-testid="document-repo" className="wsm1-wrap">
+							{repoId ?? "unknown"}
+						</strong>
+					</span>
 					{proposal ? (
 						<span>
 							Proposal v
@@ -437,6 +492,22 @@ function ApprovalDocument() {
 						</span>
 					)}
 					<ProvenanceChips snapshot={state.snapshot} source={state.source} />
+					{repoId ? (
+						<button
+							type="button"
+							className="wsm1-link-button"
+							onClick={() =>
+								store.navigate({
+									view: "projects",
+									repoId,
+									taskId: request.workspace_task_id,
+									requestId: null,
+								})
+							}
+						>
+							Open task in Projects
+						</button>
+					) : null}
 				</div>
 				<dl className="wsm1-status-row">
 					<KV label="Request">

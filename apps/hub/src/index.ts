@@ -4,7 +4,10 @@ import { Hono } from "hono";
 import { openDb } from "./db.ts";
 import { runConfiguredSync } from "./github/sync.ts";
 import { loadManagedConfig, type ManagedConfig } from "./managed/config.ts";
-import { Orchestrator } from "./managed/orchestrator.ts";
+import {
+	Orchestrator,
+	type OrchestratorHooks,
+} from "./managed/orchestrator.ts";
 import type { ManagedDeps } from "./managed/service.ts";
 import { createAdapters, startWorker } from "./managed/worker.ts";
 import { createApi } from "./routes/api.ts";
@@ -112,6 +115,11 @@ export interface HubOptions {
 	managed?: { config: ManagedConfig; token: string | undefined };
 	managedIdleMs?: number;
 	/**
+	 * Test-only engine boundaries (awaited at named points, e.g. holding termination confirmation so a
+	 * browser test can observe "cancellation requested" across a reload). `main()` never sets this.
+	 */
+	managedHooks?: OrchestratorHooks;
+	/**
 	 * Workspace M1: ephemeral operator credential + exact UI origin (+ test-only TTLs, clock, read-only
 	 * principal). Needs `managed`. Configured → workspace mode: simulated only, legacy API 410.
 	 */
@@ -155,6 +163,7 @@ export function startHub(opts: HubOptions) {
 					db: opts.db,
 					config: managedDeps.config,
 					adapters: createAdapters(managedDeps.config),
+					...(opts.managedHooks ? { hooks: opts.managedHooks } : {}),
 					// workspace mode: every stage needs an approved, still-valid Gate-1 decision (L3),
 					// and engine changes are reconciled into workspace stages (L6) — never broadcast
 					...(workspace

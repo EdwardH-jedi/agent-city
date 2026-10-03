@@ -544,7 +544,7 @@ function initializeCampusEngine(
 			if (!p) continue;
 			p.name.textContent = r.label;
 			const bits: string[] = [];
-			if (r.active_tasks > 0) bits.push(`${r.active_tasks} running`);
+			if (r.active_tasks > 0) bits.push(`${r.active_tasks} in progress`);
 			if (r.pending_requests > 0) bits.push(`${r.pending_requests} at HQ`);
 			p.state.textContent = bits.length > 0 ? bits.join(" · ") : "Idle";
 			p.root.dataset.tone = r.has_invalid_acceptance

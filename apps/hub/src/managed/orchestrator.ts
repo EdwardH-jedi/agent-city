@@ -117,8 +117,16 @@ export interface OrchestratorDeps {
 }
 
 export interface OrchestratorHooks {
+	/**
+	 * `before_cancel_confirm`: a claimed task whose cancel was requested is about to record its end
+	 * (cancelled, or interrupted + quarantine when termination is unconfirmed). Awaited OUTSIDE any
+	 * transaction, after this claim's termination proof (`claim.unconfirmed`) is final; the heartbeat
+	 * keeps renewing the lease meanwhile, so no reconciliation records anything during a hold. (The
+	 * commit-point path `cancelWins` runs inside the commit transaction and is not hooked; a cancel
+	 * that aborts a running child never reaches it.)
+	 */
 	at?(
-		point: "before_review" | "before_finalize",
+		point: "before_review" | "before_finalize" | "before_cancel_confirm",
 		taskId: string,
 	): Promise<void> | void;
 }
@@ -417,6 +425,9 @@ export class Orchestrator {
 				)
 					return;
 				if (t.cancel_requested_at || claim.unconfirmed.length > 0) {
+					// deterministic test boundary only (production never installs hooks)
+					if (t.cancel_requested_at)
+						await this.d.hooks?.at?.("before_cancel_confirm", t.id);
 					this.finishCancel(t, claim);
 					return;
 				}

@@ -623,10 +623,19 @@
 
 .wsm1-filters {
 	display: grid;
-	grid-template-columns: auto minmax(0, 0.8fr) auto minmax(0, 1.2fr);
+	grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
 	gap: 6px 8px;
 	align-items: center;
 	margin-bottom: 10px;
+}
+/* multi-repository milestone: Gate + Repository on the first row, Search across the second */
+.wsm1-filters select {
+	min-width: 0;
+	max-width: 100%;
+}
+.wsm1-filters input[type="search"] {
+	grid-column: span 3;
+	min-width: 0;
 }
 
 /* ── right panel: sticky head + foot, scrolling body ───────────────────── */
@@ -1101,4 +1110,233 @@
 	max-width: 100%;
 	white-space: normal;
 	overflow-wrap: anywhere;
+}
+
+/* ── multi-repository milestone (Worker B) ─────────────────────────────── */
+
+/* the left column never clips: the campus, repositories and briefing keep their natural height,
+   the task list takes the rest (at least a usable minimum, scrolling inside); when that does not fit
+   the viewport, the column scrolls instead of squeezing a card */
+.wsm1-left {
+	overflow-y: auto;
+}
+.wsm1-repos {
+	flex: none;
+	max-height: 300px;
+	overflow: auto;
+}
+.wsm1-tasks {
+	flex: 1 1 0;
+	min-height: 180px;
+}
+/* right column of Projects: the repository briefing (compact) above the task panel, which keeps the
+   rest of the height (its head and foot stay in view; its body scrolls) */
+.wsm1-right {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	min-height: 0;
+	min-width: 0;
+}
+.wsm1-right > .wsm1-panel {
+	flex: 1 1 0;
+	min-height: 0;
+}
+/* the repository navigator stays compact: the campus above already draws the buildings */
+.wsm1-repos .wsm1-card-head {
+	margin-bottom: 8px;
+}
+.wsm1-repos .wsm1-campus {
+	gap: 8px;
+}
+.wsm1.wsm1 .wsm1-repos .wsm1-building {
+	padding: 7px 9px;
+	gap: 10px;
+}
+.wsm1-repos .wsm1-facade {
+	width: 36px;
+	height: 46px;
+	border-bottom-width: 3px;
+}
+
+/* observed-only repositories: visibly a different, read-only kind (no facade, dashed outline) */
+.wsm1-observed {
+	margin-top: 10px;
+	padding-top: 8px;
+	border-top: 1px solid var(--ws-line-2);
+}
+.wsm1 .wsm1-observed-head {
+	font-size: 12.5px;
+	margin-bottom: 6px;
+	overflow-wrap: anywhere;
+}
+.wsm1-observed-list {
+	list-style: none;
+	padding: 0;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.wsm1-observed-list li {
+	min-width: 0;
+	max-width: 100%;
+}
+.wsm1 .wsm1-observed-repo {
+	display: block;
+	max-width: 100%;
+	text-align: left;
+	padding: 5px 9px;
+	background: var(--ws-surface);
+	border: 1px dashed var(--ws-line);
+	border-radius: 5px;
+}
+.wsm1 .wsm1-observed-repo[aria-current="true"] {
+	border-style: solid;
+	border-color: var(--ws-accent);
+	box-shadow: inset 3px 0 0 var(--ws-accent);
+}
+.wsm1-observed-repo .wsm1-building-name {
+	font-size: 12.5px;
+}
+.wsm1-observed-repo .wsm1-muted {
+	font-size: 11.5px;
+}
+
+/* repository identity of the shown task / document */
+.wsm1-repo-label strong {
+	color: var(--ws-ink);
+	font-weight: 650;
+}
+.wsm1-queue-status {
+	margin: 6px 0 0;
+	padding: 5px 8px;
+	font-size: 12px;
+	color: var(--ws-ink-2);
+	background: var(--ws-accent-soft);
+	border-left: 3px solid var(--ws-accent);
+	border-radius: 0 4px 4px 0;
+}
+
+/* a navigation control that reads as a link (never a command) */
+.wsm1 .wsm1-link-button {
+	background: none;
+	border: none;
+	padding: 0;
+	color: var(--ws-accent);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	font-size: 12.5px;
+	text-align: left;
+	cursor: pointer;
+}
+.wsm1 .wsm1-link-button:hover {
+	color: var(--ws-accent-strong);
+}
+
+/* CEO briefing: summary first, details on demand; compact so the task list stays prominent */
+.wsm1-briefing {
+	flex: 0 1 auto;
+	min-height: 0;
+	max-height: 34%;
+	overflow: auto;
+	border-left: 3px solid var(--ws-graphite-2);
+}
+.wsm1-briefing .wsm1-card-head {
+	margin-bottom: 6px;
+	flex-wrap: wrap;
+}
+.wsm1-briefing-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.wsm1-ceo-badge {
+	flex: none;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	background:
+		radial-gradient(circle at 50% 36%, #e8d2b9 0 27%, transparent 28%),
+		linear-gradient(180deg, transparent 0 58%, var(--ws-graphite) 58%);
+	background-color: #cdd5df;
+	border: 1px solid var(--ws-graphite-2);
+}
+.wsm1-briefing-fresh {
+	font-size: 11.5px;
+	color: var(--ws-muted);
+	overflow-wrap: anywhere;
+}
+.wsm1-briefing-fresh-off {
+	color: var(--ws-amber);
+	font-weight: 600;
+}
+.wsm1 .wsm1-briefing-summary {
+	font-size: 13px;
+	font-weight: 600;
+	margin-bottom: 4px;
+	overflow-wrap: anywhere;
+}
+.wsm1 .wsm1-briefing-next {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 10px;
+	align-items: baseline;
+	font-size: 12.5px;
+	color: var(--ws-ink-2);
+	margin-bottom: 4px;
+	overflow-wrap: anywhere;
+	min-width: 0;
+}
+/* one line; the full label stays the accessible name and the tooltip */
+.wsm1 .wsm1-briefing-next .wsm1-link-button {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.wsm1-briefing-note {
+	margin-bottom: 4px;
+}
+.wsm1 .wsm1-briefing-details > summary {
+	margin-bottom: 0;
+	cursor: pointer;
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--ws-ink-2);
+	padding: 2px 0;
+}
+.wsm1-briefing-section {
+	margin-top: 8px;
+}
+.wsm1-briefing-section h3 {
+	font-size: 12px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--ws-ink-2);
+	margin-bottom: 4px;
+}
+.wsm1-briefing-items {
+	list-style: none;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.wsm1-briefing-items li {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 8px;
+	align-items: baseline;
+	padding: 5px 8px;
+	background: var(--ws-surface-2);
+	border: 1px solid var(--ws-line-2);
+	border-radius: 4px;
+	font-size: 12.5px;
+	min-width: 0;
+}
+.wsm1-briefing-item-title {
+	font-weight: 650;
+}
+.wsm1-briefing-items .wsm1-muted {
+	font-size: 11.5px;
 }

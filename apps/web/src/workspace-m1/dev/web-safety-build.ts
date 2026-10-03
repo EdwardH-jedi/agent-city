@@ -86,7 +86,7 @@ for (const w of externalized) problems.push(`warning: ${w.split("\n")[0]}`);
 
 const main = readFileSync(join(outDir, "probe.js"), "utf8");
 for (const marker of [
-	"agentcity.workspace-api/v1.1",
+	"agentcity.workspace-api/v1.2",
 	"operator:edward",
 	"agentcity.result/v1",
 ])
@@ -111,7 +111,7 @@ const expected = {
 };
 if (JSON.stringify(result) !== JSON.stringify(expected))
 	problems.push(`probe result ${JSON.stringify(result)}`);
-if (mod.WORKSPACE_API_CONTRACT !== "agentcity.workspace-api/v1.1")
+if (mod.WORKSPACE_API_CONTRACT !== "agentcity.workspace-api/v1.2")
 	problems.push("barrel re-export missing from the bundle's exports");
 
 console.log(

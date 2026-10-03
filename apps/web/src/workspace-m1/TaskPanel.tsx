@@ -36,6 +36,7 @@ import {
 	PHASE_LABEL,
 	PHASE_TONE,
 	proposalVersionLabel,
+	queueLine,
 	requestStatusLine,
 	shortHash,
 	UNMAPPED_HINT,
@@ -68,17 +69,20 @@ function EmptyPanel({ title, text }: { title: string; text: string }) {
 }
 
 export function TaskPanel() {
-	const { state } = useWs();
+	const { store, state } = useWs();
 	const { route, composing } = state;
 	if (!route.taskId && composing && composing.repoId === route.repoId)
-		return <ComposePanel repoId={composing.repoId} />;
+		// keyed by the composition: a new composition (e.g. in another repository) never inherits a form
+		return <ComposePanel key={composing.key} repoId={composing.repoId} />;
 	if (!route.taskId)
 		return (
 			<EmptyPanel
 				title="No task selected"
 				text={
 					state.routeNotice ??
-					"Select a task, or choose a repository and Assign work."
+					(route.repoId && store.repoKind(route.repoId) === "observed"
+						? "This repository is observed only: there is no work to assign or open here."
+						: "Select a task, or choose a repository and Assign work.")
 				}
 			/>
 		);
@@ -389,10 +393,16 @@ function ComposePanel({ repoId }: { repoId: string }) {
 	return (
 		<section aria-label="Task detail" className="wsm1-panel">
 			<div className="wsm1-panel-head">
-				<h2 id={PANEL_TITLE_ID} tabIndex={-1}>
+				<h2 id={PANEL_TITLE_ID} tabIndex={-1} className="wsm1-wrap">
 					New task · {repoId}
 				</h2>
 				<div className="wsm1-identity">
+					<span className="wsm1-repo-label">
+						Repository{" "}
+						<strong data-testid="task-repo" className="wsm1-wrap">
+							{repoId}
+						</strong>
+					</span>
 					<span>Unsaved draft</span>
 					<ProvenanceChips snapshot={state.snapshot} source={state.source} />
 				</div>
@@ -640,6 +650,18 @@ function TaskDetail({ d }: { d: WorkspaceTaskDetail }) {
 		d.task.stage_detail !== engine?.state_detail;
 	const cancelConfirmedEarly =
 		cancel === "confirmed" && stage === "cancel_requested";
+	// the engine runs one execution at a time across every repository: say where this one stands
+	const queue = engine
+		? queueLine(
+				state.snapshot?.execution_queue,
+				engine.managed_task_id,
+				engine.state,
+				d.task.repo_id,
+				(id) =>
+					state.snapshot?.tasks.find((t) => t.task.id === id)?.task.draft
+						.title || null,
+			)
+		: null;
 
 	return (
 		<section
@@ -653,7 +675,12 @@ function TaskDetail({ d }: { d: WorkspaceTaskDetail }) {
 					{proposal?.snapshot.title ?? (d.task.draft.title || "Untitled task")}
 				</h2>
 				<div className="wsm1-identity">
-					<span>{d.task.repo_id}</span>
+					<span className="wsm1-repo-label">
+						Repository{" "}
+						<strong data-testid="task-repo" className="wsm1-wrap">
+							{d.task.repo_id}
+						</strong>
+					</span>
 					<span title={d.task.id}>Task …{d.task.id.slice(-8)}</span>
 					{proposal ? (
 						<span>
@@ -722,6 +749,15 @@ function TaskDetail({ d }: { d: WorkspaceTaskDetail }) {
 						detail={d}
 						freshness={freshnessOf(d.acceptance_validity, state.conn)}
 					/>
+				) : null}
+				{queue ? (
+					<p
+						className="wsm1-queue-status wsm1-wrap"
+						data-testid="queue-status"
+						data-queue={queue.kind}
+					>
+						{queue.text}
+					</p>
 				) : null}
 				<output aria-label="Task status" className="wsm1-task-status">
 					{cancelConfirmedEarly

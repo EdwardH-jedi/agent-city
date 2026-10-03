@@ -311,10 +311,49 @@ export function requestCancel(
 
 const ACTIVE_SQL = ACTIVE_TASK_STATES.map((s) => `'${s}'`).join(", ");
 
+/** The engine's single slot and what waits for it, in claim order (see `claimOrder`). */
+export interface ClaimOrder {
+	/** Tasks holding a lease (the single slot; normally at most one). */
+	leased: ManagedTask[];
+	/** Active tasks without a lease (released by reconciliation): claimed first, oldest update first. */
+	resumable: ManagedTask[];
+	/** Queued tasks without a lease: claimed after every resumable one, oldest run request first. */
+	queued: ManagedTask[];
+	/** An open quarantine: nothing is claimed in any repository until it is released. */
+	quarantined: boolean;
+}
+
+/**
+ * The ONE definition of the engine's claim order, used by `claimNext` (inside its transaction) and by the
+ * workspace read model's global execution queue, so the queue the operator sees is the order the worker
+ * claims in. `limit` bounds each list.
+ */
+export function claimOrder(db: Database, limit = 500): ClaimOrder {
+	const rows = (sql: string) =>
+		db
+			.query<Row, [number]>(sql)
+			.all(limit)
+			.map((r) => toTask(r));
+	return {
+		leased: rows(
+			"SELECT * FROM managed_tasks WHERE lease_owner IS NOT NULL ORDER BY updated_at, id LIMIT ?",
+		),
+		resumable: rows(
+			`SELECT * FROM managed_tasks WHERE state IN (${ACTIVE_SQL}) AND lease_owner IS NULL ORDER BY updated_at, id LIMIT ?`,
+		),
+		queued: rows(
+			"SELECT * FROM managed_tasks WHERE state = 'queued' AND lease_owner IS NULL ORDER BY run_requested_at, created_at, id LIMIT ?",
+		),
+		// An execution whose child could not be proven gone is still "running" as far as the
+		// single-worker policy is concerned.
+		quarantined: listQuarantine(db, { open: true }).length > 0,
+	};
+}
+
 /**
  * Claim at most one task for `worker`. One managed task at a time: nothing is claimed while another
- * task is leased or active. A task released by reconciliation (active, no lease) resumes first.
- * Every claim moves the fence token.
+ * task is leased or a quarantine is open. A task released by reconciliation (active, no lease)
+ * resumes first. Every claim moves the fence token.
  */
 export function claimNext(
 	db: Database,
@@ -322,36 +361,16 @@ export function claimNext(
 	leaseUntil: string,
 ): ManagedTask | null {
 	return tx(db, () => {
-		const lease = (id: string, fence: number) => {
-			update(db, "managed_tasks", id, {
-				lease_owner: worker,
-				lease_until: leaseUntil,
-				fence_token: fence + 1,
-			});
-			return toTask(taskRow(db, id) as Row);
-		};
-		const busy = db
-			.query<{ n: number }, []>(
-				"SELECT count(*) AS n FROM managed_tasks WHERE lease_owner IS NOT NULL",
-			)
-			.get();
-		if ((busy?.n ?? 0) > 0) return null;
-		// An execution whose child could not be proven gone is still "running" as far as the
-		// single-worker policy is concerned.
-		if (listQuarantine(db, { open: true }).length > 0) return null;
-		const resumable = db
-			.query<Row, []>(
-				`SELECT * FROM managed_tasks WHERE state IN (${ACTIVE_SQL}) ORDER BY updated_at LIMIT 1`,
-			)
-			.get();
-		if (resumable)
-			return lease(resumable.id as string, resumable.fence_token as number);
-		const next = db
-			.query<Row, []>(
-				"SELECT * FROM managed_tasks WHERE state = 'queued' ORDER BY run_requested_at, created_at LIMIT 1",
-			)
-			.get();
-		return next ? lease(next.id as string, next.fence_token as number) : null;
+		const order = claimOrder(db, 1);
+		if (order.leased.length > 0 || order.quarantined) return null;
+		const next = order.resumable[0] ?? order.queued[0];
+		if (!next) return null;
+		update(db, "managed_tasks", next.id, {
+			lease_owner: worker,
+			lease_until: leaseUntil,
+			fence_token: next.fence_token + 1,
+		});
+		return toTask(taskRow(db, next.id) as Row);
 	});
 }
 

@@ -7,6 +7,10 @@
 //     apps/web/node_modules/.vite), proxy → only this run's hub; the hub's allowed origin is exactly
 //     this Vite origin (picked before the hub starts)
 //   - restartHub(): stop the hub, reopen the same DB file, start a new hub (new boot) on the same port
+//   - multi-repository milestone: optional extra disposable allowlisted fixture repos (each its own git
+//     repository with a distinct id, path and base commit), observed-only repos written to the telemetry
+//     `repos` table exactly like a GitHub sync would (never allowlisted, never executable), and test-only
+//     engine hooks (e.g. a barrier that holds termination confirmation)
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,9 +19,11 @@ import react from "@vitejs/plugin-react";
 import { createServer, type ViteDevServer } from "vite";
 import { openDb } from "../../hub/src/db.ts";
 import { startHub } from "../../hub/src/index.ts";
+import type { OrchestratorHooks } from "../../hub/src/managed/orchestrator.ts";
 import {
 	type Fixture,
 	type FixtureOptions,
+	type FixtureRepo,
 	makeFixture,
 } from "../../hub/src/managed/testkit.ts";
 import type { WorkspaceHubOptions } from "../../hub/src/workspace-hub.ts";
@@ -37,7 +43,22 @@ export function freePort(): number {
 
 export interface WorkspaceEnvOptions {
 	/** Extra fixture options (verification commands, limits…). Live stubs are never enabled here. */
-	fixture?: Omit<FixtureOptions, "dbFile" | "repoId" | "liveStubs">;
+	fixture?: Omit<
+		FixtureOptions,
+		"dbFile" | "repoId" | "liveStubs" | "extraRepos"
+	>;
+	/**
+	 * Labels of further allowlisted fixture repositories (`[a-z0-9-]`), each → `local/m1-<label>-<nonce>`.
+	 * The primary stays `local/m1-fixture-<nonce>` (`repoId`).
+	 */
+	extraRepos?: string[];
+	/**
+	 * Labels of observed-only repositories (`[a-z0-9-]`), each → `observed-example/<label>-<nonce>`, inserted
+	 * into the telemetry `repos` table like a GitHub sync row. Never on the managed allowlist.
+	 */
+	observedRepos?: string[];
+	/** Test-only engine boundaries passed to the hub's orchestrator (kept across restartHub()). */
+	managedHooks?: OrchestratorHooks;
 	/** Test-only auth knobs (clamped by the auth module). */
 	auth?: Pick<
 		WorkspaceHubOptions,
@@ -56,6 +77,10 @@ export interface WorkspaceEnvOptions {
 export interface WorkspaceEnv {
 	fx: Fixture;
 	repoId: string;
+	/** Every allowlisted fixture repository, primary first (`repos[0].id === repoId`). */
+	repos: FixtureRepo[];
+	/** Observed-only repository ids (telemetry rows; not executable). */
+	observedRepoIds: string[];
 	hubUrl: string;
 	/** The UI origin — also the hub's exact allowed origin. Browse here. */
 	uiUrl: string;
@@ -73,7 +98,28 @@ export async function startWorkspaceEnv(
 ): Promise<WorkspaceEnv> {
 	const nonce = randomBytes(4).toString("hex");
 	const repoId = `local/m1-fixture-${nonce}`;
-	const fx = makeFixture({ ...o.fixture, dbFile: true, repoId });
+	const label = (l: string) => {
+		if (!/^[a-z0-9-]{1,30}$/.test(l)) throw new Error(`bad repo label ${l}`);
+		return l;
+	};
+	const fx = makeFixture({
+		...o.fixture,
+		dbFile: true,
+		repoId,
+		extraRepos: (o.extraRepos ?? []).map((l) => ({
+			id: `local/m1-${label(l)}-${nonce}`,
+			label: l,
+		})),
+	});
+	const observedRepoIds = (o.observedRepos ?? []).map(
+		(l) => `observed-example/${label(l)}-${nonce}`,
+	);
+	for (const id of observedRepoIds)
+		fx.db
+			.query(
+				"INSERT INTO repos (id, district, is_local_only, synced_at) VALUES (?, 'uncategorized', 0, ?)",
+			)
+			.run(id, new Date().toISOString());
 	const credential = `op-${randomBytes(24).toString("hex")}`;
 	const readOnlyCredential = o.readOnly
 		? `ro-${randomBytes(24).toString("hex")}`
@@ -94,6 +140,7 @@ export async function startWorkspaceEnv(
 			port: hubPort,
 			managed: { config: fx.config, token: undefined },
 			managedIdleMs: o.managedIdleMs ?? 50,
+			...(o.managedHooks ? { managedHooks: o.managedHooks } : {}),
 			workspace: {
 				...o.auth,
 				operator_credential: credential,
@@ -150,6 +197,8 @@ export async function startWorkspaceEnv(
 	return {
 		fx,
 		repoId,
+		repos: fx.repos,
+		observedRepoIds,
 		hubUrl,
 		uiUrl,
 		credential,

@@ -16,9 +16,13 @@ import type {
 	ArtifactTextResponse,
 	DecisionAction,
 	DecisionResponse,
+	EngineView,
+	RequestSummary,
 	SessionView,
 	WorkspaceSnapshot,
 	WorkspaceTaskDetail,
+	WorkspaceTaskListItem,
+	WorkspaceTaskSummary,
 	WorkspaceTaskView,
 } from "@agent-city/schema/workspace-m1";
 import {
@@ -201,9 +205,54 @@ function withMergedValidity<T extends { acceptance_validity?: Validity }>(
 const byCreated = (a: { created_at: string }, b: { created_at: string }) =>
 	a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0;
 
+/** The snapshot's `latest_request` summary of a task view's requests (newest first, as the hub lists them). */
+export function latestRequestOf(
+	requests: readonly ApprovalRequestView[],
+): RequestSummary | null {
+	const r = requests[0];
+	return r
+		? {
+				id: r.id,
+				kind: r.kind,
+				status: r.status,
+				invalidation_reason: r.invalidation_reason,
+				created_at: r.created_at,
+				closed_at: r.closed_at,
+			}
+		: null;
+}
+
 /**
- * Latest snapshot wins, but no task row may regress to a lower rev — and where the cached row is
- * newer, that task's pending requests are kept from the cache too (inbox membership never regresses).
+ * Older list row = a lower task rev, or the same task rev with an older engine view of the SAME
+ * execution (engine progress does not bump the task rev; mirrors `isOlderDetail`).
+ */
+export function isOlderItem(
+	incoming: {
+		task: Pick<WorkspaceTaskSummary, "rev">;
+		engine?: EngineView | null;
+	},
+	current: {
+		task: Pick<WorkspaceTaskSummary, "rev">;
+		engine?: EngineView | null;
+	},
+): boolean {
+	if (incoming.task.rev !== current.task.rev)
+		return incoming.task.rev < current.task.rev;
+	const ie = incoming.engine;
+	const ce = current.engine;
+	return !!(
+		ie &&
+		ce &&
+		ie.managed_task_id === ce.managed_task_id &&
+		ie.rev < ce.rev
+	);
+}
+
+/**
+ * Latest snapshot wins, but no task row may regress (lower task rev, or an older engine view of the
+ * same execution) — and where the cached row has the newer task rev, that task's pending requests are
+ * kept from the cache too (inbox membership never regresses). Snapshot-level facts (repos, observed
+ * repos, the global execution queue) follow the latest answer.
  */
 export function mergeSnapshot(
 	prev: WorkspaceSnapshot | null,
@@ -214,8 +263,8 @@ export function mergeSnapshot(
 	const keptOld = new Set<string>();
 	const tasks = next.tasks.map((t) => {
 		const o = old.get(t.task.id);
-		if (o && o.task.rev > t.task.rev) {
-			keptOld.add(t.task.id);
+		if (o && isOlderItem(t, o)) {
+			if (o.task.rev > t.task.rev) keptOld.add(t.task.id);
 			return withMergedValidity(o, t);
 		}
 		return withMergedValidity(t, o);
@@ -235,18 +284,21 @@ export function foldTaskIntoSnapshot(
 	snap: WorkspaceSnapshot | null,
 	v: Pick<
 		WorkspaceTaskView,
-		"task" | "phase" | "approval_requests" | "acceptance_validity"
+		"task" | "phase" | "approval_requests" | "acceptance_validity" | "engine"
 	>,
 ): WorkspaceSnapshot | null {
 	if (!snap) return snap;
 	const i = snap.tasks.findIndex((t) => t.task.id === v.task.id);
 	const cur = i >= 0 ? snap.tasks[i] : undefined;
-	if (cur && cur.task.rev > v.task.rev) return snap;
-	const item = {
+	const engine = v.engine ?? null;
+	if (cur && isOlderItem({ task: v.task, engine }, cur)) return snap;
+	const item: WorkspaceTaskListItem = {
 		task: v.task,
 		phase: v.phase,
 		acceptance_validity:
 			newerValidity(cur?.acceptance_validity, v.acceptance_validity) ?? null,
+		engine,
+		latest_request: latestRequestOf(v.approval_requests ?? []),
 	};
 	const tasks = cur
 		? snap.tasks.map((t, j) => (j === i ? item : t))
@@ -584,8 +636,41 @@ export class WorkspaceStore {
 		if (r.ok) {
 			this.set({ snapshot: mergeSnapshot(this.state.snapshot, r.data) });
 			this.confirmed();
+			this.normalizeRepo();
 			this.ensureGate();
 		} else this.readFailed(t, r);
+	}
+
+	/** Is this repository on the allowlist (assignable) / observed only / unknown to this hub? */
+	repoKind(repoId: string | null): "allowlisted" | "observed" | "unknown" {
+		const snap = this.state.snapshot;
+		if (!repoId || !snap) return "unknown";
+		if (snap.repos.some((r) => r.repo_id === repoId)) return "allowlisted";
+		if (snap.observed_repos?.some((r) => r.repo_id === repoId))
+			return "observed";
+		return "unknown";
+	}
+
+	/**
+	 * A Projects route naming a repository the hub neither allowlists nor observes: a task deep link
+	 * moves to its task's own repository; anything else is cleared with a notice (replace, no loop).
+	 */
+	private normalizeRepo(): void {
+		const { route, snapshot } = this.state;
+		if (!snapshot || route.view !== "projects" || !route.repoId) return;
+		if (this.repoKind(route.repoId) !== "unknown") return;
+		const own = route.taskId
+			? snapshot.tasks.find((t) => t.task.id === route.taskId)
+			: undefined;
+		if (own) {
+			this.navigate({ ...route, repoId: own.task.repo_id }, "replace");
+			return;
+		}
+		this.navigate(
+			{ view: "projects", repoId: null, taskId: null, requestId: null },
+			"replace",
+			"That repository is not on the allowlist or known to this hub; the link was cleared.",
+		);
 	}
 
 	async loadDetail(taskId: string): Promise<void> {
@@ -620,6 +705,15 @@ export class WorkspaceStore {
 		const d = this.detail(taskId);
 		if (!d) return;
 		const { route } = this.state;
+		// a task always shows under its own repository (a task's repository never changes)
+		if (
+			route.view === "projects" &&
+			route.taskId === taskId &&
+			route.repoId !== d.task.repo_id
+		) {
+			this.navigate({ ...route, repoId: d.task.repo_id }, "replace");
+			return;
+		}
 		if (
 			route.view === "hq" &&
 			route.taskId === taskId &&
@@ -986,6 +1080,8 @@ export class WorkspaceStore {
 
 	/** "Assign work": open an unsaved draft for a repo (a task is created on first save). */
 	startComposing(repoId: string): void {
+		// only an allowlisted repository can be assigned work (observed / unknown ones never)
+		if (this.repoKind(repoId) !== "allowlisted") return;
 		// the same unsaved composition keeps its key (an unknown create outcome must not mint a
 		// second key → a second task)
 		const keep =

@@ -1,13 +1,25 @@
 // Projects view (role 07): the DOM campus (one repository = one building; always usable, no 3D),
-// the selected repository's tasks, and the task panel on the right.
+// the repository list (allowlisted fixture repositories, then observed-only ones) and the selected
+// repository's tasks on the left; on the right the selected repository's CEO briefing (a compact card,
+// summary first) above the task panel. Selecting a repository changes this DOM synchronously
+// (store.navigate); the 3D campus follows, it never gates anything.
+import { Briefing } from "./Briefing.tsx";
 import { Campus } from "./CampusSlot.tsx";
-import { PHASE_LABEL, PHASE_TONE } from "./labels.ts";
+import {
+	OBSERVED_GROUP_NOTE,
+	OBSERVED_REPO_NOTE,
+	OBSERVED_SOURCE_LABEL,
+	PHASE_LABEL,
+	PHASE_TONE,
+	UNKNOWN_REPO_NOTE,
+} from "./labels.ts";
 import { Chip, useWs } from "./parts.tsx";
 import { TaskPanel } from "./TaskPanel.tsx";
 
 function Repositories() {
 	const { store, state } = useWs();
 	const repos = state.snapshot?.repos ?? [];
+	const observed = state.snapshot?.observed_repos ?? [];
 	const tasks = state.snapshot?.tasks ?? [];
 	const pending = state.snapshot?.pending_requests ?? [];
 	return (
@@ -16,6 +28,7 @@ function Repositories() {
 				<h2>Repositories</h2>
 				<span className="wsm1-muted">
 					{repos.length} on the allowlist · simulated execution only
+					{observed.length > 0 ? ` · ${observed.length} observed only` : ""}
 				</span>
 			</div>
 			{repos.length === 0 ? (
@@ -39,6 +52,8 @@ function Repositories() {
 								<button
 									type="button"
 									className="wsm1-building"
+									data-repo-id={r.repo_id}
+									data-repo-kind="allowlisted"
 									aria-current={selected ? "true" : undefined}
 									onClick={() =>
 										store.navigate({
@@ -66,6 +81,43 @@ function Repositories() {
 					})}
 				</ul>
 			)}
+			{observed.length > 0 ? (
+				<div className="wsm1-observed">
+					<p className="wsm1-observed-head">
+						<strong>Observed only</strong>{" "}
+						<span className="wsm1-hint">{OBSERVED_GROUP_NOTE}</span>
+					</p>
+					<ul className="wsm1-observed-list">
+						{observed.map((r) => {
+							const selected = state.route.repoId === r.repo_id;
+							return (
+								<li key={r.repo_id}>
+									<button
+										type="button"
+										className="wsm1-observed-repo"
+										data-repo-id={r.repo_id}
+										data-repo-kind="observed"
+										aria-current={selected ? "true" : undefined}
+										onClick={() =>
+											store.navigate({
+												view: "projects",
+												repoId: r.repo_id,
+												taskId: null,
+												requestId: null,
+											})
+										}
+									>
+										<span className="wsm1-building-name">{r.repo_id}</span>{" "}
+										<span className="wsm1-muted">
+											· Observed only · {OBSERVED_SOURCE_LABEL[r.source]}
+										</span>
+									</button>
+								</li>
+							);
+						})}
+					</ul>
+				</div>
+			) : null}
 		</section>
 	);
 }
@@ -73,15 +125,21 @@ function Repositories() {
 function Tasks() {
 	const { store, state } = useWs();
 	const repoId = state.route.repoId;
+	const kind = store.repoKind(repoId);
 	const items = (state.snapshot?.tasks ?? []).filter(
 		(t) => t.task.repo_id === repoId,
 	);
 	const canDecide = store.canDecide();
 	return (
-		<section aria-label="Tasks" className="wsm1-card wsm1-tasks">
+		<section
+			aria-label="Tasks"
+			className="wsm1-card wsm1-tasks"
+			data-repo-id={repoId ?? undefined}
+			data-repo-kind={repoId ? kind : undefined}
+		>
 			<div className="wsm1-card-head">
 				<h2>Tasks{repoId ? ` · ${repoId}` : ""}</h2>
-				{repoId ? (
+				{repoId && kind === "allowlisted" ? (
 					<button
 						type="button"
 						className="wsm1-primary"
@@ -93,7 +151,7 @@ function Tasks() {
 					</button>
 				) : null}
 			</div>
-			{!canDecide && repoId ? (
+			{!canDecide && repoId && kind === "allowlisted" ? (
 				<p id="wsm1-assign-why" className="wsm1-hint">
 					This session may read but not assign work.
 				</p>
@@ -102,6 +160,12 @@ function Tasks() {
 				<p className="wsm1-muted">
 					Select a repository to see and assign its work.
 				</p>
+			) : kind === "observed" ? (
+				<p className="wsm1-note" data-testid="observed-note">
+					{OBSERVED_REPO_NOTE}
+				</p>
+			) : kind === "unknown" && state.snapshot ? (
+				<p className="wsm1-note">{UNKNOWN_REPO_NOTE}</p>
 			) : items.length === 0 ? (
 				<p className="wsm1-muted">
 					No tasks yet. Use Assign work to start one.
@@ -157,7 +221,10 @@ export function ProjectsView() {
 				<Repositories />
 				<Tasks />
 			</div>
-			<TaskPanel />
+			<div className="wsm1-right">
+				<Briefing />
+				<TaskPanel />
+			</div>
 		</div>
 	);
 }

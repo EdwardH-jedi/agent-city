@@ -28,6 +28,21 @@ describe("route", () => {
 		for (const r of routes) expect(parseHash(formatHash(r))).toEqual(r);
 	});
 
+	test("observed-only and second-repository routes round-trip as one segment", () => {
+		for (const repoId of [
+			"observed-example/telemetry-only",
+			"local/empty-sandbox",
+		]) {
+			const r: Route = {
+				view: "projects",
+				repoId,
+				taskId: TASK,
+				requestId: null,
+			};
+			expect(parseHash(formatHash(r))).toEqual(r);
+		}
+	});
+
 	test("repo ids are encoded as one segment", () => {
 		expect(
 			formatHash({

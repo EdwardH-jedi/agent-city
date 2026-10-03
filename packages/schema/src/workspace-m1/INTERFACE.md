@@ -303,6 +303,17 @@ response wrappers `SignInRequest`, `Provenance`, `WorkspaceRepo`, `WorkspaceSnap
 `ArtifactListItem`, `WorkspaceTaskDetail`, `ArtifactTextResponse`. Nothing hashed; v1 vectors unchanged.
 Consumers: hub routes (lead), web transport (07), QA (08/09). Compatibility: additive only.
 
+## 11b. API delta v1.2 (lead, additive, 2026-10-03 — multi-repository milestone)
+
+`api.ts` (`agentcity.workspace-api/v1.2`; unrelated to the proposal/result contract v1.2): no new routes.
+`WorkspaceTaskListItem` gains `engine` (the task detail's `EngineView`) and `latest_request`
+(`RequestSummary`: newest request of any status); `WorkspaceSnapshot` gains `execution_queue`
+(`ExecutionQueue`: the single global engine slot and its waiting line in claim order, from the same
+`claimOrder()` the engine's `claimNext` uses, plus `claims_paused_by_quarantine`) and `observed_repos`
+(`ObservedRepo`: telemetry-only repositories outside the allowlist — display only, never execution-eligible).
+Nothing hashed; vectors unchanged. Consumers: hub read model (lead), web store/briefing/fixture world (Worker
+B), QA suites. Record: `docs/workspace-m1/MULTIREPO_MILESTONE.md`.
+
 ## 12. Proposed lead-owned patches (not applied)
 
 1. `packages/schema/src/index.ts`: **no re-export** of workspace-m1 (keep the explicit subpaths; there

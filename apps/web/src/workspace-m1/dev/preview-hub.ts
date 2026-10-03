@@ -1,6 +1,8 @@
 // Local preview of the integrated workspace UI (campus + Headquarters) against a real, isolated hub
 // (lead, campus milestone; dev tool). It reuses the browser suites' harness unchanged:
-//   - disposable fixture repo + temp SQLite file, fake providers only (simulated), live execution off
+//   - disposable fixture repos + temp SQLite file, fake providers only (simulated), live execution off:
+//     two allowlisted repositories to assign work to (`fixture`, `beta`), one allowlisted repository left
+//     empty (`empty`) and one observed-only repository (telemetry row; never executable)
 //   - hub in workspace mode on a free 127.0.0.1 port (never 4317), Vite on another free loopback port
 //     with configFile false and an empty envDir (never apps/web/vite.config.ts or the repo .env)
 //   - the per-run synthetic operator credential is written to a 0600 file and never printed
@@ -14,6 +16,8 @@ import { join } from "node:path";
 interface PreviewEnv {
 	fx: { dbPath: string };
 	repoId: string;
+	repos: { id: string }[];
+	observedRepoIds: string[];
 	uiUrl: string;
 	hubUrl: string;
 	credential: string;
@@ -23,10 +27,16 @@ interface PreviewEnv {
 const harnessUrl = new URL("../../../e2e/workspace-harness.ts", import.meta.url)
 	.href;
 const { startWorkspaceEnv } = (await import(harnessUrl)) as {
-	startWorkspaceEnv(): Promise<PreviewEnv>;
+	startWorkspaceEnv(o: {
+		extraRepos: string[];
+		observedRepos: string[];
+	}): Promise<PreviewEnv>;
 };
 
-const env = await startWorkspaceEnv();
+const env = await startWorkspaceEnv({
+	extraRepos: ["beta", "empty"],
+	observedRepos: ["observed-only"],
+});
 const secretDir = mkdtempSync(join(tmpdir(), "agentcity-m1-preview-"));
 const credentialFile = join(secretDir, "operator-credential");
 writeFileSync(credentialFile, `${env.credential}\n`, { mode: 0o600 });
@@ -51,7 +61,13 @@ console.log(
 		"Agent City workspace preview (simulated only; disposable data)",
 		`  UI (open this):      ${env.uiUrl}`,
 		`  hub (loopback):      ${env.hubUrl}`,
-		`  repository:          ${env.repoId}`,
+		...env.repos.map(
+			(r, i) =>
+				`  ${i === 0 ? "repositories:" : "             "}        ${r.id} (allowlisted fixture)`,
+		),
+		...env.observedRepoIds.map(
+			(id) => `  observed only:       ${id} (not executable)`,
+		),
 		`  database (temp):     ${env.fx.dbPath}`,
 		`  operator credential: ${credentialFile} (0600; paste into the sign-in field)`,
 		"  approvals: type Edward exactly in each Headquarters document",

@@ -80,8 +80,10 @@ function useReducedMotion(): boolean {
 const plural = (n: number, one: string, many: string) =>
 	`${n} ${n === 1 ? one : many}`;
 
+// `active_tasks` counts queued, running and cancel-requested work: "in progress", not "running" (with
+// several repositories a queued execution may be waiting behind another repository's run)
 function repoStats(r: CampusRepo): string {
-	return `${r.active_tasks} running · ${r.pending_requests} awaiting decision`;
+	return `${r.active_tasks} in progress · ${r.pending_requests} awaiting decision`;
 }
 
 function GateGlyph({ kind }: { kind: CampusPendingRequest["kind"] }) {

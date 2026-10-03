@@ -1,6 +1,8 @@
-// Workspace HTTP API — contract delta v1.1 (lead, additive). The route table and the response
-// wrappers that the web transport, the hub routes and both QA suites share. Nothing here is hashed;
-// the frozen v1 structures and vectors are unchanged. Web-safe: zod + pure TS only.
+// Workspace HTTP API — contract delta v1.1 (lead, additive), extended by the additive API delta v1.2
+// (multi-repository milestone: per-task engine/latest-request summaries, the global execution queue and
+// observed-only repositories in the snapshot; docs/workspace-m1/MULTIREPO_MILESTONE.md). The route table
+// and the response wrappers that the web transport, the hub routes and the QA suites share. Nothing here
+// is hashed; the frozen v1 structures and vectors are unchanged. Web-safe: zod + pure TS only.
 import { z } from "zod";
 import {
 	ArtifactKind,
@@ -8,19 +10,29 @@ import {
 	RunKind,
 	RunPhase,
 	RunState,
+	TaskState,
 } from "../managed.ts";
-import { ArtifactId, RunId } from "./ids.ts";
+import { ApprovalKind } from "./binding.ts";
+import {
+	ApprovalRequestId,
+	ArtifactId,
+	ManagedTaskId,
+	RunId,
+	WorkspaceTaskId,
+} from "./ids.ts";
 import { Hash, RepoId, Sha, UtcTs } from "./primitives.ts";
 import { EvidenceStatus } from "./result.ts";
 import {
 	AcceptanceValidityView,
 	ApprovalRequestView,
+	EngineView,
 	WorkspaceTaskSummary,
 	WorkspaceTaskView,
 } from "./rows.ts";
-import { WorkspacePhase } from "./state.ts";
+import { ApprovalStatus, InvalidationReason, WorkspacePhase } from "./state.ts";
 
-export const WORKSPACE_API_CONTRACT = "agentcity.workspace-api/v1.1";
+/** v1.2 = API delta for multiple repositories (not the proposal/result contract v1.2). */
+export const WORKSPACE_API_CONTRACT = "agentcity.workspace-api/v1.2";
 export const WORKSPACE_API_BASE = "/api/workspace";
 
 /**
@@ -71,7 +83,7 @@ export const Provenance = z.strictObject({
 });
 export type Provenance = z.infer<typeof Provenance>;
 
-/** A repository the workspace may assign work to (the managed allowlist; one fixture repo in M1). */
+/** A repository the workspace may assign work to (the managed allowlist — the only execution-eligible repositories). */
 export const WorkspaceRepo = z.strictObject({
 	repo_id: RepoId,
 	base_ref: z.string().min(1).max(200),
@@ -80,20 +92,76 @@ export const WorkspaceRepo = z.strictObject({
 });
 export type WorkspaceRepo = z.infer<typeof WorkspaceRepo>;
 
+/**
+ * API v1.2: a repository the hub has only OBSERVED (telemetry / GitHub metadata / a local checkout scan) and
+ * that is NOT on the managed allowlist. Read-only: it can never be assigned work, approved or executed —
+ * `POST /tasks` answers 422 `repo_not_allowed` for it like for any other id outside the allowlist.
+ */
+export const ObservedRepo = z.strictObject({
+	repo_id: RepoId,
+	/** Where the hub learned of it: GitHub sync, a local checkout without a GitHub origin, or session telemetry only. */
+	source: z.enum(["github", "local_checkout", "telemetry"]),
+});
+export type ObservedRepo = z.infer<typeof ObservedRepo>;
+
+/** API v1.2: the newest approval request of a task (any status) — enough for list-level labels. */
+export const RequestSummary = z.strictObject({
+	id: ApprovalRequestId,
+	kind: ApprovalKind,
+	status: ApprovalStatus,
+	invalidation_reason: InvalidationReason.nullable(),
+	created_at: UtcTs,
+	/** When the request was decided or invalidated (null while pending). */
+	closed_at: UtcTs.nullable(),
+});
+export type RequestSummary = z.infer<typeof RequestSummary>;
+
 export const WorkspaceTaskListItem = z.strictObject({
 	task: WorkspaceTaskSummary,
 	phase: WorkspacePhase,
 	/** v1.2: stored current validity of the accepted result (CONTRACT_V1_2.md §C). */
 	acceptance_validity: AcceptanceValidityView.nullable(),
+	/** API v1.2: the task's current execution as the engine records it (same value as the task detail's). */
+	engine: EngineView.nullable(),
+	/** API v1.2: the task's newest approval request, any status (null before the first publish). */
+	latest_request: RequestSummary.nullable(),
 });
 export type WorkspaceTaskListItem = z.infer<typeof WorkspaceTaskListItem>;
+
+/** API v1.2: one execution in the engine's single global slot or waiting for it. */
+export const QueueEntry = z.strictObject({
+	managed_task_id: ManagedTaskId,
+	/** null: an engine row not linked to any workspace task (legacy / pre-workspace data). */
+	workspace_task_id: WorkspaceTaskId.nullable(),
+	repo_id: RepoId,
+	state: TaskState,
+	run_requested_at: UtcTs.nullable(),
+});
+export type QueueEntry = z.infer<typeof QueueEntry>;
+
+/**
+ * API v1.2: the engine runs ONE managed execution at a time across every repository. `active` holds the slot
+ * (leased, or an active execution that resumes first); `queued` lists the executions that will be claimed
+ * next, in claim order (the same selection the engine uses). While an unconfirmed process is quarantined the
+ * engine claims nothing, in any repository.
+ */
+export const ExecutionQueue = z.strictObject({
+	active: QueueEntry.nullable(),
+	queued: z.array(QueueEntry).max(500),
+	claims_paused_by_quarantine: z.boolean(),
+});
+export type ExecutionQueue = z.infer<typeof ExecutionQueue>;
 
 export const WorkspaceSnapshot = z.strictObject({
 	provenance: Provenance,
 	repos: z.array(WorkspaceRepo).max(50),
+	/** API v1.2: observed-only repositories (never execution-eligible), sorted by id. */
+	observed_repos: z.array(ObservedRepo).max(200),
 	tasks: z.array(WorkspaceTaskListItem).max(500),
 	/** Every approval request with status `pending` (the HQ inbox), oldest first. */
 	pending_requests: z.array(ApprovalRequestView).max(500),
+	/** API v1.2: the global execution queue (one active execution across all repositories). */
+	execution_queue: ExecutionQueue,
 	generated_at: UtcTs,
 });
 export type WorkspaceSnapshot = z.infer<typeof WorkspaceSnapshot>;

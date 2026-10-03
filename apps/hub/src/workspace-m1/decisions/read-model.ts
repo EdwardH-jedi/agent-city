@@ -12,6 +12,13 @@
 //     visible in THIS response), the candidate commit (git) in the background — its verdict lands in
 //     the row for the next read. `taskDetailChecked` awaits the full check instead.
 //   - artifacts of a result request with a durable bundle are served only from the verified bundle.
+//
+// API v1.2 (multi-repository milestone, docs/workspace-m1/MULTIREPO_MILESTONE.md): each snapshot list item
+// carries the task's engine view and newest approval request; the snapshot carries the global execution
+// queue (the engine's own claim order — `claimOrder`, the same function `claimNext` uses) and the
+// observed-only repositories (telemetry `repos` rows / session repo ids outside the allowlist; read-only).
+
+import type { ManagedTask } from "@agent-city/schema";
 import {
 	type AcceptanceValidityRow,
 	type AcceptanceValidityView,
@@ -25,7 +32,12 @@ import {
 	deriveWorkspacePhase,
 	type EngineView,
 	type ExecutionBridge,
+	type ExecutionQueue,
 	type ManagedDecisionRow,
+	type ObservedRepo,
+	type QueueEntry,
+	RepoId,
+	type RequestSummary,
 	type RunSummary,
 	type WorkspaceRepo,
 	WorkspaceSnapshot,
@@ -37,7 +49,12 @@ import {
 } from "@agent-city/schema/workspace-m1";
 import type { z } from "zod";
 import type { ManagedConfig } from "../../managed/config.ts";
-import { getArtifact, listArtifacts, listRuns } from "../../managed/store.ts";
+import {
+	claimOrder,
+	getArtifact,
+	listArtifacts,
+	listRuns,
+} from "../../managed/store.ts";
 import {
 	ArtifactNotFound,
 	type ArtifactReaderDeps,
@@ -58,6 +75,7 @@ const MAX_TASKS = 500;
 const MAX_REQUESTS = 500;
 const MAX_RUNS = 50;
 const MAX_ARTIFACTS = 500;
+const MAX_OBSERVED = 200;
 
 export interface ReadModelDeps {
 	store: PersistentWorkspaceStore;
@@ -305,6 +323,81 @@ export function createWorkspaceReadModel(
 			required_checks: r.verification.map((v) => v.name),
 		}));
 
+	/** The newest approval request (any status) of every task, one query. */
+	const latestRequests = (): Map<string, RequestSummary> => {
+		const rows = db
+			.query<RequestSummary & { workspace_task_id: string }, []>(
+				`SELECT id, workspace_task_id, kind, status, invalidation_reason, created_at, closed_at
+				 FROM (SELECT *, row_number() OVER (
+				         PARTITION BY workspace_task_id ORDER BY created_at DESC, rowid DESC) AS rn
+				       FROM managed_approval_requests)
+				 WHERE rn = 1`,
+			)
+			.all();
+		return new Map(
+			rows.map(({ workspace_task_id, ...summary }) => [
+				workspace_task_id,
+				summary,
+			]),
+		);
+	};
+
+	/** The engine's single slot and its waiting line, in the order the worker claims (one definition). */
+	const executionQueue = (): ExecutionQueue => {
+		const order = claimOrder(db, MAX_REQUESTS);
+		const entry = (t: ManagedTask): QueueEntry => ({
+			managed_task_id: t.id,
+			workspace_task_id: store.findTaskByManagedTask(t.id)?.id ?? null,
+			repo_id: t.repo_id,
+			state: t.state,
+			run_requested_at: t.run_requested_at,
+		});
+		// the slot: the leased execution, else an ACTIVE (executing / verifying / reviewing / repairing)
+		// one that resumes first. A merely queued execution is never reported as holding it — not when
+		// nothing is leased, and not while an open quarantine pauses every claim.
+		const resumable = [...order.resumable];
+		const active = order.leased[0] ?? resumable.shift() ?? null;
+		const waiting = [...resumable, ...order.queued];
+		return {
+			active: active ? entry(active) : null,
+			queued: waiting.slice(0, MAX_REQUESTS).map(entry),
+			claims_paused_by_quarantine: order.quarantined,
+		};
+	};
+
+	/**
+	 * Repositories the hub has only observed (GitHub sync / local checkout scan rows, or session telemetry
+	 * naming a repo with no row), minus the allowlist (case-insensitive). Read-only display data: nothing
+	 * here makes a repository execution-eligible — only the trusted managed config does.
+	 */
+	const observedRepos = (): ObservedRepo[] => {
+		const allowed = new Set(config.repos.map((r) => r.id.toLowerCase()));
+		const out = new Map<string, ObservedRepo>();
+		const add = (id: string, source: ObservedRepo["source"]) => {
+			const key = id.toLowerCase();
+			if (allowed.has(key) || out.has(key)) return;
+			if (!RepoId.safeParse(id).success) return;
+			out.set(key, { repo_id: id, source });
+		};
+		for (const r of db
+			.query<{ id: string; is_local_only: number }, []>(
+				"SELECT id, is_local_only FROM repos ORDER BY is_local_only, id",
+			)
+			.all())
+			add(r.id, r.is_local_only === 1 ? "local_checkout" : "github");
+		for (const r of db
+			.query<{ repo_id: string }, []>(
+				"SELECT DISTINCT repo_id FROM sessions WHERE repo_id IS NOT NULL ORDER BY repo_id",
+			)
+			.all())
+			add(r.repo_id, "telemetry");
+		return [...out.values()]
+			.sort((a, b) =>
+				a.repo_id < b.repo_id ? -1 : a.repo_id > b.repo_id ? 1 : 0,
+			)
+			.slice(0, MAX_OBSERVED);
+	};
+
 	const taskDetail = (id: string): CommandOutcome<WorkspaceTaskDetail> => {
 		if (!WorkspaceTaskId.safeParse(id).success) return fail("not_found");
 		const row = store.getTask(id);
@@ -360,13 +453,19 @@ export function createWorkspaceReadModel(
 		managedTasksOf,
 
 		snapshot(now) {
-			const tasks = store.listTasks(MAX_TASKS).map((row) => ({
-				task: taskSummary(row),
-				phase: deriveWorkspacePhase(row.stage, engineOf(row)?.state ?? null),
-				// the stored row (no re-check here: a list-only viewer sees a change only once a sweep
-				// batch — at most 20, oldest check first — reaches it; CONTRACT_V1_2.md §C)
-				acceptance_validity: acceptanceOf(row),
-			}));
+			const latest = latestRequests();
+			const tasks = store.listTasks(MAX_TASKS).map((row) => {
+				const engine = engineOf(row);
+				return {
+					task: taskSummary(row),
+					phase: deriveWorkspacePhase(row.stage, engine?.state ?? null),
+					// the stored row (no re-check here: a list-only viewer sees a change only once a sweep
+					// batch — at most 20, oldest check first — reaches it; CONTRACT_V1_2.md §C)
+					acceptance_validity: acceptanceOf(row),
+					engine,
+					latest_request: latest.get(row.id) ?? null,
+				};
+			});
 			const pending = store
 				.listApprovalRequests({ status: "pending" })
 				.slice()
@@ -384,8 +483,10 @@ export function createWorkspaceReadModel(
 							live_integration_verified: false,
 						},
 						repos: repos(),
+						observed_repos: observedRepos(),
 						tasks,
 						pending_requests: pending,
+						execution_queue: executionQueue(),
 						generated_at: now.toISOString(),
 					},
 					"snapshot",

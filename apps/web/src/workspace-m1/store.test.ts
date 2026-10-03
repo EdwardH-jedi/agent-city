@@ -800,3 +800,290 @@ describe("presentation clock during silent reads", () => {
 		unsubscribe();
 	});
 });
+
+// ── multi-repository milestone (API v1.2) ──────────────────────────────────
+
+const OTHER_REPO = "local/empty-sandbox";
+const OBSERVED_REPO = "observed-example/telemetry-only";
+
+/** A draft task in the second allowlisted fixture repository (server-saved). */
+async function makeIn(tx: FixtureTransport, repo: string, title: string) {
+	const c = await tx.createTask({
+		idempotency_key: key(),
+		repo_id: repo,
+		draft: {
+			...emptyDraft(),
+			title,
+			objective: `Objective of ${title}`,
+			criteria: criteriaFromText("Works"),
+			scope: { allowed: ["."], protected: [] },
+			criterion_checks: [{ criterion: "Works", checks: ["unit"] }],
+		},
+	});
+	if (!c.ok) throw new Error("create");
+	return c.data.task.id;
+}
+
+describe("multiple repositories: ownership and stale answers", () => {
+	test("list rows carry the engine view and newest request; equal task rev never regresses the engine", () => {
+		const engine = (rev: number) => ({
+			managed_task_id: "task-1",
+			state: rev > 1 ? "executing" : "queued",
+			rev,
+		});
+		const row = (engineRev: number) =>
+			({
+				tasks: [
+					{
+						task: { id: "x", rev: 4 },
+						phase: engineRev > 1 ? "implementing" : "queued",
+						engine: engine(engineRev),
+					},
+				],
+				pending_requests: [],
+			}) as never;
+		const newer = row(3);
+		const older = row(2);
+		const merged = mergeSnapshot(newer, older);
+		expect(merged.tasks[0]?.engine?.rev).toBe(3);
+		expect(merged.tasks[0]?.phase).toBe("implementing");
+		expect(mergeSnapshot(older, newer).tasks[0]?.engine?.rev).toBe(3);
+		// a task read with the same task rev but an older engine is not folded in
+		const view = {
+			task: { id: "x", rev: 4 },
+			phase: "queued",
+			engine: engine(2),
+			approval_requests: [],
+		} as never;
+		expect(foldTaskIntoSnapshot(newer, view)).toBe(newer);
+		// a newer read folds its engine and its newest request summary
+		const req = {
+			id: "wsa-1",
+			kind: "run",
+			status: "approved",
+			invalidation_reason: null,
+			created_at: "2026-10-02T00:00:00.000Z",
+			closed_at: "2026-10-02T00:00:01.000Z",
+			binding_hash: "h",
+		};
+		const fresh = foldTaskIntoSnapshot(newer, {
+			task: { id: "x", rev: 5 },
+			phase: "verifying",
+			engine: engine(4),
+			approval_requests: [req],
+			acceptance_validity: null,
+		} as never);
+		expect(fresh?.tasks[0]?.engine?.rev).toBe(4);
+		expect(fresh?.tasks[0]?.latest_request).toEqual({
+			id: "wsa-1",
+			kind: "run",
+			status: "approved",
+			invalidation_reason: null,
+			created_at: "2026-10-02T00:00:00.000Z",
+			closed_at: "2026-10-02T00:00:01.000Z",
+		});
+	});
+
+	test("the snapshot's rows match the detail the task panel shows (engine + latest request)", async () => {
+		const { store, A, project } = await setup();
+		project(A.taskId);
+		await flush();
+		const d = selected(store);
+		const row = store
+			.getState()
+			.snapshot?.tasks.find((t) => t.task.id === A.taskId);
+		expect(row?.engine).toEqual(d?.engine ?? null);
+		expect(row?.latest_request?.id).toBe(d?.approval_requests[0]?.id);
+	});
+
+	test("a stale repository-A detail after selecting a task in repository B never replaces B", async () => {
+		const { store, tx, w, A } = await setup();
+		const bTask = await makeIn(tx, OTHER_REPO, "Task in B");
+		await store.loadSnapshot();
+		w.hold("getTask");
+		store.navigate({
+			view: "projects",
+			repoId: "local/fixture",
+			taskId: A.taskId,
+			requestId: null,
+		});
+		store.navigate({
+			view: "projects",
+			repoId: OTHER_REPO,
+			taskId: bTask,
+			requestId: null,
+		});
+		await flush();
+		expect(selected(store)?.task.repo_id).toBe(OTHER_REPO);
+		w.release("getTask"); // A's late answer
+		await flush();
+		const s = store.getState();
+		expect(s.route).toEqual({
+			view: "projects",
+			repoId: OTHER_REPO,
+			taskId: bTask,
+			requestId: null,
+		});
+		expect(selected(store)?.task.id).toBe(bTask);
+		// A's answer still lands in A's own cache entry (one cache), never under B
+		expect(store.detail(A.taskId)?.task.repo_id ?? "local/fixture").toBe(
+			"local/fixture",
+		);
+	});
+
+	test("rapid A→B→A ends on A with A's own data", async () => {
+		const { store, tx, w, A } = await setup();
+		const bTask = await makeIn(tx, OTHER_REPO, "Task in B");
+		await store.loadSnapshot();
+		const go = (repoId: string, taskId: string) =>
+			store.navigate({ view: "projects", repoId, taskId, requestId: null });
+		w.hold("getTask");
+		w.hold("getTask");
+		go("local/fixture", A.taskId);
+		go(OTHER_REPO, bTask);
+		go("local/fixture", A.taskId);
+		await flush();
+		w.release("getTask");
+		w.release("getTask");
+		await flush();
+		const s = store.getState();
+		expect(s.route.repoId).toBe("local/fixture");
+		expect(s.route.taskId).toBe(A.taskId);
+		expect(selected(store)?.task.id).toBe(A.taskId);
+		expect(selected(store)?.task.repo_id).toBe("local/fixture");
+		expect(selected(store)?.task.draft.title).toBe("Task A");
+	});
+
+	test("a create that answers after switching repositories never pulls the operator back", async () => {
+		const { store, w } = await setup();
+		store.startComposing(OTHER_REPO);
+		w.hold("createTask");
+		const pending = store.createFromForm({
+			...newDraftForm(),
+			title: "Composed in B",
+			objective: "x",
+			criteriaText: "Works",
+		});
+		store.navigate({
+			view: "projects",
+			repoId: "local/fixture",
+			taskId: null,
+			requestId: null,
+		});
+		expect(store.getState().composing).toBeNull();
+		await flush();
+		w.release("createTask");
+		const createdId = await pending;
+		await flush();
+		const s = store.getState();
+		expect(s.route).toEqual({
+			view: "projects",
+			repoId: "local/fixture",
+			taskId: null,
+			requestId: null,
+		});
+		expect(s.composing).toBeNull();
+		// the task exists in B (server-saved draft), owned by B
+		expect(createdId).not.toBeNull();
+		const row = s.snapshot?.tasks.find((t) => t.task.id === createdId);
+		expect(row?.task.repo_id).toBe(OTHER_REPO);
+	});
+
+	test("Assign work is refused for observed-only and unknown repositories", async () => {
+		const { store } = await setup();
+		store.navigate({
+			view: "projects",
+			repoId: OBSERVED_REPO,
+			taskId: null,
+			requestId: null,
+		});
+		store.startComposing(OBSERVED_REPO);
+		expect(store.getState().composing).toBeNull();
+		store.startComposing("local/not-listed");
+		expect(store.getState().composing).toBeNull();
+		expect(store.repoKind(OBSERVED_REPO)).toBe("observed");
+		expect(store.repoKind("local/fixture")).toBe("allowlisted");
+		expect(store.repoKind("local/not-listed")).toBe("unknown");
+		store.startComposing(OTHER_REPO);
+		expect(store.getState().composing?.repoId).toBe(OTHER_REPO);
+	});
+
+	test("switching repositories from an open gate clears the signature; saved drafts survive", async () => {
+		const { store, tx, A, hq } = await setup();
+		const bTask = await makeIn(tx, OTHER_REPO, "Saved draft in B");
+		hq(A);
+		await flush();
+		store.setSignature("Edward");
+		await flush();
+		expect(store.getState().gate?.signature).toBe("Edward");
+		store.navigate({
+			view: "projects",
+			repoId: OTHER_REPO,
+			taskId: bTask,
+			requestId: null,
+		});
+		await flush();
+		expect(store.getState().gate).toBeNull();
+		// back to A's request: a fresh, empty signature (never restored)
+		hq(A);
+		await flush();
+		expect(store.getState().gate?.signature).toBe("");
+		// B's server-saved draft is intact
+		await store.loadDetail(bTask);
+		expect(store.detail(bTask)?.task.draft.title).toBe("Saved draft in B");
+	});
+
+	test("an unknown repository in the URL is cleared with a notice; a task link under the wrong repository moves to the task's own", async () => {
+		let t = Date.parse("2026-10-02T00:00:00.000Z");
+		const tx = createFixtureTransport({ now: () => t });
+		const bTask = await makeIn(tx, OTHER_REPO, "B task");
+		const unknown = new WorkspaceStore(
+			{ transport: tx, now: () => t },
+			{
+				view: "projects",
+				repoId: "local/not-listed",
+				taskId: null,
+				requestId: null,
+			},
+		);
+		await unknown.boot();
+		await flush();
+		expect(unknown.getState().route.repoId).toBeNull();
+		expect(unknown.getState().routeMode).toBe("replace");
+		expect(unknown.getState().routeNotice).toContain("not on the allowlist");
+
+		const wrong = new WorkspaceStore(
+			{ transport: tx, now: () => t },
+			{
+				view: "projects",
+				repoId: "local/fixture",
+				taskId: bTask,
+				requestId: null,
+			},
+		);
+		await wrong.boot();
+		await flush();
+		expect(wrong.getState().route).toEqual({
+			view: "projects",
+			repoId: OTHER_REPO,
+			taskId: bTask,
+			requestId: null,
+		});
+		expect(wrong.getState().routeMode).toBe("replace");
+
+		// an observed-only repository is a valid (read-only) selection, never cleared
+		const observed = new WorkspaceStore(
+			{ transport: tx, now: () => t },
+			{
+				view: "projects",
+				repoId: OBSERVED_REPO,
+				taskId: null,
+				requestId: null,
+			},
+		);
+		await observed.boot();
+		await flush();
+		expect(observed.getState().route.repoId).toBe(OBSERVED_REPO);
+		t += 1;
+	});
+});

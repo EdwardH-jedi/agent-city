@@ -54,10 +54,16 @@ const VERIFY_SH = `#!/bin/sh
 grep -qs '^pass$' agentcity-sim/verify.status src/agentcity-sim/verify.status || exit 1
 `;
 
-/** Create a tiny git repository (README, src/app.txt, verify.sh) at `repoPath`; returns its HEAD. */
-export function initFixtureRepo(repoPath: string): string {
+/**
+ * Create a tiny git repository (README, src/app.txt, verify.sh) at `repoPath`; returns its HEAD. A `label`
+ * goes into the README so repositories made in the same second still get distinct base commits.
+ */
+export function initFixtureRepo(repoPath: string, label?: string): string {
 	mkdirSync(join(repoPath, "src"), { recursive: true });
-	writeFileSync(join(repoPath, "README.md"), "# fixture\n");
+	writeFileSync(
+		join(repoPath, "README.md"),
+		label ? `# fixture ${label}\n` : "# fixture\n",
+	);
 	writeFileSync(join(repoPath, "src", "app.txt"), "v1\n");
 	writeFileSync(join(repoPath, "verify.sh"), VERIFY_SH);
 	fixtureGit(repoPath, "init", "--quiet", "-b", "main");
@@ -78,8 +84,19 @@ export interface FixtureOptions {
 	dbFile?: boolean;
 	/** Repo id in the generated config (default `local/fixture`). */
 	repoId?: string;
+	/**
+	 * Further disposable allowlisted repositories, each its own git repository under the fixture directory
+	 * (distinct id, path and base commit; same verification as the primary). Config order: primary first.
+	 */
+	extraRepos?: { id: string; label: string }[];
 	/** Enable live mode against generated stub `claude` / `codex` executables (never the real CLIs). */
 	liveStubs?: { claudeTimeoutS?: number; codexTimeoutS?: number };
+}
+
+export interface FixtureRepo {
+	id: string;
+	path: string;
+	baseSha: string;
 }
 
 export interface Fixture {
@@ -87,6 +104,8 @@ export interface Fixture {
 	repoPath: string;
 	repoId: string;
 	baseSha: string;
+	/** Every allowlisted fixture repository, primary first (`repos[0]` = repoId / repoPath / baseSha). */
+	repos: FixtureRepo[];
 	config: ManagedConfig;
 	db: Database;
 	dbPath: string;
@@ -111,11 +130,27 @@ export function makeFixture(opts: FixtureOptions = {}): Fixture {
 						},
 					];
 	const repoId = opts.repoId ?? "local/fixture";
+	const repos: FixtureRepo[] = [{ id: repoId, path: repoPath, baseSha }];
+	for (const extra of opts.extraRepos ?? []) {
+		if (!/^[a-z0-9-]{1,40}$/.test(extra.label))
+			throw new Error(`fixture repo label must be [a-z0-9-]: ${extra.label}`);
+		const path = join(dir, `repo-${extra.label}`);
+		repos.push({
+			id: extra.id,
+			path,
+			baseSha: initFixtureRepo(path, extra.label),
+		});
+	}
 	const config = parseManagedConfig({
 		workspace_root: join(dir, "workspaces"),
 		artifacts_root: join(dir, "artifacts"),
 		git_executable: GIT,
-		repos: [{ id: repoId, path: repoPath, base_ref: "main", verification }],
+		repos: repos.map((r) => ({
+			id: r.id,
+			path: r.path,
+			base_ref: "main",
+			verification,
+		})),
 		live: opts.liveStubs
 			? {
 					enabled: true,
@@ -143,6 +178,7 @@ export function makeFixture(opts: FixtureOptions = {}): Fixture {
 		repoPath,
 		repoId,
 		baseSha,
+		repos,
 		config,
 		db,
 		dbPath,
