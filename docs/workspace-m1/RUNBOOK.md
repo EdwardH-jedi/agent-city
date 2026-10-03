@@ -1,14 +1,16 @@
 # Workspace M1 — isolated run instructions
 
-M1 is a **simulated** workspace: one disposable allowlisted fixture repository, fake providers, no live
-calls, no merge/push/deploy. Never point any of this at the real hub on 4317, the real database or `.env`.
+M1 is a **simulated** workspace: disposable allowlisted fixture repositories (one in the original M1
+suites; two plus an empty one and an observed-only one in the multi-repository suite and the preview), fake
+providers, no live calls, no merge/push/deploy. Never point any of this at the real hub on 4317, the real database or `.env`.
 
 ## What workspace mode is
 
 The hub runs in workspace mode when `MANAGED_CONFIG` is set **and** both `WORKSPACE_OPERATOR_CREDENTIAL`
 and `WORKSPACE_ALLOWED_ORIGIN` are set. Then:
 
-- `/api/workspace/*` (contract `agentcity.workspace-api/v1.1`) is served behind the operator session guard
+- `/api/workspace/*` (contract `agentcity.workspace-api/v1.2`; v1.1 routes + additive multi-repository
+  snapshot fields) is served behind the operator session guard
   (HttpOnly SameSite=Strict cookie, exact Origin, CSRF header, scopes).
 - `/api/managed/*` answers **410** — the engine is reachable only through Gate 1.
 - Live execution is **forced off** regardless of the trusted config; every engine stage additionally
@@ -50,7 +52,14 @@ env PLAYWRIGHT_BROWSERS_PATH=$HOME_OF_USER/Library/Caches/ms-playwright \
 (home, AGENTCITY_HOME, TMPDIR; an existing directory is refused), passes **only** HOME, AGENTCITY_HOME, TMPDIR,
 a PATH of bun + git + system directories, LANG, TZ and `--browsers` as PLAYWRIGHT_BROWSERS_PATH, runs the
 command in its own process group under a hard `--timeout` (exit 124), forwards cancellation, kills anything left
-behind, and writes `suite.log` + `run.json` there. The CI jobs run exactly these commands (bash):
+behind, and writes `suite.log` + `run.json` there. Exit contract: the command's own code; 124 on the time
+limit; 130 / 143 whenever the wrapper itself received SIGINT / SIGTERM — even if the command then exits 0;
+128 + n when the command died of a signal the wrapper did not send. `run.json` records `child_exit`,
+`child_signal` and `interrupted`. The wrapper's exit code describes only its own run: how GitHub reports a
+cancelled job must be read from the Actions run status, never inferred from this code. `--set NAME=VALUE`
+(repeatable) passes a case filter into the cleared environment — only names matching `*_ONLY`
+(`M1_ONLY`, `CAMPUS_ONLY`), one line ≤ 200 characters, e.g. `--set M1_ONLY='^BRW-P-06$'`. The CI jobs run
+exactly these commands (bash):
 
 ```sh
 W="bun scripts/ci/isolated.ts --root /tmp/agentcity-iso --browsers <playwright browsers dir>"
@@ -62,6 +71,8 @@ $W --label workspace-prod-build --timeout 240 \
   -- bun --no-env-file run build:web:workspace-prod /tmp/agentcity-prod-workspace     # isolated production build
 $W --label workspace-recovery --timeout 660 \
   -- bun --no-env-file run test:browser:recovery /tmp/agentcity-prod-workspace        # production repair
+$W --label workspace-multirepo --timeout <see ci.yml> \
+  -- bun --no-env-file run test:browser:multi                                         # two repos + briefing
 bun scripts/ci/collect-browser-evidence.ts --root /tmp/agentcity-iso --out /tmp/agentcity-evidence
 ```
 
@@ -136,7 +147,10 @@ isolation as the browser suites; nothing touches 4317, `data/`, `.env`, `apps/we
 ```
 
 It prints the UI URL (`http://127.0.0.1:<free port>`), the hub URL (another free loopback port, never 4317), the
-disposable repository id (`local/m1-fixture-<nonce>`), the temp SQLite path and the path of a 0600 file holding
+disposable repository ids — three allowlisted fixture repositories (`local/m1-fixture-<nonce>`,
+`local/m1-beta-<nonce>`, `local/m1-empty-<nonce>`, each its own git repository with its own base commit) and one
+observed-only repository (`observed-example/observed-only-<nonce>`, a telemetry row that can never be assigned
+work) — the temp SQLite path and the path of a 0600 file holding
 this run's synthetic operator credential (never printed; paste it into the sign-in field). Fake providers only,
 live execution forced off, results labelled simulated. Assign work on the repository, publish, then open the
 document from the campus strip, the Headquarters button or the inbox and sign each gate by typing `Edward`.

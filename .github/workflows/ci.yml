@@ -6,7 +6,7 @@
 # disposable hub, SQLite file and fixture repository on free loopback ports (never 4317), a hard time
 # limit and process-group cleanup. Only an allowlist of synthetic evidence is uploaded
 # (scripts/ci/collect-browser-evidence.ts; secret-scanned; 7-day retention), also when a suite fails.
-# The three jobs share nothing (separate runners). checkout / setup-bun are still referenced by major
+# The four jobs share nothing (separate runners). checkout / setup-bun are still referenced by major
 # tag (pinning them to commit SHAs is open); upload-artifact is pinned to v7.0.1.
 name: ci
 
@@ -172,6 +172,45 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: browser-evidence-workspace-campus-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence
+          retention-days: 7
+          if-no-files-found: warn
+
+  workspace-multirepo:
+    name: workspace browser — multiple repositories and CEO briefing (multirepo.suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Isolation paths
+        run: |
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/pw-browsers" >> "$GITHUB_ENV"
+          echo "ISO_ROOT=$RUNNER_TEMP/agentcity-iso" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install (lockfile)
+        run: bun install --frozen-lockfile
+      - name: Browser engine (headless shell only)
+        timeout-minutes: 10
+        run: bunx playwright-core install --with-deps chromium-headless-shell
+      - name: Two fixture repositories, observed-only repository, briefing (multirepo.suite.ts)
+        timeout-minutes: 28
+        run: >-
+          bun scripts/ci/isolated.ts --root "$ISO_ROOT" --label workspace-multirepo --timeout 1620
+          --browsers "$PLAYWRIGHT_BROWSERS_PATH" -- bun --no-env-file run test:browser:multi
+      - name: Collect sanitized browser evidence
+        if: always()
+        run: >-
+          bun scripts/ci/collect-browser-evidence.ts --root "$ISO_ROOT"
+          --out "$RUNNER_TEMP/evidence" --summary "$GITHUB_STEP_SUMMARY"
+      - name: Upload browser evidence (synthetic only)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-evidence-workspace-multirepo-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/evidence
           retention-days: 7
           if-no-files-found: warn

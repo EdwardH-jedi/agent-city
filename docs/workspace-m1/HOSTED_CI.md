@@ -135,9 +135,14 @@ its own CI result, so that run is reported in the delivery handoff.
 
 - Hosted runs are Linux x64; local runs are macOS arm64. Observed durations are observations, not bounds.
 - CI generates and uploads screenshots; it does not visually inspect them.
-- Timing-window cases (for example P-06) record NOT RUN when the window closes on a given runner; that is
-  missing coverage for that run, reported in the step summary, not a pass.
-- Not verified by CI (or anywhere in M1): CEO briefing (J-21, not built), multiple repositories (R-01, one
-  repository by design), manual MacBook and physical screen-reader checks, axe-core, real providers, OS
-  containment, deployment.
+- Timing-window cases record NOT RUN when the window closes on a given runner; that is missing coverage for that
+  run, reported in the step summary, not a pass. (P-06 no longer has a timing window: since the multi-repository
+  milestone a test-only engine hook holds the cancellation's recording, so it always runs.)
+- The isolation wrapper's exit code (130 / 143 = the wrapper itself was interrupted, 124 = time limit) describes
+  only its own run; whether GitHub reports a job as cancelled is read from the Actions run status, never inferred
+  from that code.
+- Not verified by CI (or anywhere): manual MacBook and physical screen-reader checks, axe-core, real providers,
+  OS containment, deployment. Multiple repositories (R-01) and the CEO briefing (J-21) are covered since the
+  multi-repository milestone by the `workspace-multirepo` job (`multirepo.suite.ts`), which runs them as
+  BRW-R-01 / BRW-J-21 in the MULTI set (no longer in the HUB set, so nothing is counted twice).
 - `actions/checkout` and `oven-sh/setup-bun` are referenced by major tag, not pinned to a commit.

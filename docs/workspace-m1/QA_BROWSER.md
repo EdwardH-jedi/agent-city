@@ -132,3 +132,10 @@ apps/web/e2e/workspace-m1/campus.suite.ts` (`CAMPUS_ONLY=<regex>` for a subset; 
 These suites (`hub`, `fx`, `campus`) and the production-repair suite now also run on GitHub Actions through
 `scripts/ci/isolated.ts` (entry points `test:browser:hub|fx|campus|recovery`). Hosted results are recorded in
 `HOSTED_CI.md`, separately from the local runs above.
+
+## Multi-repository milestone (2026-10-03/04)
+
+R-01 and J-21, previously NOT RUN in the HUB set, now run with real assertions in the new MULTI set
+(`multirepo.suite.ts`, QA role) and are no longer emitted by `hub.suite.ts`; R-23 and R-24 are split into
+a/b orderings; P-06 runs deterministically with a test-only engine hook. Mapping: `MATRIX.md` §12. Results and
+the classification of every finding: `MULTIREPO_MILESTONE.md`.

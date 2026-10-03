@@ -12,6 +12,13 @@ lint/typecheck/secrets/isolated production build pass, demo 8/8, legacy browser 
 P2 defects are repaired; current evidence age and stale warnings advance without poll responses, and failed
 scene initialization explicitly releases resources. See `CAMPUS_REPAIR_2026-10-03.md` for provenance and limits.
 
+**Multi-repository milestone (2026-10-03/04, after `eeeef85`).** Two (or more) independently selectable,
+persistent simulated fixture repositories, observed-only repositories that can never be assigned work, an
+authoritative global execution queue, repository-scoped Headquarters and a deterministic CEO briefing; plus the
+stabilization of the CI wrapper exit contract, P-06, R-23/R-24 and three legacy focus defects. The "no second
+repository (R-01)" and "no CEO briefing (J-21)" limits below are superseded. Current record:
+`MULTIREPO_MILESTONE.md`.
+
 **Hosted CI and stabilization pass (2026-10-03, after the `80a9a17` delivery).** The first hosted run (GitHub
 Actions run 37090614170, push of `80a9a17`) passed lint, typecheck, unit 710 + integration 1078 (together the
 same 1788 `bun test` cases as above, not additional ones), secret scan, web build and demo, and failed the legacy
