@@ -15,7 +15,8 @@ import type {
 } from "playwright-core";
 import { SCAN_PATTERNS } from "../../../../packages/schema/src/secret-patterns.ts";
 
-export type SetLabel = "FX" | "HUB";
+/** Evidence set: FX (fixture), HUB (real hub), MULTI (multi-repository suite). */
+export type SetLabel = "FX" | "HUB" | "MULTI";
 export type Status = "PASS" | "FAIL" | "NOT RUN" | "BLOCKED";
 
 export interface CaseResult {

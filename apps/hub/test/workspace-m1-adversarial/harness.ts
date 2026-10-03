@@ -243,6 +243,8 @@ export interface RealHubOptions {
 	auth?: Partial<WorkspaceAuthOptions>;
 	credentials?: { operator: string; readOnly: string };
 	idleMs?: number;
+	/** Test-only engine boundaries (startHub `managedHooks`, e.g. a `Barrier`). Absent = none. */
+	hooks?: OrchestratorHooks;
 }
 
 export type RealHub = HubCommon & {
@@ -277,6 +279,7 @@ export function realHub(o: RealHubOptions = {}): RealHub {
 		port: 0,
 		managed: { config: fx.config, token: undefined },
 		managedIdleMs: o.idleMs ?? 30,
+		...(o.hooks ? { managedHooks: o.hooks } : {}),
 		workspace: {
 			operator_credential: credential,
 			read_only_credential: readOnlyCredential,
@@ -292,6 +295,7 @@ export function realHub(o: RealHubOptions = {}): RealHub {
 	const stop = async () => {
 		if (stopped) return;
 		stopped = true;
+		releaseHooks(o.hooks); // a held engine boundary would block the worker's stop
 		await hub.stop();
 		liveServers--;
 		if (db !== fx.db)
@@ -503,6 +507,7 @@ export function composedHub(o: ComposedOptions = {}): ComposedHub {
 	const stop = async () => {
 		if (stopped) return;
 		stopped = true;
+		releaseHooks(o.orchestratorHooks);
 		await bridge.stop();
 		if (worker) await worker.stop();
 		else await orch.shutdown();
@@ -578,10 +583,12 @@ export async function createTask(
 	c: Client,
 	fx: Fixture,
 	over: Partial<WorkspaceDraft> = {},
+	/** Multi-repository tests: one of `fx.repos[].id` (default: the primary fixture repository). */
+	repoId: string = fx.repoId,
 ): Promise<{ id: string; rev: number }> {
 	const r = await c.post("/tasks", {
 		idempotency_key: key("task"),
-		repo_id: fx.repoId,
+		repo_id: repoId,
 		draft: draft(over),
 	});
 	if (r.status !== 201) throw new Error(`create task ${r.status} ${r.text}`);
@@ -599,8 +606,9 @@ export async function openGate1(
 	c: Client,
 	fx: Fixture,
 	over: Partial<WorkspaceDraft> = {},
+	repoId: string = fx.repoId,
 ) {
-	const t = await createTask(c, fx, over);
+	const t = await createTask(c, fx, over, repoId);
 	const p = await c.post(`/tasks/${t.id}/proposals`, { expected_rev: t.rev });
 	if (p.status !== 201) throw new Error(`publish ${p.status} ${p.text}`);
 	const view = await taskView(c, t.id);
@@ -653,8 +661,9 @@ export async function approveGate1(
 	c: Client,
 	fx: Fixture,
 	over: Partial<WorkspaceDraft> = {},
+	repoId: string = fx.repoId,
 ) {
-	const g = await openGate1(c, fx, over);
+	const g = await openGate1(c, fx, over, repoId);
 	const ch = await issueChallenge(c, g.req);
 	const body = decisionBody(g.req, ch, "approve");
 	const res = await decide(c, g.req, body);
@@ -711,8 +720,9 @@ export async function toGate2(
 	c: Client,
 	fx: Fixture,
 	over: Partial<WorkspaceDraft> = {},
+	repoId: string = fx.repoId,
 ) {
-	const g1 = await approveGate1(c, fx, over);
+	const g1 = await approveGate1(c, fx, over, repoId);
 	const g2 = await waitGate2(c, g1.taskId);
 	return { ...g1, g2 };
 }
@@ -866,3 +876,162 @@ export const artifactRows = (db: Database, managedTaskId: string) =>
 		"SELECT id, run_id, name, kind, rel_path, sha256, byte_len FROM managed_artifacts WHERE task_id = ? ORDER BY created_at, id",
 		managedTaskId,
 	);
+
+// ── multi-repository support (QA, multi-repository milestone) ───────────────
+// Every repository here is a disposable fixture (synthetic ids only); observed-only rows go into the
+// telemetry `repos` table exactly like a GitHub sync would write them (never allowlisted).
+
+/** Fixture options with extra allowlisted repositories `local/adv-<label>-<nonce>` (primary first). */
+export function multiRepoFixture(
+	labels: string[],
+	over: Omit<FixtureOptions, "extraRepos" | "dbFile"> = {},
+): FixtureOptions {
+	const nonce = randomBytes(3).toString("hex");
+	return {
+		repoId: `local/adv-alpha-${nonce}`,
+		...over,
+		extraRepos: labels.map((label) => ({
+			id: `local/adv-${label}-${nonce}`,
+			label,
+		})),
+	};
+}
+
+/** Insert an observed-only repository row (telemetry / GitHub sync shape). Returns its id. */
+export function observeRepo(
+	db: Database,
+	label: string,
+	o: { localOnly?: boolean } = {},
+): string {
+	const id = `observed-example/${label}-${randomBytes(3).toString("hex")}`;
+	db.query(
+		"INSERT INTO repos (id, district, is_local_only, synced_at) VALUES (?, 'uncategorized', ?, ?)",
+	).run(id, o.localOnly ? 1 : 0, new Date().toISOString());
+	return id;
+}
+
+/** The fixture repository with `id` (throws when it is not one of this fixture's repositories). */
+export function repoOf(fx: Fixture, id: string) {
+	const r = fx.repos.find((x) => x.id === id);
+	if (!r) throw new Error(`not a fixture repository: ${id}`);
+	return r;
+}
+
+/** True when `sha` names an object in the git repository at `path` (read-only `cat-file -e`). */
+export function gitHas(fx: Fixture, path: string, sha: string): boolean {
+	const r = Bun.spawnSync(
+		[fx.config.git_executable, "-C", path, "cat-file", "-e", `${sha}^{commit}`],
+		{ stdout: "ignore", stderr: "ignore", env: { PATH: "/usr/bin:/bin" } },
+	);
+	return r.exitCode === 0;
+}
+
+type HookPoint = Parameters<NonNullable<OrchestratorHooks["at"]>>[0];
+
+/**
+ * A releasable engine boundary for `OrchestratorHooks.at`: while armed for a point, every managed
+ * task that reaches it waits (the claim's heartbeat keeps its lease) until released. Arrival order is
+ * recorded, so a test can compare the engine's real claim order with what the snapshot promised.
+ * Hubs created with a Barrier release it before stopping (a held claim would block the worker stop).
+ */
+export class Barrier implements OrchestratorHooks {
+	/** Managed task ids in the order they reached each point (whether held or not). */
+	readonly arrivals: { point: HookPoint; taskId: string }[] = [];
+	private readonly armed = new Set<HookPoint>();
+	private readonly waiting = new Map<string, () => void>();
+
+	arm(point: HookPoint): this {
+		this.armed.add(point);
+		return this;
+	}
+	disarm(point: HookPoint): void {
+		this.armed.delete(point);
+	}
+	at(point: HookPoint, taskId: string): Promise<void> | void {
+		this.arrivals.push({ point, taskId });
+		if (!this.armed.has(point)) return;
+		return new Promise<void>((resolve) => {
+			this.waiting.set(`${point}:${taskId}`, resolve);
+		});
+	}
+	/** Is `taskId` currently held at `point`? */
+	holding(point: HookPoint, taskId: string): boolean {
+		return this.waiting.has(`${point}:${taskId}`);
+	}
+	/** Let one held task continue (it stays armed for others). */
+	release(point: HookPoint, taskId: string): void {
+		const k = `${point}:${taskId}`;
+		this.waiting.get(k)?.();
+		this.waiting.delete(k);
+	}
+	/** Disarm everything and let every held task continue. */
+	releaseAll(): void {
+		this.armed.clear();
+		for (const r of this.waiting.values()) r();
+		this.waiting.clear();
+	}
+}
+
+function releaseHooks(h: OrchestratorHooks | undefined): void {
+	const r = h as { releaseAll?: () => void } | undefined;
+	if (typeof r?.releaseAll === "function") r.releaseAll();
+}
+
+const ENGINE_ACTIVE = "'executing', 'verifying', 'reviewing', 'repairing'";
+
+/**
+ * Is the engine (or the bridge behind it) still moving anything? Busy while a task holds a lease,
+ * is in an active engine state, is queued and claimable (no open quarantine), or while a workspace
+ * task still reads `queued` / `running` although its execution already ended (the bridge has not
+ * reconciled yet).
+ */
+export function engineBusy(db: Database): boolean {
+	const quarantined =
+		count(
+			db,
+			"SELECT count(*) AS n FROM managed_quarantine WHERE released_at IS NULL",
+		) > 0;
+	const busy = count(
+		db,
+		`SELECT count(*) AS n FROM managed_tasks WHERE lease_owner IS NOT NULL OR state IN (${ENGINE_ACTIVE})${quarantined ? "" : " OR state = 'queued'"}`,
+	);
+	const unreconciled = count(
+		db,
+		`SELECT count(*) AS n FROM workspace_tasks w JOIN managed_tasks m ON m.id = w.current_managed_task_id
+		 WHERE w.stage IN ('queued', 'running') AND m.state NOT IN ('queued', ${ENGINE_ACTIVE})`,
+	);
+	return busy + unreconciled > 0;
+}
+
+/**
+ * A dump taken only once nothing moves on its own: the engine and the bridge are idle (`engineBusy`)
+ * and the whole dump stays byte-identical for `stableMs`. NE assertions compare a refused request's
+ * after-dump with THIS, so background progress of earlier, legitimately approved work can never be
+ * mistaken for (or hide) an effect of the request under test.
+ */
+export async function settledDump(
+	db: Database,
+	ms = 30_000,
+	stableMs = 300,
+): Promise<string> {
+	const end = Date.now() + ms;
+	let last = "";
+	let since = 0;
+	for (;;) {
+		const now = Date.now();
+		if (now > end) throw new Error("settledDump: the engine never went idle");
+		if (engineBusy(db)) {
+			last = "";
+		} else {
+			const d = dump(db);
+			if (d !== last) {
+				last = d;
+				since = now;
+			} else if (now - since >= stableMs) return d;
+		}
+		await Bun.sleep(25);
+	}
+}
+
+/** GET /snapshot (200 asserted by the caller through the returned status). */
+export const snapshotOf = (c: Client) => c.get("/snapshot");

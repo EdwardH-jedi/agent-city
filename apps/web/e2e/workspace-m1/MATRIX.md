@@ -331,3 +331,25 @@ Errors use `role=alert` in their own section and name the last confirmed state a
 | BRW-C-03 | A failing check yields no satisfied criterion and no acceptance (HUB: the engine fails the attempt before sealing → no result request; unsatisfied rendering is proven in FX/unit tests only) | HUB/FX |
 | BRW-C-04 | Editing one criterion in a revision changes only that criterion's id | HUB/FX |
 | BRW-C-05 | A legacy v1 proposal reads "no criterion coverage — a new proposal and approval are required" | FX |
+
+## 12. Multi-repository milestone (lead; `docs/workspace-m1/MULTIREPO_MILESTONE.md`)
+
+New evidence set **[MULTI]** — `multirepo.suite.ts` (QA role), the isolated real hub with two allowlisted
+fixture repositories (A = `local/m1-fixture-<nonce>`, B = `local/m1-beta-<nonce>`), an empty allowlisted one
+(`local/m1-empty-<nonce>`) and an observed-only telemetry row (`observed-example/observed-only-<nonce>`).
+
+| ID | Where it now runs | Note |
+| --- | --- | --- |
+| BRW-R-01 | MULTI (moved from HUB, where it was NOT RUN) | Real assertions: A's detail + snapshot delayed 1.2 s (delay proven hit), click A then the observed repository: it stays selected ("Observed only", no Assign work, `observed` briefing); A's late answer never renders. |
+| BRW-J-21 | MULTI (moved from HUB, where it was NOT RUN) | The CEO briefing is a DOM card (no animation gates it): actionable at once, keyboard reachable, same under reduced motion, every claim navigates to its task / HQ document, zero POST/PUT/DELETE while opening, following and closing it. There is no campus briefing animation, so "replay" is not applicable. |
+| BRW-R-23a / R-23b | HUB (R-23 split) | a = page 1's own poll shows the request invalidated before any click (explicit status, no decision controls); b = page-1 reads held so the click reaches the hub first → visible 409 `stale_binding` refusal, then the real status. Exactly one decision/execution either way. |
+| BRW-R-24a / R-24b | HUB (R-24 split) | Same two orderings for two tabs on one request (b: two decision POSTs, one decision, visible 409 `invalid_state`). |
+| BRW-P-06 | HUB | Deterministic: a test-only engine hook (`before_cancel_confirm`, installed only through `startWorkspaceEnv({ managedHooks })`; production never installs hooks) holds the recording of the confirmed cancellation after the child is already proven gone; reload shows "requested"; release → "confirmed". No NOT-RUN path. |
+| MR-01 … MR-09 | MULTI | Required scenario: isolated drafts/histories/details per repository; submission starts nothing; separate fresh Gate-1 confirmations; global serialization (B "waiting behind" A's repository, one lease); per-repository pipeline and evidence ownership; separate fresh Gate-2 confirmations; HQ repository filter and "Open task in Projects"; briefings per repository; history identical across `restartHub()`. |
+| MR-R02 … MR-R07 | MULTI | Stale A answer after selecting B; rapid A→B→A; approval context change while signing (and B's change never touching A); dropped decision responses (committed / not committed); cancelling B while it waits behind A; invalid evidence consistent in task detail, HQ and briefing. |
+| MR-E01, MR-E02 | MULTI | Empty and observed-only repositories cannot acquire execution capability through the UI (no Assign work, `empty` / `observed` briefing, direct links offer nothing executable, 0 DB rows). |
+| MR-L-1440, MR-L-1280, MR-A-reduced-motion, MR-A-no-webgl, MR-A-scene-leak | MULTI | Labels and selected-task identity readable, no horizontal overflow with a 120-character title, keyboard repository selection + briefing + both gates; same workflow under reduced motion and without WebGL; ≤ 1 canvas / WebGL context across repeated navigation. |
+| MR-G-simulated, MR-G-requests, MR-G-console | MULTI | Globals (also recorded on filtered runs): fake/simulated attempts only, no off-origin request, no unexpected console error. |
+
+Backend counterparts: `apps/hub/src/workspace-m1/decisions/multi-repo.test.ts` (Worker A) and
+`apps/hub/test/workspace-m1-adversarial/multirepo.adv.test.ts` (QA, ADV-MR-01…16).

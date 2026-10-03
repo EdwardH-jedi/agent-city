@@ -23,6 +23,7 @@ import {
 	type Page,
 	type Route,
 } from "playwright-core";
+import type { OrchestratorHooks } from "../../../hub/src/managed/orchestrator.ts";
 import { startWorkspaceEnv, type WorkspaceEnv } from "../workspace-harness.ts";
 import {
 	approveRun,
@@ -114,6 +115,53 @@ const observed = {
 	alertNext: false,
 	offlineShown: false,
 };
+
+/**
+ * P-06: holds the engine's termination confirmation for ONE armed managed task (test-only orchestrator
+ * hook `before_cancel_confirm`, installed through startWorkspaceEnv({ managedHooks })). The hook runs after
+ * the claim's termination proof is final and outside any transaction; unarmed tasks pass straight
+ * through. A hold that is never released ends by itself after 30 s and is reported as a failure.
+ */
+const cancelBarrier = (() => {
+	let armed: string | null = null;
+	let reached = false;
+	let autoReleased = false;
+	let release: (() => void) | null = null;
+	const hooks: OrchestratorHooks = {
+		async at(point, taskId) {
+			if (point !== "before_cancel_confirm" || taskId !== armed) return;
+			reached = true;
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(() => {
+					autoReleased = true;
+					release = null;
+					resolve();
+				}, 30_000);
+				release = () => {
+					clearTimeout(timer);
+					resolve();
+				};
+			});
+		},
+	};
+	return {
+		hooks,
+		arm(managedTaskId: string) {
+			armed = managedTaskId;
+			reached = false;
+			autoReleased = false;
+		},
+		reached: () => reached,
+		autoReleased: () => autoReleased,
+		/** Release a hold (if any) and disarm. Safe to call more than once. */
+		release() {
+			armed = null;
+			const r = release;
+			release = null;
+			r?.();
+		},
+	};
+})();
 
 function trackChallenges(page: Page) {
 	page.on("response", async (r) => {
@@ -266,6 +314,55 @@ async function noMorePosts(t: Traffic, requestId: string, since: number) {
 }
 
 /** Submit, approve, follow the engine, wait for the Gate-2 request. Returns the task id. */
+/**
+ * Hold this page's workspace READS (snapshot + task detail GETs) until released; every other request —
+ * challenges, decisions, commands — passes. Used to force "this tab's request reaches the hub before
+ * this tab learns of another tab's change". Releasing twice is harmless.
+ */
+async function holdReads(
+	page: Page,
+): Promise<{ release(): Promise<void>; held(): number }> {
+	let open: () => void = () => undefined;
+	const gate = new Promise<void>((r) => {
+		open = r;
+	});
+	let held = 0;
+	let inFlight = 0;
+	let released = false;
+	const handler = async (route: Route) => {
+		inFlight++;
+		try {
+			const req = route.request();
+			const path = new URL(req.url()).pathname;
+			if (
+				!released &&
+				req.method() === "GET" &&
+				(path === "/api/workspace/snapshot" ||
+					/^\/api\/workspace\/tasks\/wst-[0-9a-f-]{36}$/.test(path))
+			) {
+				held++;
+				await gate;
+			}
+			await route.fallback().catch(() => undefined);
+		} finally {
+			inFlight--;
+		}
+	};
+	await page.route("**/api/workspace/**", handler);
+	return {
+		held: () => held,
+		async release() {
+			if (released) return;
+			released = true;
+			open();
+			// unroute only once no handler call is still running (an in-flight call would race it)
+			const t0 = Date.now();
+			while (inFlight > 0 && Date.now() - t0 < 5_000) await sleep(20);
+			await page.unroute("**/api/workspace/**", handler).catch(() => undefined);
+		},
+	};
+}
+
 async function toResult(
 	s: Session,
 	title: string,
@@ -2410,11 +2507,6 @@ async function raceCases(): Promise<void> {
 		await route.continue().catch(() => undefined);
 	};
 
-	run.notRun(
-		"BRW-R-01",
-		"M1 data has one allowlisted repository and no monitor-only repositories (N-16, 07 NOTES §8); no repo-level A→B possible",
-	);
-
 	await run.case("BRW-R-02", async () => {
 		await selectRepo(page, env.repoId);
 		await page.route(`**/api/workspace/tasks/${A}`, delay(A, 1500));
@@ -2929,11 +3021,41 @@ async function raceCases(): Promise<void> {
 		return `409 alert: "${a409.slice(0, 80)}"; 500 → status "${st500.slice(0, 60)}", alerts ${alerts500}`;
 	});
 
-	await run.case("BRW-R-23", async () => {
-		const t = "R23 Invalidated by another tab";
-		const id = await submitNew(page, { title: t });
-		const oldReq = await openRequest(page, "run", t);
-		await typeSignature(page, "run");
+	// R-23 / R-24: both orderings of "another tab changed the request" vs "this tab clicks", each made
+	// deterministic. (a) poll-before-click: page 1's own poll shows the change before anyone clicks, so
+	// the document must state the request's new status and offer no decision. (b) request-before-update:
+	// page 1's reads are held, so its click certainly reaches the server first; the server must refuse
+	// it visibly, and once the reads are released the document shows the real status.
+	const docOf = (p: Page, req: string) =>
+		p.locator(
+			`section[aria-label="Approval document"][data-request-id="${req}"]`,
+		);
+	/** The request's visible status chip + footer text, and that no decision control is left. */
+	async function closedDocument(p: Page, req: string, status: string) {
+		const doc = docOf(p, req);
+		await until(
+			async () =>
+				(await doc.getAttribute("data-request-status").catch(() => null)) ===
+				status,
+			`page 1 document shows ${status}`,
+			15_000,
+		);
+		const text = await textOf(doc);
+		check(
+			/No further decision is possible on it/.test(text),
+			`no explicit closed-request statement in the document: "${text.slice(-160)}"`,
+		);
+		check(
+			(await grantButton(p, "run").count()) === 0,
+			"Approve is still offered on a closed request",
+		);
+		check(
+			(await sigField(p, "run").count()) === 0,
+			"a signature field is still offered on a closed request",
+		);
+		return text;
+	}
+	async function secondTab(): Promise<{ p2: Page; tr2: Traffic }> {
 		const p2 = await s.context.newPage();
 		const tr2: Traffic = {
 			decisionPosts: [],
@@ -2942,6 +3064,9 @@ async function raceCases(): Promise<void> {
 			wsFrames: [],
 		};
 		attachPage(run, p2, env.uiUrl, tr2);
+		return { p2, tr2 };
+	}
+	async function resubmitInOtherTab(p2: Page, id: string) {
 		await p2.goto(`${env.uiUrl}/#/projects`);
 		await p2.getByText(/^Signed in as operator:edward/).waitFor();
 		await openTask(p2, id);
@@ -2958,61 +3083,8 @@ async function raceCases(): Promise<void> {
 			async () => (await textOf(p2.getByTestId("proposal-version"))) === "2",
 			"v2 in tab 2",
 		);
-		run.current = page;
-		// page 1's poll can disable Approve between this check and the click; then the click has
-		// nothing to act on, which must be because Approve is now disabled (checked, not ignored)
-		const enabled = await grantButton(page, "run")
-			.isEnabled()
-			.catch(() => false);
-		const clicked = enabled
-			? await grantButton(page, "run")
-					.click({ timeout: 3_000 })
-					.then(
-						() => true,
-						() => false,
-					)
-			: false;
-		if (enabled && !clicked)
-			check(
-				!(await grantButton(page, "run")
-					.isEnabled({ timeout: 1_000 })
-					.catch(() => false)),
-				"page 1 Approve is still enabled but could not be clicked",
-			);
-		await sleep(2500);
-		const alertTxt = (await page.getByRole("main").getByRole("alert").count())
-			? await textOf(page.getByRole("main").getByRole("alert"))
-			: "";
-		const docStatus = await page
-			.locator(
-				`section[aria-label="Approval document"][data-request-id="${oldReq}"]`,
-			)
-			.getAttribute("data-request-status")
-			.catch(() => null);
-		check(decisionsFor(oldReq) === 0, "old request decided");
-		check(approvedRuns(id) === 0, "something queued");
-		check(
-			(await sigField(page, "run").count()) === 0 ||
-				(await sigField(page, "run").inputValue()) === "",
-			"signature kept on the invalidated request",
-		);
-		await p2.close();
-		return `clicked before poll=${clicked} (enabled at check=${enabled}); alert "${alertTxt.slice(0, 70)}"; old document status=${docStatus}`;
-	});
-
-	await run.case("BRW-R-24", async () => {
-		const t = "R24 Same request two tabs";
-		const id = await submitNew(page, { title: t });
-		const req = await openRequest(page, "run", t);
-		await typeSignature(page, "run");
-		const p2 = await s.context.newPage();
-		const tr2: Traffic = {
-			decisionPosts: [],
-			mutations: [],
-			workspaceApiHits: 0,
-			wsFrames: [],
-		};
-		attachPage(run, p2, env.uiUrl, tr2);
+	}
+	async function approveInOtherTab(p2: Page, id: string, req: string) {
 		await p2.goto(`${env.uiUrl}/#/hq/${id}/${req}`);
 		await p2.getByText(/^Signed in as operator:edward/).waitFor();
 		await sigField(p2, "run").waitFor();
@@ -3022,44 +3094,169 @@ async function raceCases(): Promise<void> {
 			async () => /Execution approved/.test(await decisionStatus(p2)),
 			"tab 2 approved",
 		);
+	}
+	/** Page 1 still believes the request is open and its Approve is enabled (the ordering precondition). */
+	async function stillOpenOnPage1(req: string) {
+		check(
+			(await docOf(page, req).getAttribute("data-request-status")) ===
+				"pending",
+			"page 1 learned of the change before its click (reads not held)",
+		);
+		check(
+			await grantButton(page, "run").isEnabled(),
+			"page 1 Approve is not enabled before its click",
+		);
+	}
+	/** Click page 1's Approve and return the decision POST's status and error code. */
+	async function clickApproveOnPage1(req: string) {
+		const answer = page.waitForResponse(
+			(r) =>
+				r.request().method() === "POST" &&
+				new URL(r.url()).pathname.endsWith(
+					`/approval-requests/${req}/decisions`,
+				),
+		);
+		await grantButton(page, "run").click();
+		const r = await answer;
+		const body = (await r.json().catch(() => ({}))) as { error?: string };
+		return { status: r.status(), error: body.error ?? "" };
+	}
+
+	await run.case("BRW-R-23a", async () => {
+		const t = "R23a Invalidated by another tab (poll first)";
+		const id = await submitNew(page, { title: t });
+		const oldReq = await openRequest(page, "run", t);
+		await typeSignature(page, "run");
+		const { p2 } = await secondTab();
+		await resubmitInOtherTab(p2, id);
 		run.current = page;
-		// Tab 1 may learn of tab 2's decision between this check and the click (its poll replaces
-		// Approve with the decided note): then nothing is left to click, which is verified below
-		// rather than ignored. Either way tab 1 must end up showing the request decided or refused.
-		const enabled = await grantButton(page, "run")
-			.isEnabled()
-			.catch(() => false);
-		const clicked = enabled
-			? await grantButton(page, "run")
-					.click({ timeout: 3_000 })
-					.then(
-						() => true,
-						() => false,
-					)
-			: false;
-		if (enabled && !clicked)
+		const text = await closedDocument(page, oldReq, "invalidated");
+		check(
+			/Invalidated: /.test(text),
+			"no visible invalidation reason on page 1",
+		);
+		check(decisionsFor(oldReq) === 0, "old request decided");
+		check(approvedRuns(id) === 0, "something queued");
+		await p2.close();
+		const why = /Invalidated: [^.]*\./.exec(text)?.[0] ?? "";
+		return `page 1 poll first → document "${why}", no decision control; 0 decisions, 0 executions`;
+	});
+
+	await run.case("BRW-R-23b", async () => {
+		const t = "R23b Invalidated by another tab (click first)";
+		const id = await submitNew(page, { title: t });
+		const oldReq = await openRequest(page, "run", t);
+		await typeSignature(page, "run");
+		const hold = await holdReads(page);
+		try {
+			const { p2 } = await secondTab();
+			await resubmitInOtherTab(p2, id);
+			await p2.close();
+			run.current = page;
 			check(
-				!(await grantButton(page, "run")
-					.isEnabled({ timeout: 1_000 })
-					.catch(() => false)),
-				"tab 1 Approve is still enabled but could not be clicked",
+				reqs(id).find((r) => r.id === oldReq)?.status === "invalidated",
+				"the old request is not invalidated in the DB",
 			);
-		await sleep(2500);
+			await dismissAlerts(page);
+			await stillOpenOnPage1(oldReq);
+			const answer = await clickApproveOnPage1(oldReq);
+			check(
+				answer.status === 409,
+				`decision answered ${answer.status} ${answer.error}`,
+			);
+			// visible refusal before page 1 has re-read anything
+			await until(
+				async () =>
+					/no longer open|changed since it was loaded/i.test(
+						await decisionStatus(page),
+					),
+				"visible refusal in Decision status",
+			);
+			const refusal = await decisionStatus(page);
+			await hold.release();
+			const text = await closedDocument(page, oldReq, "invalidated");
+			const alert = page.getByRole("main").getByRole("alert").first();
+			await alert.waitFor();
+			const alertText = await textOf(alert);
+			check(
+				/no longer open|changed since it was loaded/i.test(alertText),
+				`alert does not name the refusal: "${alertText.slice(0, 120)}"`,
+			);
+			check(decisionsFor(oldReq) === 0, "old request decided");
+			check(approvedRuns(id) === 0, "something queued");
+			await dismissAlerts(page);
+			return `${hold.held()} page-1 read(s) held; click → ${answer.status} ${answer.error}; Decision status "${refusal.slice(0, 70)}"; after release: "${/Invalidated: [^.]*\./.exec(text)?.[0] ?? ""}", alert shown; 0 decisions, 0 executions`;
+		} finally {
+			await hold.release();
+		}
+	});
+
+	await run.case("BRW-R-24a", async () => {
+		const t = "R24a Same request two tabs (poll first)";
+		const id = await submitNew(page, { title: t });
+		const req = await openRequest(page, "run", t);
+		await typeSignature(page, "run");
+		const { p2, tr2 } = await secondTab();
+		await approveInOtherTab(p2, id, req);
+		run.current = page;
+		const before = (await posts(traffic, req)).length;
+		const text = await closedDocument(page, req, "approved");
+		check(
+			/approved · operator:edward/i.test(text),
+			"page 1 does not show who decided",
+		);
 		check(decisionsFor(req) === 1, `decisions ${decisionsFor(req)}`);
 		check(approvedRuns(id) === 1, "executions ≠ 1");
-		const st = await decisionStatus(page).catch(() => "");
-		const docStatus = await page
-			.locator(
-				`section[aria-label="Approval document"][data-request-id="${req}"]`,
-			)
-			.getAttribute("data-request-status", { timeout: 1_000 })
-			.catch(() => null);
 		check(
-			docStatus === "approved" || /no longer open/i.test(st),
-			`tab 1 shows neither the decided request nor a refusal (status=${docStatus}; "${st.slice(0, 70)}")`,
+			(await posts(traffic, req)).length === before,
+			"page 1 sent a decision",
 		);
+		check((await posts(tr2, req)).length === 1, "tab 2 decision posts ≠ 1");
 		await p2.close();
-		return `tab 1 Approve enabled at check=${enabled}, clicked=${clicked}; tab 1 request status=${docStatus}; decision status "${st.slice(0, 70)}"; 1 decision`;
+		return "tab 2 decided; page 1's poll shows the request approved (by operator:edward) with no decision control; 1 decision, 1 execution, page 1 sent none";
+	});
+
+	await run.case("BRW-R-24b", async () => {
+		const t = "R24b Same request two tabs (click first)";
+		const id = await submitNew(page, { title: t });
+		const req = await openRequest(page, "run", t);
+		await typeSignature(page, "run");
+		const hold = await holdReads(page);
+		try {
+			const { p2, tr2 } = await secondTab();
+			await approveInOtherTab(p2, id, req);
+			await p2.close();
+			run.current = page;
+			await dismissAlerts(page);
+			await stillOpenOnPage1(req);
+			const answer = await clickApproveOnPage1(req);
+			check(
+				answer.status === 409,
+				`page 1 decision answered ${answer.status} ${answer.error}`,
+			);
+			await until(
+				async () =>
+					/no longer open|no longer valid|changed since it was loaded/i.test(
+						await decisionStatus(page),
+					),
+				"visible refusal in Decision status",
+			);
+			const refusal = await decisionStatus(page);
+			await hold.release();
+			await closedDocument(page, req, "approved");
+			// a legitimate competing approval: two HTTP decision attempts, exactly one decision
+			check(
+				(await posts(traffic, req)).length === 1 &&
+					(await posts(tr2, req)).length === 1,
+				"expected exactly one decision POST from each tab",
+			);
+			check(decisionsFor(req) === 1, `decisions ${decisionsFor(req)}`);
+			check(approvedRuns(id) === 1, "executions ≠ 1");
+			await dismissAlerts(page);
+			return `${hold.held()} page-1 read(s) held; page 1 click → ${answer.status} ${answer.error}; Decision status "${refusal.slice(0, 70)}"; after release the document shows approved; 2 decision POSTs, 1 decision, 1 execution`;
+		} finally {
+			await hold.release();
+		}
 	});
 
 	await run.case("BRW-R-25", async () => {
@@ -3441,32 +3638,87 @@ async function cancelCases(): Promise<void> {
 		await approveRun(page, t);
 		await openTask(page, id);
 		await waitEngine(page, ["executing"], 60_000);
-		await region(page, "Task detail")
-			.getByRole("button", { name: "Cancel execution" })
-			.click();
-		await page.reload();
-		await page
-			.locator(`section[aria-label="Task detail"][data-task-id="${id}"]`)
-			.waitFor();
-		const c = await attr(page, "cancellation-status", "data-status");
-		const e = await attr(page, "engine-state", "data-state");
-		const st = await stageText(page);
-		check(
-			!(st === "Cancelled" && e !== "cancelled"),
-			"Cancelled shown while the engine is not cancelled",
-		);
-		await until(
-			async () =>
-				(await attr(page, "cancellation-status", "data-status")) ===
-				"confirmed",
-			"confirmed",
-			30_000,
-		);
-		if (c !== "requested")
-			throw new Error(
-				`NOT-RUN: requested window closed before the reload finished (first read after reload: cancellation=${c}, engine=${e}, stage=${st}); ordering held`,
+		const managed = taskRow(id)?.current_managed_task_id ?? "";
+		check(managed.startsWith("task-"), "no managed task for P-06");
+		cancelBarrier.arm(managed);
+		try {
+			await region(page, "Task detail")
+				.getByRole("button", { name: "Cancel execution" })
+				.click();
+			// the cancel is recorded and the engine holds right before recording the cancellation
+			await until(
+				async () =>
+					cancelBarrier.reached() &&
+					db1<{ c: string | null }>(
+						"SELECT cancel_requested_at AS c FROM managed_tasks WHERE id = ?",
+						managed,
+					)?.c != null,
+				"cancel requested and termination confirmation held",
+				30_000,
 			);
-		return `after reload: cancellation=${c}, engine=${e}, stage=${st}; later confirmed`;
+			const held = db1<{ state: string; child_pid: number | null }>(
+				"SELECT t.state, r.child_pid FROM managed_tasks t JOIN managed_runs r ON r.id = t.current_run_id WHERE t.id = ?",
+				managed,
+			);
+			check(held?.state === "executing", `engine ${held?.state} during hold`);
+			// the hold sits after the termination proof: the child is already confirmed gone
+			check(
+				held?.child_pid === null,
+				"the run still records a live child during the hold",
+			);
+			check(
+				taskRow(id)?.stage === "cancel_requested",
+				`workspace stage ${taskRow(id)?.stage} during hold`,
+			);
+			await page.reload();
+			await page
+				.locator(`section[aria-label="Task detail"][data-task-id="${id}"]`)
+				.waitFor();
+			await until(
+				async () =>
+					(await attr(page, "cancellation-status", "data-status")) ===
+					"requested",
+				'"requested" after reload',
+				15_000,
+			);
+			// one more poll cycle: still requested, never "Cancelled" without the engine's proof
+			await sleep(2500);
+			const c = await attr(page, "cancellation-status", "data-status");
+			const e = await attr(page, "engine-state", "data-state");
+			const st = await stageText(page);
+			check(c === "requested", `cancellation ${c} while held`);
+			check(e !== "cancelled", "engine shown cancelled while held");
+			check(st !== "Cancelled", "Cancelled shown while the engine is not");
+			check(managedState(managed) === "executing", "engine moved during hold");
+			await run.shot(page, "P06-requested-after-reload");
+			cancelBarrier.release();
+			await until(
+				async () =>
+					(await attr(page, "cancellation-status", "data-status")) ===
+					"confirmed",
+				"confirmed after release",
+				30_000,
+			);
+			await waitStage(page, "Cancelled", 20_000);
+			check(
+				(await attr(page, "engine-state", "data-state")) === "cancelled",
+				"engine not cancelled after release",
+			);
+			check(!cancelBarrier.autoReleased(), "the hold expired by itself");
+			check(taskRow(id)?.stage === "cancelled", "DB stage");
+			const proof = db1<{ state: string; state_detail: string | null }>(
+				"SELECT state, state_detail FROM managed_tasks WHERE id = ?",
+				managed,
+			);
+			check(
+				proof?.state === "cancelled" &&
+					/owned processes confirmed terminated/.test(proof.state_detail ?? ""),
+				`termination proof: ${proof?.state} "${proof?.state_detail}"`,
+			);
+			return `held: engine executing, child pid ${held?.child_pid === null ? "cleared (terminated)" : "still recorded"}, stage cancel_requested; after reload: cancellation=${c}, engine=${e}, stage=${st}; released → confirmed, engine cancelled ("${proof?.state_detail}")`;
+		} finally {
+			cancelBarrier.release();
+		}
 	});
 	await close(s);
 }
@@ -3853,7 +4105,15 @@ async function a11yCases(): Promise<void> {
 
 	await run.case("BRW-A-03", async () => {
 		const inbox = region(page, "Approval inbox");
-		await tabTo(page, (f) => f.label === "Gate", "Gate filter", 40, true);
+		// budget 80 (was 40): the multi-repository milestone adds Headquarters tab stops (Repository
+		// filter, repository-scoped controls); the actual count is recorded in the case detail
+		const gatePresses = await tabTo(
+			page,
+			(f) => f.label === "Gate",
+			"Gate filter",
+			80,
+			true,
+		);
 		await page.keyboard.type("Res");
 		await sleep(200);
 		const gateVal = await inbox.getByLabel("Gate").inputValue();
@@ -3878,7 +4138,7 @@ async function a11yCases(): Promise<void> {
 			.getAttribute("aria-current");
 		check(cur === "true", "aria-current not set");
 		check(mouseClicks.length === 0, "mouse used");
-		return `gate filter by keys → "${gateVal}"; search "R03" → ${n} item(s); task selected by keys, focus on panel heading`;
+		return `gate filter by keys (${gatePresses} presses) → "${gateVal}"; search "R03" → ${n} item(s); task selected by keys, focus on panel heading`;
 	});
 
 	await run.case("BRW-A-04", async () => {
@@ -4897,6 +5157,7 @@ async function main(): Promise<number> {
 	const version = browser.version();
 	env = await startWorkspaceEnv({
 		readOnly: true,
+		managedHooks: cancelBarrier.hooks,
 		auth: { max_sessions_per_principal: 8 },
 		fixture: {
 			verification: [
@@ -4932,10 +5193,6 @@ async function main(): Promise<number> {
 		await a11yCases();
 		await motionWebglCases();
 		await persistenceCases();
-		run.notRun(
-			"BRW-J-21",
-			"no CEO briefing is built in M1 (conditional case; 07 NOTES §8)",
-		);
 		await raceGate2Lost();
 		await ttlCases();
 	} finally {

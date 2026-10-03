@@ -1,5 +1,9 @@
 // ADV-AUTH, ADV-ORIGIN, ADV-CSRF, ADV-INPUT — direct HTTP attacks on the real hub (startHub,
 // workspace mode). Every refused mutation is checked against a DB dump (NE: no durable effect).
+// The "before" dump is a settled one (`settledDump`): ADV-AUTH-08 legitimately approves a Gate 1 on
+// the shared hub, and the background engine/bridge keep advancing that execution afterwards; comparing
+// against a dump taken mid-run flaked (engine progress, not an effect of the refused request). The
+// after-dump is still the full, unfiltered dump.
 import {
 	afterAll,
 	afterEach,
@@ -27,6 +31,7 @@ import {
 	type RealHub,
 	realHub,
 	requestRow,
+	settledDump,
 	signIn,
 	teardown,
 	teardownSince,
@@ -97,7 +102,7 @@ const mutations = () =>
 
 describe("ADV-AUTH authentication and scope", () => {
 	test("ADV-AUTH-01 every mutation without a session → 401, no durable effect", async () => {
-		const before = dump(H.db);
+		const before = await settledDump(H.db);
 		for (const [m, p, b] of mutations()) {
 			const r = await http(H.base, m, `${BASE}${p}`, b, {
 				csrf: op.csrf,
@@ -115,7 +120,7 @@ describe("ADV-AUTH authentication and scope", () => {
 		});
 		expect(del.status).toBe(401);
 		expect(dump(H.db)).toBe(before);
-	});
+	}, 30_000); // settledDump may wait for earlier approved work to finish
 
 	test("ADV-AUTH-02 every read without a session → 401 with no task data", async () => {
 		const art = fakeId("art");
@@ -136,7 +141,7 @@ describe("ADV-AUTH authentication and scope", () => {
 
 	test("ADV-AUTH-03 forged well-formed session cookie → 401 on read and mutation", async () => {
 		const forged = `agentcity_ws_session=${randomBytes(32).toString("base64url")}`;
-		const before = dump(H.db);
+		const before = await settledDump(H.db);
 		expect(
 			(
 				await http(H.base, "GET", `${BASE}/snapshot`, undefined, {
@@ -154,7 +159,7 @@ describe("ADV-AUTH authentication and scope", () => {
 			).status,
 		).toBe(401);
 		expect(dump(H.db)).toBe(before);
-	});
+	}, 30_000); // settledDump may wait for earlier approved work to finish
 
 	test("ADV-AUTH-04 a session from a previous boot is dead after restart", async () => {
 		const A = realHub();
@@ -208,7 +213,7 @@ describe("ADV-AUTH authentication and scope", () => {
 		const v = await H.signIn("viewer");
 		expect((await v.get("/snapshot")).status).toBe(200);
 		expect((await v.get(`/tasks/${taskId}`)).status).toBe(200);
-		const before = dump(H.db);
+		const before = await settledDump(H.db);
 		for (const [m, p, b] of mutations()) {
 			const r = await v.req(m, p, b);
 			expect([m, p, r.status, r.body?.error]).toEqual([
@@ -219,7 +224,7 @@ describe("ADV-AUTH authentication and scope", () => {
 			]);
 		}
 		expect(dump(H.db)).toBe(before);
-	});
+	}, 30_000); // settledDump may wait for earlier approved work to finish
 
 	test("ADV-AUTH-08 challenge minted for the operator, decision sent by the read-only session → 403; challenge stays usable", async () => {
 		const g = await openGate1(op, H.fx);
@@ -366,7 +371,7 @@ describe("ADV-ORIGIN exact Origin (mutations: POST /tasks with a valid cookie + 
 
 	test("ADV-ORIGIN-04 cross-port page also cannot issue a challenge or decide", async () => {
 		const evil = "http://127.0.0.1:6123";
-		const before = dump(H.db);
+		const before = await settledDump(H.db);
 		const ch = await op.post(
 			`/approval-requests/${req.id}/challenge`,
 			{
@@ -378,7 +383,7 @@ describe("ADV-ORIGIN exact Origin (mutations: POST /tasks with a valid cookie + 
 		);
 		expect(ch.status).toBe(403);
 		expect(dump(H.db)).toBe(before);
-	});
+	}, 30_000); // settledDump may wait for earlier approved work to finish
 
 	test("ADV-ORIGIN-09 extra allowed origin is exact-match only", async () => {
 		const extra = "http://127.0.0.1:6001";
@@ -463,14 +468,14 @@ describe("ADV-CSRF request forgery", () => {
 		);
 
 	test("ADV-CSRF-01/02 missing or random CSRF → 403 csrf_invalid, no effect", async () => {
-		const before = dump(H.db);
+		const before = await settledDump(H.db);
 		for (const csrf of [null, randomBytes(32).toString("base64url"), ""]) {
 			const r = await create({ csrf });
 			expect(r.status).toBe(403);
 			expect(r.body?.error).toBe("csrf_invalid");
 		}
 		expect(dump(H.db)).toBe(before);
-	});
+	}, 30_000); // settledDump may wait for earlier approved work to finish
 
 	test("ADV-CSRF-03 another session's CSRF token with this session's cookie → 403", async () => {
 		const other = await H.signIn();
@@ -507,7 +512,7 @@ describe("ADV-CSRF request forgery", () => {
 	});
 
 	test("ADV-CSRF-06 simple-request content types → 415, no effect", async () => {
-		const before = dump(H.db);
+		const before = await settledDump(H.db);
 		const body = JSON.stringify({
 			idempotency_key: key(),
 			repo_id: H.fx.repoId,
@@ -527,7 +532,7 @@ describe("ADV-CSRF request forgery", () => {
 			expect([ct, r.status]).toEqual([ct, 415]);
 		}
 		expect(dump(H.db)).toBe(before);
-	});
+	}, 30_000); // settledDump may wait for earlier approved work to finish
 
 	test("ADV-CSRF-07 challenge issuance via GET is not a route; nothing written", async () => {
 		const before = requestRow(H.db, req.id);
@@ -542,7 +547,7 @@ describe("ADV-CSRF request forgery", () => {
 describe("ADV-INPUT body / method / path confusion", () => {
 	test("ADV-INPUT-01 unknown fields on every mutation → 400, unknown key and value never echoed", async () => {
 		const marker = `zz_unknown_${randomBytes(4).toString("hex")}`;
-		const before = dump(H.db);
+		const before = await settledDump(H.db);
 		for (const [m, p, b] of mutations()) {
 			const r = await op.req(m, p, {
 				...(b as object),
@@ -552,7 +557,7 @@ describe("ADV-INPUT body / method / path confusion", () => {
 			expect(r.text).not.toContain(marker);
 		}
 		expect(dump(H.db)).toBe(before);
-	});
+	}, 30_000); // settledDump may wait for earlier approved work to finish
 
 	test("ADV-INPUT-02 oversized / malformed / BOM / deeply nested bodies → 4xx, hub stays up", async () => {
 		const big = await op.post("/tasks", undefined, {
@@ -601,7 +606,7 @@ describe("ADV-INPUT body / method / path confusion", () => {
 			cookie: null,
 		});
 		expect(head.status).toBe(401);
-		const before = dump(H.db);
+		const before = await settledDump(H.db);
 		for (const m of ["PUT", "PATCH", "DELETE"]) {
 			const r = await op.req(m, "/snapshot", {});
 			expect([m, r.status]).toEqual([m, 404]);
@@ -620,7 +625,7 @@ describe("ADV-INPUT body / method / path confusion", () => {
 		);
 		expect(override.status).toBe(409); // handled as the POST it is (stale rev), not as DELETE
 		expect(dump(H.db)).toBe(before);
-	});
+	}, 30_000); // settledDump may wait for earlier approved work to finish
 
 	test("ADV-INPUT-06 path confusion never reaches an unauthenticated handler", async () => {
 		for (const p of [
