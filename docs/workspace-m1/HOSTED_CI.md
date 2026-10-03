@@ -61,7 +61,7 @@ AGENTCITY_HOME; cached headless shell 153.0.8010.12; fake providers; nothing on 
 | simulated managed demo | 8 / 8 scenarios |
 | legacy browser gate | unchanged product + new steps: 26/27 (forced-order step fails as on CI); with the fix: 27/27 in 7 consecutive runs (one under the CI wrapper) |
 | focus diagnostic (scratch, not committed) | before the fix: forced order 5/5 focus on `<body>`; after: 20/20 on the heading (15 natural, 5 forced) |
-| real-hub suite (`test:browser:hub`) | 108 pass / 0 fail / 2 NOT RUN (R-01, J-21) |
+| real-hub suite (`test:browser:hub`) | 108 pass / 0 fail / 2 NOT RUN (R-01, J-21); again 108 / 0 / 2 after the R-23/R-24 repair below |
 | fixture suite (`test:browser:fx`) | 30 pass / 0 fail / 24 NOT RUN (delegated to the real-hub suite) |
 | campus suite (`test:browser:campus`) | 36 / 0 / 0 |
 | production build + repair suite (`test:browser:recovery`) | build ok (5 files; >500 kB chunk warning retained) / 12 pass / 0 fail |
@@ -101,10 +101,42 @@ repositories, browser profiles or storage, traces, HARs, accessibility snapshots
 `if: always()` (failure evidence included), 7-day retention, one artifact per job and attempt. Credentials in
 the suites are synthetic per run, never printed, and typed only into password fields.
 
+## Run 2 — first run with the new coverage
+
+- Run <https://github.com/EdwardH-jedi/agent-city/actions/runs/37099491744>, event `push`, commit
+  `db00c9365d2852c28ec997fc076b6a4920343d46` (the fix, CI and documentation commits above), 2026-10-03
+  05:20–05:43 UTC. Conclusion: **failure** (one real-hub case).
+- `checks` (job 111136066513): **success** — lint (315 files), typecheck, unit 716 / 0, integration 1078 / 0,
+  secret scan (366 files), web build, demo; legacy browser gate **27/27** on Linux, including the deep-link
+  focus check that failed in run 1 and the forced-order step.
+- `workspace-campus` (job 111136066507): **success** — fixture 30 pass / 0 fail / 24 delegated; campus 36 / 0 / 0
+  (software-WebGL scene initialised on Linux); production build 5 files; production repair 12 / 0.
+- `workspace-hub` (job 111136066419): **failure** — 106 pass / **1 fail** / 3 NOT RUN in 1338 s. NOT RUN: R-01
+  and J-21 (as everywhere) and **P-06**, which records NOT RUN by design when its timing window closes (here the
+  cancellation was already confirmed when the reload finished; ordering still held). Locally P-06 passed.
+- The failure, **BRW-R-24** (`click: Timeout 12000ms exceeded`), was a race in the test, not in the product. The
+  failure screenshot shows tab 1 already displaying the request as approved with exactly one decision; the
+  case had checked that tab 1's Approve was enabled, tab 1's poll then replaced it with the decided note, and
+  the click waited 12 s for a button that no longer existed. Locally the click always landed first and the hub
+  refused it ("no longer open for a decision"). BRW-R-23 had the same check-then-click race (it passed here
+  because Approve was already disabled at the check).
+- Repair (test only): R-23 and R-24 still click tab 1's Approve whenever it is clickable; if it disappears
+  between the check and the click, the case now verifies that Approve is no longer enabled instead of failing
+  on the click, and R-24 additionally asserts the MATRIX outcome — tab 1 shows the request decided or a refusal
+  — in both paths, with exactly one decision and one execution as before. Locally both orders pass twice each
+  (natural: click refused; forced with tab 1's poll first: decided state shown).
+- Artifacts (synthetic, 7 days): legacy gate 11264894861, campus job 11266015271, real-hub job 11266021205; the
+  collector's secret scan reported no hits in any job.
+
+The commit that adds this record and the R-23/R-24 repair is verified by the next run; a commit cannot contain
+its own CI result, so that run is reported in the delivery handoff.
+
 ## Limitations
 
 - Hosted runs are Linux x64; local runs are macOS arm64. Observed durations are observations, not bounds.
 - CI generates and uploads screenshots; it does not visually inspect them.
+- Timing-window cases (for example P-06) record NOT RUN when the window closes on a given runner; that is
+  missing coverage for that run, reported in the step summary, not a pass.
 - Not verified by CI (or anywhere in M1): CEO briefing (J-21, not built), multiple repositories (R-01, one
   repository by design), manual MacBook and physical screen-reader checks, axe-core, real providers, OS
   containment, deployment.
