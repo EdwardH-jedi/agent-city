@@ -286,12 +286,15 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 		setSelected(id);
 	};
 
-	// keyboard users land on the detail they opened
-	const detailId = detail?.task.id ?? null;
+	// keyboard users land on the detail they opened — once its heading is actually rendered: a
+	// deep-linked detail can answer while the token check is still showing the gate (no heading yet)
+	const shownDetailId =
+		auth === "ok" && !unavailable && detail?.task.id === selected
+			? selected
+			: null;
 	useEffect(() => {
-		if (detailId && detailId === selectedRef.current)
-			detailHeading.current?.focus({ preventScroll: true });
-	}, [detailId]);
+		if (shownDetailId) detailHeading.current?.focus({ preventScroll: true });
+	}, [shownDetailId]);
 
 	if (auth === "none")
 		return (

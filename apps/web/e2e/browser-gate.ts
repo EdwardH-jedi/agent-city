@@ -171,6 +171,37 @@ async function waitState(
 		.waitFor({ timeout });
 }
 
+/**
+ * Keyboard focus is on THIS task's detail heading. The view moves focus in an effect after the
+ * detail renders, so the exact condition is awaited — bounded, and no other element counts.
+ */
+async function focusedDetail(page: Page, id: string, timeout = 3_000) {
+	try {
+		await page.waitForFunction(
+			(want) => {
+				const el = document.activeElement;
+				return (
+					el?.getAttribute("data-testid") === "detail-heading" &&
+					el
+						.closest("[data-testid=task-detail]")
+						?.getAttribute("data-task-id") === want
+				);
+			},
+			id,
+			{ timeout, polling: 50 },
+		);
+	} catch {
+		const where = await page.evaluate(() => {
+			const el = document.activeElement;
+			const owner = el
+				?.closest("[data-testid=task-detail]")
+				?.getAttribute("data-task-id");
+			return `${el?.tagName.toLowerCase()}[data-testid=${el?.getAttribute("data-testid")}] in ${owner ?? "no task detail"}`;
+		});
+		throw new Error(`focus is on ${where}, not on the heading of ${id}`);
+	}
+}
+
 async function fillForm(
 	page: Page,
 	o: {
@@ -801,10 +832,7 @@ async function main(): Promise<number> {
 			await page
 				.locator(`[data-testid=task-detail][data-task-id="${ok}"]`)
 				.waitFor();
-			const focused = await page.evaluate(() =>
-				document.activeElement?.getAttribute("data-testid"),
-			);
-			assert(focused === "detail-heading", `focus is on ${focused}`);
+			await focusedDetail(page, ok);
 			await page.goto(
 				`${base}/#tasks/task-00000000-0000-0000-0000-000000000000`,
 			);
@@ -823,7 +851,108 @@ async function main(): Promise<number> {
 			.locator(`[data-testid=task-detail][data-task-id="${b}"]`)
 			.waitFor();
 		assert(page.url().endsWith(`#tasks/${b}`), "deep link not updated");
+		await focusedDetail(page, b);
 	});
+
+	await step(
+		"deep links: a detail that answers before the token check still receives focus",
+		async () => {
+			// the hosted-CI order: the task's detail answers before /config + /tasks confirm the token
+			// (the view still shows "checking the token"); holding the list forces that order here
+			const order: string[] = [];
+			const seen = (r: { url(): string }) => {
+				const path = new URL(r.url()).pathname;
+				if (path === "/api/managed/tasks") order.push("list");
+				else if (path === `/api/managed/tasks/${ok}`) order.push("detail");
+			};
+			await page.route("**/api/managed/tasks", async (route) => {
+				await sleep(800);
+				await route.continue();
+			});
+			await page.goto(`${base}/#tasks/${ok}`);
+			page.on("response", seen);
+			await page.reload();
+			await page
+				.locator(`[data-testid=task-detail][data-task-id="${ok}"]`)
+				.waitFor();
+			page.off("response", seen);
+			await page.unrouteAll();
+			assert(
+				order[0] === "detail",
+				`the race was not reproduced (answers: ${order.join(" > ")})`,
+			);
+			await focusedDetail(page, ok);
+		},
+	);
+
+	await step(
+		"focus: background refreshes of the open task never take focus from the form",
+		async () => {
+			const id = await createTask({
+				title: "Gate background refresh",
+				simulation_scenario: "impl_hangs",
+			});
+			await page.reload();
+			await page.getByTestId("new-title").waitFor();
+			await select(page, id);
+			await focusedDetail(page, id);
+			await page.getByTestId("run-button").click();
+			await page
+				.locator(`[data-testid=task-detail][data-task-id="${id}"]`)
+				.filter({ hasText: "executing" })
+				.waitFor();
+			// while it runs, the view re-fetches the list and this detail every 3 s (fallback poll)
+			const title = page.getByTestId("new-title");
+			await title.focus();
+			await page.keyboard.type("typed during a refresh");
+			for (let i = 0; i < 2; i++)
+				await page.waitForResponse(
+					(r) => r.url().endsWith(`/api/managed/tasks/${id}`),
+					{ timeout: 10_000 },
+				);
+			await sleep(300); // the last re-fetched detail has rendered
+			const active = await page.evaluate(() =>
+				document.activeElement?.getAttribute("data-testid"),
+			);
+			assert(active === "new-title", `focus moved to ${active}`);
+			assert(
+				(await title.inputValue()) === "typed during a refresh",
+				"typed text lost",
+			);
+			await title.fill("");
+			await page.getByTestId("cancel-button").click();
+			await waitState(page, id, "cancelled");
+		},
+	);
+
+	await step(
+		"focus: a late answer for an earlier selection never takes focus from the newer task",
+		async () => {
+			await page.route(`**/api/managed/tasks/${a}`, async (route) => {
+				await sleep(1_200);
+				await route.continue();
+			});
+			const late = page.waitForResponse((r) =>
+				r.url().endsWith(`/api/managed/tasks/${a}`),
+			);
+			await page.locator(`[data-testid=task-row][data-task-id="${a}"]`).click();
+			await page.locator(`[data-testid=task-row][data-task-id="${b}"]`).click();
+			await page
+				.locator(`[data-testid=task-detail][data-task-id="${b}"]`)
+				.waitFor();
+			await focusedDetail(page, b);
+			await late; // A's answer has reached the page
+			await sleep(300); // …and had a render to (wrongly) act on
+			await focusedDetail(page, b, 500);
+			assert(
+				(await page
+					.locator("[data-testid=task-detail]")
+					.getAttribute("data-task-id")) === b,
+				"the late answer replaced the newer task",
+			);
+			await page.unrouteAll();
+		},
+	);
 
 	await step(
 		"offline: a lost detail request shows an offline notice that clears on recovery",
