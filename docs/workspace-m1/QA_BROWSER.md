@@ -126,3 +126,9 @@ apps/web/e2e/workspace-m1/campus.suite.ts` (`CAMPUS_ONLY=<regex>` for a subset; 
   delegated; campus 36 / 0 / 0; legacy gate 24/24. 0 console errors, 0 requests outside the UI origin, all
   attempts fake/simulated. Evidence: scratchpad `iso/tmp/agentcity-m1-09-hub-8K9nJA/`, `…-fx-Jzfgrl/`,
   `…-hub-0ttNHx/`; logs `campus-final/batch3/`. Counts are runner pass records, not assertions.
+
+## Hosted CI (2026-10-03 onward)
+
+These suites (`hub`, `fx`, `campus`) and the production-repair suite now also run on GitHub Actions through
+`scripts/ci/isolated.ts` (entry points `test:browser:hub|fx|campus|recovery`). Hosted results are recorded in
+`HOSTED_CI.md`, separately from the local runs above.

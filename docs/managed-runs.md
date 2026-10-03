@@ -277,5 +277,5 @@ Where the required gates are tested:
 3D city, meetings, cross-repo scheduling, distributed workers, task discovery, an API-based planner,
 GitHub writes, automatic merge/deploy, OS-level isolation, worktree garbage collection, more than
 one active task, reviewer session continuation (implemented in the adapter, unused by the
-orchestrator), a hosted CI run (the workflow file exists but was never executed), any live provider
-run.
+orchestrator), a hosted CI run (the workflow file existed but was never executed at v0.1.1; it has run
+since 2026-10-03 — `workspace-m1/HOSTED_CI.md`), any live provider run.

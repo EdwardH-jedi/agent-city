@@ -112,7 +112,10 @@ GitHub integration logic, web-state merging, documentation parity, and the manag
 (lifecycle, recovery, quarantine, evidence integrity, provider protocol handling against
 **generated stub executables**). These checks do not prove a live multi-machine deployment, real
 provider compatibility, subscription billing, or host isolation. A GitHub Actions definition is in
-`.github/workflows/ci.yml`; it has not been run on hosted CI. `test:browser` needs a Playwright Chromium
+`.github/workflows/ci.yml`; it runs on hosted CI for pushes and pull requests (recorded runs, coverage and
+limits: `docs/workspace-m1/HOSTED_CI.md`). Besides the checks above it runs the workspace M1 browser suites —
+`test:browser:hub`, `test:browser:fx`, `test:browser:campus` and `test:browser:recovery` (on the output of
+`build:web:workspace-prod`) — each through `scripts/ci/isolated.ts`. `test:browser` needs a Playwright Chromium
 build: on a machine without one in the Playwright cache, run `bunx playwright-core install
 chromium-headless-shell` once (a download) before `bun run verify`.
 

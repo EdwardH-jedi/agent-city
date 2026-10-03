@@ -44,6 +44,31 @@ env PLAYWRIGHT_BROWSERS_PATH=$HOME_OF_USER/Library/Caches/ms-playwright \
   bun --no-env-file apps/web/e2e/workspace-m1/<suite>.ts      # independent browser suite (role 09)
 ```
 
+### Browser-suite entry points (what hosted CI runs)
+
+`scripts/ci/isolated.ts` is the in-repo version of the runner above: it creates `<root>/<label>/` fresh
+(home, AGENTCITY_HOME, TMPDIR; an existing directory is refused), passes **only** HOME, AGENTCITY_HOME, TMPDIR,
+a PATH of bun + git + system directories, LANG, TZ and `--browsers` as PLAYWRIGHT_BROWSERS_PATH, runs the
+command in its own process group under a hard `--timeout` (exit 124), forwards cancellation, kills anything left
+behind, and writes `suite.log` + `run.json` there. The CI jobs run exactly these commands (bash):
+
+```sh
+W="bun scripts/ci/isolated.ts --root /tmp/agentcity-iso --browsers <playwright browsers dir>"
+$W --label legacy-gate --timeout 540 -- bun --no-env-file run test:browser          # legacy managed-task gate
+$W --label workspace-hub --timeout 2340 -- bun --no-env-file run test:browser:hub   # real-hub suite
+$W --label workspace-fx --timeout 660 -- bun --no-env-file run test:browser:fx      # fixture transport
+$W --label workspace-campus --timeout 1140 -- bun --no-env-file run test:browser:campus
+$W --label workspace-prod-build --timeout 240 \
+  -- bun --no-env-file run build:web:workspace-prod /tmp/agentcity-prod-workspace     # isolated production build
+$W --label workspace-recovery --timeout 660 \
+  -- bun --no-env-file run test:browser:recovery /tmp/agentcity-prod-workspace        # production repair
+bun scripts/ci/collect-browser-evidence.ts --root /tmp/agentcity-iso --out /tmp/agentcity-evidence
+```
+
+(zsh does not split `$W`; call the wrapper directly there.) The collector copies only `run.json`, `suite.log`,
+each suite's `results.json` and top-level screenshots, secret-scans the text files, and writes `SUMMARY.md`.
+Hosted results and limits: `HOSTED_CI.md`.
+
 ## The isolated environment harness
 
 `apps/web/e2e/workspace-harness.ts` → `startWorkspaceEnv(options)` starts, in one process:

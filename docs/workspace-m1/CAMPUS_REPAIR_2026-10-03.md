@@ -115,3 +115,7 @@ OS containment, remote deployment, physical MacBook/screen-reader checks and mul
 The existing HUB exclusions R-01 (second repository absent) and J-21 (no CEO model briefing by design) remain
 NOT RUN; mapped simulated-check success is not independent semantic proof. The visual port remains partial
 fidelity to the supplied reference, as recorded by the independent review. No art-direction redesign was made.
+
+Update (later on 2026-10-03): hosted CI has since run on this delivery's commit `80a9a17` (run 37090614170: all
+non-browser gates passed; legacy browser gate 23/24). The follow-up stabilization and the current hosted results
+are recorded in `HOSTED_CI.md`; the statement above describes this repair's own verification.

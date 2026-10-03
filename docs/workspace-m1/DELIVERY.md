@@ -12,6 +12,16 @@ lint/typecheck/secrets/isolated production build pass, demo 8/8, legacy browser 
 P2 defects are repaired; current evidence age and stale warnings advance without poll responses, and failed
 scene initialization explicitly releases resources. See `CAMPUS_REPAIR_2026-10-03.md` for provenance and limits.
 
+**Hosted CI and stabilization pass (2026-10-03, after the `80a9a17` delivery).** The first hosted run (GitHub
+Actions run 37090614170, push of `80a9a17`) passed lint, typecheck, unit 710 + integration 1078 (together the
+same 1788 `bun test` cases as above, not additional ones), secret scan, web build and demo, and failed the legacy
+browser gate 23/24 on its deep-link focus check. The cause was a product defect in the legacy managed-task view —
+a deep-linked task detail that answered before the token check never received keyboard focus — now fixed, with
+regression steps (legacy gate 24 → 27 checks). CI now also runs the workspace real-hub, fixture, campus and
+production-repair browser suites, each isolated, with an allowlist of synthetic evidence uploaded. The local
+counts in the paragraph above are macOS results from before that run; hosted results, exact commits and limits
+are in `HOSTED_CI.md`.
+
 ## 0. Campus milestone (historical delivery before independent review)
 
 Record: `CAMPUS_MILESTONE.md` (baseline identity, ownership, frozen interface, every QA run and fix);
@@ -213,7 +223,7 @@ never re-runs a launched model stage; an unsealed `human_ready` is sealed once b
 | Five reported fixes, independent re-attack (08) | C1–C5 **PASS** (details and controls in `QA_ADVERSARIAL.md`) |
 | 09 browser (independent, Chromium 153.0.8010.12 headless shell) | run 1: HUB 80/2/2 (F-1) → run 2 after fix: **HUB 81 pass / 1 fail (J-22 = OQ-10) / 2 not run; FX 25/0** (`QA_BROWSER.md`); lead rerun on the final tree: see `QA_BROWSER.md` |
 | 07 real-hub journeys | part 1 14/14, part 2 10/10 (both gates, tamper, repair, cancel, restart, TTL) |
-| Hosted CI, `managed:demo`, legacy `test:browser` gate | not run |
+| Hosted CI, `managed:demo`, legacy `test:browser` gate | not run at that time (hosted CI first ran on 2026-10-03: `HOSTED_CI.md`) |
 
 ## 6. Threat boundaries (what is and is not claimed)
 
@@ -278,7 +288,7 @@ remote/production readiness; any live provider behaviour; recognition of every s
   `apps/web/src/workspace-m1/fetch-transport.ts` + `store.ts` (session generation, stale responses).
 - Reproduce: `RUNBOOK.md` commands; adversarial `bun --no-env-file test apps/hub/test/workspace-m1-adversarial`;
   browser `apps/web/e2e/workspace-m1/{hub,fx}.suite.ts`; lead integration `apps/hub/src/workspace-hub.test.ts`.
-- Untested behaviour: live providers (by design), hosted CI, axe-core accessibility scan, manual MacBook checks,
+- Untested behaviour (at that delivery): live providers (by design), hosted CI (since run: `HOSTED_CI.md`), axe-core accessibility scan, manual MacBook checks,
   Chrome-for-Testing full pass, multi-process hub instances, held-pipe quarantine across restart (RESTART-07),
   hub log capture of session values (AUTH-10), post-acceptance integrity (OQ-10).
 
