@@ -2959,10 +2959,26 @@ async function raceCases(): Promise<void> {
 			"v2 in tab 2",
 		);
 		run.current = page;
+		// page 1's poll can disable Approve between this check and the click; then the click has
+		// nothing to act on, which must be because Approve is now disabled (checked, not ignored)
 		const enabled = await grantButton(page, "run")
 			.isEnabled()
 			.catch(() => false);
-		if (enabled) await grantButton(page, "run").click();
+		const clicked = enabled
+			? await grantButton(page, "run")
+					.click({ timeout: 3_000 })
+					.then(
+						() => true,
+						() => false,
+					)
+			: false;
+		if (enabled && !clicked)
+			check(
+				!(await grantButton(page, "run")
+					.isEnabled({ timeout: 1_000 })
+					.catch(() => false)),
+				"page 1 Approve is still enabled but could not be clicked",
+			);
 		await sleep(2500);
 		const alertTxt = (await page.getByRole("main").getByRole("alert").count())
 			? await textOf(page.getByRole("main").getByRole("alert"))
@@ -2981,7 +2997,7 @@ async function raceCases(): Promise<void> {
 			"signature kept on the invalidated request",
 		);
 		await p2.close();
-		return `clicked before poll=${enabled}; alert "${alertTxt.slice(0, 70)}"; old document status=${docStatus}`;
+		return `clicked before poll=${clicked} (enabled at check=${enabled}); alert "${alertTxt.slice(0, 70)}"; old document status=${docStatus}`;
 	});
 
 	await run.case("BRW-R-24", async () => {
@@ -3007,16 +3023,43 @@ async function raceCases(): Promise<void> {
 			"tab 2 approved",
 		);
 		run.current = page;
+		// Tab 1 may learn of tab 2's decision between this check and the click (its poll replaces
+		// Approve with the decided note): then nothing is left to click, which is verified below
+		// rather than ignored. Either way tab 1 must end up showing the request decided or refused.
 		const enabled = await grantButton(page, "run")
 			.isEnabled()
 			.catch(() => false);
-		if (enabled) await grantButton(page, "run").click();
+		const clicked = enabled
+			? await grantButton(page, "run")
+					.click({ timeout: 3_000 })
+					.then(
+						() => true,
+						() => false,
+					)
+			: false;
+		if (enabled && !clicked)
+			check(
+				!(await grantButton(page, "run")
+					.isEnabled({ timeout: 1_000 })
+					.catch(() => false)),
+				"tab 1 Approve is still enabled but could not be clicked",
+			);
 		await sleep(2500);
 		check(decisionsFor(req) === 1, `decisions ${decisionsFor(req)}`);
 		check(approvedRuns(id) === 1, "executions ≠ 1");
 		const st = await decisionStatus(page).catch(() => "");
+		const docStatus = await page
+			.locator(
+				`section[aria-label="Approval document"][data-request-id="${req}"]`,
+			)
+			.getAttribute("data-request-status", { timeout: 1_000 })
+			.catch(() => null);
+		check(
+			docStatus === "approved" || /no longer open/i.test(st),
+			`tab 1 shows neither the decided request nor a refusal (status=${docStatus}; "${st.slice(0, 70)}")`,
+		);
 		await p2.close();
-		return `tab 1 Approve still enabled=${enabled}; tab 1 status "${st.slice(0, 70)}"; 1 decision`;
+		return `tab 1 Approve enabled at check=${enabled}, clicked=${clicked}; tab 1 request status=${docStatus}; decision status "${st.slice(0, 70)}"; 1 decision`;
 	});
 
 	await run.case("BRW-R-25", async () => {
