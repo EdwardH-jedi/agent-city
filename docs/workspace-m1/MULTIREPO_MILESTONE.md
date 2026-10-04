@@ -241,3 +241,10 @@ Review the diff from `eeeef8553fe6e30511abc0710370782cd77f34a7` to the delivered
   (`main()`) never installs hooks and the hold cannot record anything or weaken the termination proof.
 - **CI wrapper** — `scripts/ci/isolated.ts`: exit contract under SIGINT/SIGTERM/time limit, `--set` allowlist
   (no environment leakage), process-group cleanup.
+
+## Post-review corrective (2026-10-04)
+
+The independent review of `b99fe086ea3ba669e5511aca7e29dd137afd0094` (NO-GO: four P2 findings; complete
+real-hub gate 109 / 1 on BRW-J-01.C9) is answered in `CORRECTIVE_P2_2026-10-04.md` — reproductions, fixes,
+regressions and the fresh verification of the corrected working tree. The results above are this milestone's
+historical record and are not restated there as current.

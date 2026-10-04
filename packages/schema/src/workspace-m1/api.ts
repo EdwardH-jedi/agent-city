@@ -152,12 +152,31 @@ export const ExecutionQueue = z.strictObject({
 });
 export type ExecutionQueue = z.infer<typeof ExecutionQueue>;
 
+/**
+ * API v1.2 corrective addition (P2 F-01, docs/workspace-m1/CORRECTIVE_P2_2026-10-04.md): complete totals of
+ * one allowlisted repository, counted over EVERY recorded task — not limited by the snapshot's bounded
+ * `tasks` window — so a client can tell a repository with no tasks from one whose tasks are not in the window.
+ */
+export const RepoTaskCount = z.strictObject({
+	repo_id: RepoId,
+	/** Every workspace task recorded for this repository. */
+	tasks: z.number().int().nonnegative(),
+});
+export type RepoTaskCount = z.infer<typeof RepoTaskCount>;
+
 export const WorkspaceSnapshot = z.strictObject({
 	provenance: Provenance,
 	repos: z.array(WorkspaceRepo).max(50),
 	/** API v1.2: observed-only repositories (never execution-eligible), sorted by id. */
 	observed_repos: z.array(ObservedRepo).max(200),
+	/**
+	 * A bounded window, newest update first: every task named by `pending_requests` or `execution_queue`
+	 * (in that priority), then the most recently updated tasks, at most 500 in all. Absence from this list
+	 * never means a task does not exist — `repo_task_counts` holds the complete totals.
+	 */
 	tasks: z.array(WorkspaceTaskListItem).max(500),
+	/** API v1.2 corrective (P2 F-01): complete per-repository totals, one entry per allowlisted repository. */
+	repo_task_counts: z.array(RepoTaskCount).max(50),
 	/** Every approval request with status `pending` (the HQ inbox), oldest first. */
 	pending_requests: z.array(ApprovalRequestView).max(500),
 	/** API v1.2: the global execution queue (one active execution across all repositories). */

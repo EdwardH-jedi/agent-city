@@ -467,8 +467,11 @@ export interface WorkspaceReadsExt extends WorkspaceReads {
 		created_by: string,
 		idempotency_key: string,
 	): WorkspaceTaskRow | null;
-	/** Newest first (updated_at DESC). */
-	listTasks(limit?: number): WorkspaceTaskRow[];
+	/**
+	 * Newest first (updated_at DESC), at most `limit` rows. `pinned` task ids are selected first (in the
+	 * given priority order) whatever their age, so a bounded window can always include them (P2 F-01).
+	 */
+	listTasks(limit?: number, pinned?: readonly string[]): WorkspaceTaskRow[];
 	/** All versions of a task, oldest first. */
 	listProposals(workspace_task_id: string): ManagedProposalRow[];
 	/** All decisions of a task, newest first. */
@@ -594,12 +597,29 @@ function makeReads(
 				created_by,
 				idempotency_key,
 			),
-		listTasks: (limit = 500) =>
-			all(
-				`SELECT * FROM ${T_TASKS} ORDER BY updated_at DESC, rowid DESC LIMIT ?`,
+		listTasks: (limit = 500, pinned = []) => {
+			const n = Math.max(1, Math.min(5000, Math.trunc(limit)));
+			if (pinned.length === 0)
+				return all(
+					`SELECT * FROM ${T_TASKS} ORDER BY updated_at DESC, rowid DESC LIMIT ?`,
+					decodeTask,
+					n,
+				);
+			// pinned ids first (lowest position = highest priority), then the newest; the chosen rows are
+			// returned in the usual newest-first order
+			return all(
+				`SELECT * FROM ${T_TASKS} WHERE rowid IN (
+				   SELECT t.rowid FROM ${T_TASKS} t
+				   LEFT JOIN (SELECT value AS id, min(key) AS pos FROM json_each(?) GROUP BY value) p
+				     ON p.id = t.id
+				   ORDER BY p.pos IS NULL, p.pos, t.updated_at DESC, t.rowid DESC
+				   LIMIT ?)
+				 ORDER BY updated_at DESC, rowid DESC`,
 				decodeTask,
-				Math.max(1, Math.min(5000, Math.trunc(limit))),
-			),
+				JSON.stringify(pinned),
+				n,
+			);
+		},
 		listProposals: (workspace_task_id) =>
 			all(
 				`SELECT * FROM ${T_PROPOSALS} WHERE workspace_task_id = ? ORDER BY version`,

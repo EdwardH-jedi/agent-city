@@ -24,7 +24,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import react from "@vitejs/plugin-react";
-import { type Browser, chromium, type Page } from "playwright-core";
+import { type Browser, chromium, type Page, type Route } from "playwright-core";
 import { createServer, type ViteDevServer } from "vite";
 import { openDb } from "../../hub/src/db.ts";
 import { startHub } from "../../hub/src/index.ts";
@@ -70,6 +70,26 @@ function assert(cond: unknown, message: string): asserts cond {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A hold the test releases itself (deterministic ordering instead of fixed delays). */
+function barrier() {
+	let open!: () => void;
+	const p = new Promise<void>((r) => {
+		open = r;
+	});
+	return { p, open };
+}
+
+/** Lets React commit and run its effects after a DOM change: two animation frames, then a task. */
+const settled = (page: Page) =>
+	page.evaluate(
+		() =>
+			new Promise<void>((r) =>
+				requestAnimationFrame(() =>
+					requestAnimationFrame(() => setTimeout(r, 0)),
+				),
+			),
+	);
 
 function freePort(): number {
 	const s = Bun.serve({
@@ -1125,6 +1145,182 @@ async function main(): Promise<number> {
 				}
 				await focusedDetail(page, ok);
 			} finally {
+				await page.unrouteAll();
+			}
+		},
+	);
+
+	// P2 F-04 (docs/workspace-m1/CORRECTIVE_P2_2026-10-04.md): availability recovery WITHOUT a reload. The
+	// reload case above resets the view's focus intent and so never exercised a row selection's intent
+	// surviving a 503. Answers are held on barriers the test releases; nothing waits on a fixed delay.
+	const b503 = (route: Route) =>
+		route.fulfill({
+			status: 503,
+			contentType: "application/json",
+			body: JSON.stringify({
+				error: "managed runs are not configured on this hub",
+			}),
+		});
+	const rowOf = (id: string) =>
+		page.locator(`[data-testid=task-row][data-task-id="${id}"]`);
+	const detailOf = (id: string) =>
+		page.locator(`[data-testid=task-detail][data-task-id="${id}"]`);
+	/** Which row is selected and which detail is shown (failure context). */
+	const selectionDesc = () =>
+		page.evaluate(
+			() =>
+				`hash ${location.hash} · selected row ${document.querySelector("[data-testid=task-row][aria-selected=true]")?.getAttribute("data-task-id") ?? "none"} · detail ${document.querySelector("[data-testid=task-detail]")?.getAttribute("data-task-id") ?? "none"}`,
+		);
+	/** Type into the restored new-task title, release the held detail, then report focus + text. */
+	async function typeThenRelease(release: () => void, id: string) {
+		const title = page.getByTestId("new-title");
+		await title.waitFor();
+		await title.click();
+		await page.keyboard.type("Still typing on recovery");
+		assert(
+			(await detailOf(id).count()) === 0,
+			`the detail answered before typing started (race not reproduced; ${await selectionDesc()})`,
+		);
+		release();
+		await detailOf(id).waitFor({ timeout: 10_000 });
+		await settled(page);
+		const where = await activeDesc(page);
+		await page.keyboard.type(" and after");
+		const value = await title.inputValue();
+		await title.fill("");
+		assert(where === "input[data-testid=new-title]", `focus moved to ${where}`);
+		assert(
+			value === "Still typing on recovery and after",
+			`typed text lost or misdirected: "${value}"`,
+		);
+	}
+
+	await step(
+		"focus (P2 F-04): no reload — select B during a 503, Retry, type, B's delayed detail keeps focus and text",
+		async () => {
+			await select(page, a);
+			await focusedDetail(page, a);
+			let mode: "503" | "hold" = "503";
+			const answer = barrier();
+			await page.route(`**/api/managed/tasks/${b}`, async (route) => {
+				if (mode === "503") return b503(route);
+				await answer.p;
+				await route.continue();
+			});
+			try {
+				await rowOf(b).click();
+				const retry = page.getByRole("button", { name: "Retry", exact: true });
+				await retry.waitFor();
+				mode = "hold";
+				await retry.click();
+				await typeThenRelease(answer.open, b);
+			} finally {
+				answer.open();
+				await page.unrouteAll();
+			}
+		},
+	);
+
+	await step(
+		"focus (P2 F-04): repeated Retries and a stale earlier answer never take focus; a new row selection still does",
+		async () => {
+			// start from B (left selected by the previous step; a re-click would not be a new selection)
+			if ((await rowOf(b).getAttribute("aria-selected")) !== "true")
+				await select(page, b);
+			let selected503 = true; // the selection's own detail read meets the 503
+			let configDown = false; // the first Retry meets a 503 too, so the gate never leaves
+			const firstRetryServed = barrier();
+			const staleA = barrier();
+			const answer = barrier();
+			await page.route(`**/api/managed/tasks/${a}`, async (route) => {
+				await staleA.p; // A's answer lands only after the next task was selected and recovered
+				await route.continue();
+			});
+			await page.route(`**/api/managed/tasks/${ok}`, async (route) => {
+				if (selected503) {
+					selected503 = false;
+					return b503(route);
+				}
+				await answer.p;
+				await route.continue();
+			});
+			await page.route("**/api/managed/config", async (route) => {
+				if (!configDown) return route.continue();
+				firstRetryServed.open();
+				return b503(route);
+			});
+			try {
+				await rowOf(a).click(); // A's detail is held (becomes stale)
+				await rowOf(ok).click(); // the selected task meets a 503
+				const retry = page.getByRole("button", { name: "Retry", exact: true });
+				await retry.waitFor();
+				configDown = true;
+				await retry.click(); // still 503 → the gate stays
+				await firstRetryServed.p;
+				await settled(page);
+				assert(await retry.isVisible(), "the gate left after a failed Retry");
+				configDown = false;
+				await retry.click(); // available; the detail answer is held
+				await typeThenRelease(() => {
+					staleA.open(); // the stale A answer first: dropped, no focus change
+					answer.open();
+				}, ok);
+				assert(
+					(await page
+						.locator("[data-testid=task-detail]")
+						.getAttribute("data-task-id")) === ok,
+					"a stale answer replaced the selected task",
+				);
+			} finally {
+				staleA.open();
+				answer.open();
+				await page.unrouteAll();
+			}
+			// intentional selection still moves focus to the selected task's heading
+			const before = await selectionDesc();
+			await rowOf(a).click();
+			await detailOf(a).waitFor();
+			try {
+				await focusedDetail(page, a);
+			} catch (err) {
+				throw new Error(
+					`${(err as Error).message} (before the click: ${before}; after: ${await selectionDesc()})`,
+				);
+			}
+		},
+	);
+
+	await step(
+		"focus (P2 F-04): a selected row's delayed detail never takes focus from a field entered after the click",
+		async () => {
+			// clicking B must be a NEW selection
+			if ((await rowOf(b).getAttribute("aria-selected")) === "true")
+				await select(page, ok);
+			const answer = barrier();
+			await page.route(`**/api/managed/tasks/${b}`, async (route) => {
+				await answer.p;
+				await route.continue();
+			});
+			try {
+				await rowOf(b).click(); // selection made; its detail is slow
+				await typeThenRelease(answer.open, b);
+			} finally {
+				answer.open();
+				await page.unrouteAll();
+			}
+			// with nobody typing, the same kind of delayed selection lands on its heading
+			const later = barrier();
+			await page.route(`**/api/managed/tasks/${a}`, async (route) => {
+				await later.p;
+				await route.continue();
+			});
+			try {
+				await rowOf(a).click();
+				later.open();
+				await detailOf(a).waitFor();
+				await focusedDetail(page, a);
+			} finally {
+				later.open();
 				await page.unrouteAll();
 			}
 		},

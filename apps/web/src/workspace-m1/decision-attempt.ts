@@ -7,6 +7,7 @@
 // committed decision replays and an uncommitted one is decided once.
 import type {
 	ApprovalKind,
+	ApprovalRequestView,
 	DecisionAction,
 	DecisionReceiptBody,
 	DecisionResponse,
@@ -100,6 +101,24 @@ export function beginRetry(a: DecisionAttempt): DecisionAttempt {
 /** In flight or unknown: no other decision (with another key) may start for this request. */
 export const blocksNewDecision = (a: DecisionAttempt | undefined): boolean =>
 	a?.status === "in_flight" || a?.status === "unknown";
+
+/**
+ * P2 F-03: the hub's receipt of a committed decision closes exactly the request it names — same request
+ * id and binding hash, and only until a read of that request newer than the receipt (higher rev) speaks
+ * for it. It closes the confirmation controls at once, before any follow-up read; it says nothing about
+ * the pipeline beyond what the receipt records. An unknown outcome has no receipt and closes nothing.
+ */
+export function closingReceipt(
+	a: DecisionAttempt | undefined,
+	request: Pick<ApprovalRequestView, "id" | "binding_hash" | "rev"> | null,
+): DecisionReceiptBody | null {
+	const r = a?.status === "committed" ? a.receipt : null;
+	if (!r || !request || a?.requestId !== request.id) return null;
+	if (r.approval_request_id !== request.id) return null;
+	if (r.binding_hash !== request.binding_hash) return null;
+	if (request.rev > r.approval_request.rev) return null;
+	return r;
+}
 
 /**
  * Reconcile an UNKNOWN attempt from a fresh read of its task (a read also shows the durable

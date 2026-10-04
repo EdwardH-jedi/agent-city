@@ -11,6 +11,8 @@ import {
 	OBSERVED_SOURCE_LABEL,
 	PHASE_LABEL,
 	PHASE_TONE,
+	TASK_WINDOW_UNKNOWN_NOTE,
+	taskWindowNote,
 	UNKNOWN_REPO_NOTE,
 } from "./labels.ts";
 import { Chip, useWs } from "./parts.tsx";
@@ -129,6 +131,16 @@ function Tasks() {
 	const items = (state.snapshot?.tasks ?? []).filter(
 		(t) => t.task.repo_id === repoId,
 	);
+	// P2 F-01: the snapshot lists a bounded window of tasks; only the hub's complete count says "none"
+	const recorded =
+		state.snapshot?.repo_task_counts?.find((c) => c.repo_id === repoId)
+			?.tasks ?? null;
+	const windowNote =
+		recorded !== null && items.length >= recorded
+			? null
+			: recorded === null
+				? TASK_WINDOW_UNKNOWN_NOTE
+				: taskWindowNote(items.length, recorded);
 	const canDecide = store.canDecide();
 	return (
 		<section
@@ -166,48 +178,60 @@ function Tasks() {
 				</p>
 			) : kind === "unknown" && state.snapshot ? (
 				<p className="wsm1-note">{UNKNOWN_REPO_NOTE}</p>
-			) : items.length === 0 ? (
+			) : items.length === 0 && windowNote === null ? (
 				<p className="wsm1-muted">
 					No tasks yet. Use Assign work to start one.
 				</p>
 			) : (
-				<ul className="wsm1-list">
-					{items.map(({ task, phase, acceptance_validity }) => {
-						const selected = state.route.taskId === task.id;
-						return (
-							<li key={task.id}>
-								<button
-									type="button"
-									className="wsm1-item"
-									data-task-id={task.id}
-									aria-current={selected ? "true" : undefined}
-									onClick={() =>
-										store.navigate({
-											view: "projects",
-											repoId: task.repo_id,
-											taskId: task.id,
-											requestId: null,
-										})
-									}
-								>
-									<span className="wsm1-item-title wsm1-wrap">
-										{task.draft.title || "Untitled task"}
-									</span>
-									<Chip tone={PHASE_TONE[phase]}>{PHASE_LABEL[phase]}</Chip>
-									{acceptance_validity?.status === "invalid" ? (
-										<Chip tone="bad" data={{ validity: "invalid" }}>
-											No longer valid
-										</Chip>
-									) : acceptance_validity?.status === "unverifiable" ? (
-										<Chip tone="neutral" data={{ validity: "unverifiable" }}>
-											Legacy acceptance
-										</Chip>
-									) : null}
-								</button>
-							</li>
-						);
-					})}
-				</ul>
+				<>
+					{windowNote ? (
+						<p className="wsm1-hint" data-testid="task-window-note">
+							{windowNote}
+						</p>
+					) : null}
+					{items.length === 0 ? null : (
+						<ul className="wsm1-list">
+							{items.map(({ task, phase, acceptance_validity }) => {
+								const selected = state.route.taskId === task.id;
+								return (
+									<li key={task.id}>
+										<button
+											type="button"
+											className="wsm1-item"
+											data-task-id={task.id}
+											aria-current={selected ? "true" : undefined}
+											onClick={() =>
+												store.navigate({
+													view: "projects",
+													repoId: task.repo_id,
+													taskId: task.id,
+													requestId: null,
+												})
+											}
+										>
+											<span className="wsm1-item-title wsm1-wrap">
+												{task.draft.title || "Untitled task"}
+											</span>
+											<Chip tone={PHASE_TONE[phase]}>{PHASE_LABEL[phase]}</Chip>
+											{acceptance_validity?.status === "invalid" ? (
+												<Chip tone="bad" data={{ validity: "invalid" }}>
+													No longer valid
+												</Chip>
+											) : acceptance_validity?.status === "unverifiable" ? (
+												<Chip
+													tone="neutral"
+													data={{ validity: "unverifiable" }}
+												>
+													Legacy acceptance
+												</Chip>
+											) : null}
+										</button>
+									</li>
+								);
+							})}
+						</ul>
+					)}
+				</>
 			)}
 		</section>
 	);

@@ -162,6 +162,8 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	 * not already typing in a field — a late detail must never pull focus out of the form.
 	 */
 	const focusMode = useRef<"always" | "unless-typing">("unless-typing");
+	/** The element focused when the selection was made: moving into another field since then is typing. */
+	const focusOrigin = useRef<Element | null>(null);
 
 	// refs read by async callbacks: the CURRENT token / epoch / selection, not the captured ones
 	const epochRef = useRef(0);
@@ -203,6 +205,10 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 					return undefined;
 				}
 				if (err instanceof ApiError && err.status === 503) {
+					// the view is replaced by the availability gate: a selection's focus intent ends here,
+					// and the detail shown after recovery is a restore (never pulls focus from typing)
+					focusMode.current = "unless-typing";
+					focusOrigin.current = null;
 					setUnavailable(err.message);
 					return undefined;
 				}
@@ -286,12 +292,14 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	}, [busy, refresh]);
 
 	const select = (id: string) => {
-		focusMode.current = "always";
 		setTaskHash(id);
 		if (id === selected) {
 			void loadDetail(id); // re-clicking refreshes; it never blanks the view
 			return;
 		}
+		// only a new selection asks for focus (a re-click shows no new detail, so no intent is left behind)
+		focusMode.current = "always";
+		focusOrigin.current = document.activeElement;
 		setDetail(null);
 		setSelected(id);
 	};
@@ -305,12 +313,17 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 	useEffect(() => {
 		if (!shownDetailId) return;
 		const active = document.activeElement;
-		if (
-			focusMode.current === "unless-typing" &&
+		// a selection's intent is used once: any later re-show of this detail (recovery, re-auth) is a
+		// restore and keeps a field the user is typing in
+		const mode = focusMode.current;
+		const origin = focusOrigin.current;
+		focusMode.current = "unless-typing";
+		focusOrigin.current = null;
+		const typing =
 			active instanceof HTMLElement &&
-			active.matches("input, textarea, select, [contenteditable='true']")
-		)
-			return;
+			active.matches("input, textarea, select, [contenteditable='true']");
+		// a selection lands on its heading unless the user has since moved into a field to type
+		if (typing && (mode === "unless-typing" || active !== origin)) return;
 		detailHeading.current?.focus({ preventScroll: true });
 	}, [shownDetailId]);
 
@@ -430,6 +443,7 @@ export function Tasks({ managedSeq }: { managedSeq: number }) {
 						call={call}
 						onCreated={(t) => {
 							focusMode.current = "always";
+							focusOrigin.current = document.activeElement;
 							setDetail(null);
 							setSelected(t.id);
 							void refresh();

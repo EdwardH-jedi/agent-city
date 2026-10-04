@@ -555,6 +555,8 @@ export function worstCriterionStatus(
 export const VALIDITY_STALE_AFTER_MS = 60_000;
 /** No confirmed hub read for this long (five missed 2 s polls) = a stale connection. */
 export const CONNECTION_STALE_AFTER_MS = 10_000;
+/** P2 F-02: no successful SNAPSHOT read for this long (five missed 2 s polls) = stale repository facts. */
+export const SNAPSHOT_STALE_AFTER_MS = 10_000;
 
 /** Presentation only: no recent confirmed read is not an unqualified online connection. */
 export function connectionIsStale(
@@ -787,6 +789,18 @@ export const OBSERVED_REPO_NOTE =
 export const UNKNOWN_REPO_NOTE =
 	"This repository is not on the allowlist and not known to this hub.";
 
+// P2 F-01: the snapshot's task list is a bounded window — what it leaves out is said, never read as "no tasks"
+export const TASK_WINDOW_UNKNOWN_NOTE =
+	"This snapshot lists only the most recently updated tasks; whether this repository has others is not reported.";
+export const INBOX_UNATTRIBUTED_NOTE =
+	"Some pending decisions or queued executions in this snapshot could not be matched to their task — open Headquarters to see every pending decision.";
+
+/** `shown` of a repository's `recorded` tasks are in the snapshot window (recorded > shown). */
+export function taskWindowNote(shown: number, recorded: number): string {
+	const hidden = recorded - shown;
+	return `Showing ${shown} of ${recorded} recorded tasks; ${hidden} ${hidden === 1 ? "task is" : "tasks are"} not in this snapshot (it lists the most recently updated tasks, plus every task awaiting a decision or in the execution queue).`;
+}
+
 export const QUARANTINE_PAUSE_NOTE =
 	"claims paused: a process is quarantined (any repository)";
 
@@ -930,6 +944,9 @@ export function allStaticCopy(): string[] {
 		OBSERVED_REPO_NOTE,
 		UNKNOWN_REPO_NOTE,
 		QUARANTINE_PAUSE_NOTE,
+		TASK_WINDOW_UNKNOWN_NOTE,
+		INBOX_UNATTRIBUTED_NOTE,
+		taskWindowNote(1, 3),
 	];
 	const tables = [
 		PHASE_LABEL,

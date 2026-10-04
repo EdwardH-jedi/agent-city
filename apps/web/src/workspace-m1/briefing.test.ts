@@ -22,6 +22,7 @@ import {
 	dateTime,
 	INVALIDATION_LABEL,
 	OBSERVED_REPO_NOTE,
+	SNAPSHOT_STALE_AFTER_MS,
 	UNKNOWN_REPO_NOTE,
 	validityShortLabel,
 } from "./labels.ts";
@@ -109,15 +110,18 @@ function snap(
 		queue?: Partial<ExecutionQueue>;
 		repos?: string[];
 		observed?: string[];
+		/** The hub's complete per-repository task totals (default: exactly the listed tasks; null = not reported). */
+		counts?: Record<string, number> | null;
 	} = {},
 ): WorkspaceSnapshot {
+	const repos = o.repos ?? [A, B];
 	return {
 		provenance: {
 			data_source: "hub",
 			execution_mode: "simulated",
 			live_integration_verified: false,
 		},
-		repos: (o.repos ?? [A, B]).map((r) => ({
+		repos: repos.map((r) => ({
 			repo_id: r,
 			base_ref: "main",
 			required_checks: ["unit"],
@@ -127,6 +131,15 @@ function snap(
 			source: "telemetry",
 		})),
 		tasks,
+		...(o.counts === null
+			? {}
+			: {
+					repo_task_counts: repos.map((r) => ({
+						repo_id: r,
+						tasks:
+							o.counts?.[r] ?? tasks.filter((t) => t.task.repo_id === r).length,
+					})),
+				}),
 		pending_requests: (o.pending ?? []).map((p) => ({
 			id: id("wsa"),
 			workspace_task_id: p.task.task.id,
@@ -148,7 +161,12 @@ const brief = (
 	s: WorkspaceSnapshot | null,
 	repoId = A,
 	conn: { status: string; lastConfirmedAt: string | null } = ONLINE,
-) => repoBriefing({ snapshot: s, repoId, conn, now: NOW });
+	// the last successful snapshot read (P2 F-02); by default the read that confirmed the connection
+	sync: { confirmedAt: string | null; failedAt: string | null } | undefined = {
+		confirmedAt: conn.lastConfirmedAt,
+		failedAt: null,
+	},
+) => repoBriefing({ snapshot: s, repoId, conn, sync, now: NOW });
 
 const items = (b: RepoBriefing): BriefingItem[] =>
 	b.sections.flatMap((s) => s.items);
@@ -693,6 +711,7 @@ describe("against the fixture transport (real contract shapes)", () => {
 			snapshot: s.data,
 			repoId: "local/fixture",
 			conn: { status: "online", lastConfirmedAt: new Date(t).toISOString() },
+			sync: { confirmedAt: new Date(t).toISOString(), failedAt: null },
 			now: t,
 		});
 		const byTask = Object.fromEntries(items(b).map((i) => [i.taskId, i]));
@@ -715,6 +734,7 @@ describe("against the fixture transport (real contract shapes)", () => {
 				snapshot: s.data,
 				repoId: "local/empty-sandbox",
 				conn: { status: "online", lastConfirmedAt: new Date(t).toISOString() },
+				sync: { confirmedAt: new Date(t).toISOString(), failedAt: null },
 				now: t,
 			}).state,
 		).toBe("empty");
@@ -723,8 +743,220 @@ describe("against the fixture transport (real contract shapes)", () => {
 				snapshot: s.data,
 				repoId: "observed-example/telemetry-only",
 				conn: { status: "online", lastConfirmedAt: new Date(t).toISOString() },
+				sync: { confirmedAt: new Date(t).toISOString(), failedAt: null },
 				now: t,
 			}).state,
 		).toBe("observed");
+	});
+});
+
+// P2 F-01: the snapshot's task list is a bounded window; only the hub's complete count may say a repository
+// has no tasks, and what the window leaves out is stated (docs/workspace-m1/CORRECTIVE_P2_2026-10-04.md).
+describe("P2 F-01 — a truncated task window never reads as an empty repository", () => {
+	const manyB = (k: number) =>
+		Array.from({ length: k }, (_, i) => item({ repo: B, title: `B${i}` }));
+
+	test("the reviewed case: A has recorded tasks but none in the window → not empty, the window is stated", () => {
+		const b = brief(snap(manyB(3), { counts: { [A]: 1, [B]: 500 } }));
+		expect(b.state).not.toBe("empty");
+		expect(b.summary).not.toContain("No tasks are recorded");
+		expect(b.summary).toContain("Showing 0 of 1 recorded tasks");
+		expect(b.summary).toContain("1 task is not in this snapshot");
+		expect(b.window).toEqual({ shown: 0, recorded: 1, complete: false });
+		// every inbox / queue entry resolves, so nothing hidden can be waiting for Edward
+		expect(b.state).toBe("idle");
+		expect(
+			b.summary.startsWith("Nothing is running or waiting for Edward."),
+		).toBe(true);
+	});
+
+	test("A's pending request (pinned into the window by the hub) is attributed to A, with older A tasks stated", () => {
+		const a = item({
+			stage: "awaiting_run_approval",
+			phase: "awaiting_run_approval",
+			title: "A still awaiting approval",
+		});
+		const s = snap([a, ...manyB(4)], {
+			pending: [{ task: a, kind: "run" }],
+			counts: { [A]: 7, [B]: 900 },
+		});
+		const b = brief(s);
+		expect(b.state).toBe("attention");
+		expect(b.counts.needsApproval).toBe(1);
+		expect(items(b).map((i) => i.requestId)).toEqual([
+			s.pending_requests[0]?.id as string,
+		]);
+		expect(b.summary).toBe(
+			`1 awaiting execution approval. ${"Showing 1 of 7 recorded tasks; 6 tasks are not in this snapshot (it lists the most recently updated tasks, plus every task awaiting a decision or in the execution queue)."}`,
+		);
+		expect(b.window).toEqual({ shown: 1, recorded: 7, complete: false });
+	});
+
+	test("an inbox entry the window cannot attribute + hidden A tasks → attention, no quiet claim, Headquarters next", () => {
+		const orphan = item({ repo: A, stage: "awaiting_run_approval" }); // not in the window
+		const s = snap(manyB(2), {
+			pending: [{ task: orphan, kind: "run" }],
+			counts: { [A]: 1, [B]: 2 },
+		});
+		const b = brief(s);
+		expect(b.state).toBe("attention");
+		expect(b.summary).not.toContain("Nothing is running or waiting");
+		expect(b.notes.some((x) => x.includes("could not be matched"))).toBe(true);
+		expect(b.next?.target).toEqual({
+			view: "hq",
+			repoId: null,
+			taskId: null,
+			requestId: null,
+		});
+		// B shows all of its tasks: an unattributable entry cannot be B's, so B stays quiet and complete
+		const bb = brief(s, B);
+		expect(bb.window).toEqual({ shown: 2, recorded: 2, complete: true });
+		expect(bb.notes.some((x) => x.includes("could not be matched"))).toBe(
+			false,
+		);
+	});
+
+	test("an inbox list at its cap is not proof that nothing else waits", () => {
+		const bs = manyB(500);
+		const s = snap(bs, {
+			pending: bs.map((t) => ({ task: t, kind: "run" as const })),
+			counts: { [A]: 2, [B]: 500 },
+		});
+		const b = brief(s);
+		expect(b.state).toBe("attention");
+		expect(b.summary).not.toContain("Nothing is running or waiting");
+	});
+
+	test("exact boundary: shown = recorded is complete (summary unchanged); one hidden task is stated", () => {
+		const a = item({ stage: "accepted", phase: "accepted" });
+		const full = brief(snap([a], { counts: { [A]: 1 } }));
+		expect(full.window).toEqual({ shown: 1, recorded: 1, complete: true });
+		expect(full.summary).toBe(
+			"Nothing is running or waiting for Edward. 1 accepted.",
+		);
+		const cut = brief(snap([a], { counts: { [A]: 2 } }));
+		expect(cut.window?.complete).toBe(false);
+		expect(cut.summary).toContain(
+			"Showing 1 of 2 recorded tasks; 1 task is not",
+		);
+	});
+
+	test("a genuinely empty repository is empty (count 0) even when another repository is truncated", () => {
+		const b = brief(snap(manyB(5), { counts: { [A]: 0, [B]: 5000 } }));
+		expect(b.state).toBe("empty");
+		expect(b.summary).toBe("No tasks are recorded for this repository yet.");
+		expect(b.window).toEqual({ shown: 0, recorded: 0, complete: true });
+		expect(
+			brief(snap(manyB(5), { counts: { [A]: 0, [B]: 5000 } }), B).window,
+		).toEqual({ shown: 5, recorded: 5000, complete: false });
+	});
+
+	test("counts not reported (an older hub): never empty, never a count claim", () => {
+		const b = brief(snap(manyB(1), { counts: null }));
+		expect(b.state).not.toBe("empty");
+		expect(b.summary).toContain(
+			"whether this repository has others is not reported",
+		);
+		expect(b.window).toEqual({ shown: 0, recorded: null, complete: false });
+	});
+});
+
+// P2 F-02: the briefing's facts are the snapshot's — their age is the last successful snapshot read, never
+// the connection's liveness or a task detail read (docs/workspace-m1/CORRECTIVE_P2_2026-10-04.md).
+describe("P2 F-02 — a fresh connection never certifies stale repository facts", () => {
+	const at = (msBeforeNow: number) => new Date(NOW - msBeforeNow).toISOString();
+	const fresh = { status: "online", lastConfirmedAt: at(500) }; // e.g. a task detail just answered
+
+	test("the reviewed case: connection fresh, snapshot last confirmed 61 s ago → stale, with the snapshot's time", () => {
+		const s = snap([
+			item({ stage: "awaiting_run_approval", phase: "awaiting_run_approval" }),
+		]);
+		const b = brief(s, A, fresh, { confirmedAt: at(61_000), failedAt: null });
+		expect(b.freshness).toBe("stale");
+		expect(b.freshnessLine).toBe(
+			"Repository record stale · last confirmed 10:03:59 UTC · this briefing may be out of date.",
+		);
+		expect(b.freshnessLine).not.toContain("10:04:59");
+		// the claims stay (last known data is kept) — only their freshness is qualified
+		expect(b.counts.needsApproval).toBe(1);
+	});
+
+	test("a failed snapshot read since the last success is stale even within the threshold", () => {
+		const b = brief(snap([item()]), A, fresh, {
+			confirmedAt: at(2_000),
+			failedAt: at(1_000),
+		});
+		expect(b.freshness).toBe("stale");
+		expect(b.freshnessLine).toBe(
+			"Repository record not refreshed — the latest read failed · last confirmed 10:04:58 UTC · this briefing may be out of date.",
+		);
+	});
+
+	test("threshold boundary: exactly SNAPSHOT_STALE_AFTER_MS old is current, one millisecond more is stale", () => {
+		const s = snap([item()]);
+		const edge = brief(s, A, fresh, {
+			confirmedAt: at(SNAPSHOT_STALE_AFTER_MS),
+			failedAt: null,
+		});
+		expect(edge.freshness).toBe("current");
+		expect(edge.freshnessLine).toBe(
+			"From the hub record confirmed at 10:04:50 UTC.",
+		);
+		const past = brief(s, A, fresh, {
+			confirmedAt: at(SNAPSHOT_STALE_AFTER_MS + 1),
+			failedAt: null,
+		});
+		expect(past.freshness).toBe("stale");
+	});
+
+	test("never confirmed (no sync record) is never current", () => {
+		// called directly: the helper would supply its default sync for an explicit undefined
+		const b = repoBriefing({
+			snapshot: snap([item()]),
+			repoId: A,
+			conn: fresh,
+			sync: undefined,
+			now: NOW,
+		});
+		expect(b.freshness).toBe("stale");
+		expect(b.freshnessLine).toContain("last confirmed never");
+	});
+
+	test("an offline connection still reads offline, with the snapshot's own confirmation time", () => {
+		const b = brief(
+			snap([item()]),
+			A,
+			{ status: "offline", lastConfirmedAt: at(500) },
+			{ confirmedAt: at(30_000), failedAt: at(1_000) },
+		);
+		expect(b.freshness).toBe("offline");
+		expect(b.freshnessLine).toContain("Offline · last confirmed 10:04:30 UTC");
+	});
+
+	test("an accepted result's validity inside a stale briefing is never shown as freshly verified", () => {
+		const acc = item({
+			stage: "accepted",
+			phase: "accepted",
+			latest: { kind: "result", status: "accepted", closed_at: T0 },
+			validity: {
+				decision_id: id("wsd"),
+				status: "valid",
+				reason: null,
+				detail: null,
+				checked_at: at(5_000),
+				first_invalid_at: null,
+				evidence_bundle_digest: null,
+			},
+		});
+		const s = snap([acc]);
+		const current = items(
+			brief(s, A, fresh, { confirmedAt: at(1_000), failedAt: null }),
+		)[0];
+		expect(current?.text).toContain("current evidence verified");
+		const stale = items(
+			brief(s, A, fresh, { confirmedAt: at(1_000), failedAt: at(500) }),
+		)[0];
+		expect(stale?.text).toContain("may be out of date");
+		expect(stale?.text).not.toContain("current evidence verified");
 	});
 });

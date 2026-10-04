@@ -12,6 +12,7 @@ export function Briefing() {
 		snapshot: state.snapshot,
 		repoId,
 		conn: state.conn,
+		sync: state.snapshotSync,
 		now: Date.now(),
 	});
 	const total = b.sections.reduce((n, s) => n + s.items.length, 0);
@@ -22,6 +23,9 @@ export function Briefing() {
 			data-repo-id={repoId}
 			data-briefing-state={b.state}
 			data-freshness={b.freshness}
+			data-briefing-complete={
+				b.window ? (b.window.complete ? "true" : "false") : undefined
+			}
 		>
 			<div className="wsm1-card-head">
 				<h2 className="wsm1-briefing-title">

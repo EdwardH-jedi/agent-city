@@ -314,6 +314,15 @@ Consumers: hub routes (lead), web transport (07), QA (08/09). Compatibility: add
 Nothing hashed; vectors unchanged. Consumers: hub read model (lead), web store/briefing/fixture world (Worker
 B), QA suites. Record: `docs/workspace-m1/MULTIREPO_MILESTONE.md`.
 
+**v1.2 corrective addition (2026-10-04, P2 F-01; additive, same contract label).** `WorkspaceSnapshot` gains
+`repo_task_counts` (`RepoTaskCount[]`: one `{repo_id, tasks}` per allowlisted repository — the complete
+number of recorded workspace tasks, not limited by the window). `tasks` stays a bounded window (≤ 500, newest
+update first) but now always includes every task named by `pending_requests` or `execution_queue` (inbox
+first), so a request's task / repository never depends on recency; absence from `tasks` never means a task
+does not exist. Nothing hashed; vectors unchanged; no route, migration or stored-row change. Consumers: hub
+read model, web briefing / Projects task list, fixture world. Record:
+`docs/workspace-m1/CORRECTIVE_P2_2026-10-04.md`.
+
 ## 12. Proposed lead-owned patches (not applied)
 
 1. `packages/schema/src/index.ts`: **no re-export** of workspace-m1 (keep the explicit subpaths; there

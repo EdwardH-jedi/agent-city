@@ -451,6 +451,7 @@ function ApprovalDocument() {
 	const decision = d?.decisions.find(
 		(x) => x.approval_request_id === request.id,
 	);
+	const receipt = store.committedReceipt(request);
 	const acc = d ? acceptanceStatus(d) : "none";
 	const obsoleteRecord = isObsoleteGrant(request);
 	const obsoletePending = pendingObsolete(d, request);
@@ -620,7 +621,20 @@ function ApprovalDocument() {
 				</div>
 			</div>
 			<div className="wsm1-panel-foot">
-				{request.status === "pending" ? (
+				{request.status === "pending" && receipt ? (
+					// P2 F-03: our decision is committed (the hub's receipt names this exact request); the
+					// confirmation controls close now, not when the follow-up reads arrive
+					<p className="wsm1-hint" data-testid="decision-receipt">
+						This request is{" "}
+						{APPROVAL_STATUS_LABEL[
+							receipt.approval_request.status
+						].toLowerCase()}{" "}
+						· {receipt.operator_id} · {ACTION_LABEL[receipt.action]} ·{" "}
+						{dateTime(receipt.decided_at)} (from the hub's decision receipt; the
+						request record is being refreshed). No further decision is possible
+						on it.
+					</p>
+				) : request.status === "pending" ? (
 					<GateControls request={request} obsolete={obsoletePending} />
 				) : (
 					<p className="wsm1-hint">

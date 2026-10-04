@@ -37,6 +37,7 @@ import {
 	type ObservedRepo,
 	type QueueEntry,
 	RepoId,
+	type RepoTaskCount,
 	type RequestSummary,
 	type RunSummary,
 	type WorkspaceRepo,
@@ -366,6 +367,25 @@ export function createWorkspaceReadModel(
 	};
 
 	/**
+	 * P2 F-01: complete totals per allowlisted repository over every recorded task (not the bounded task
+	 * window), read in the same synchronous snapshot as the window, so the two always agree.
+	 */
+	const repoTaskCounts = (): RepoTaskCount[] => {
+		const tasks = new Map(
+			db
+				.query<{ repo_id: string; n: number }, []>(
+					"SELECT repo_id, count(*) AS n FROM workspace_tasks GROUP BY repo_id",
+				)
+				.all()
+				.map((r) => [r.repo_id, r.n]),
+		);
+		return config.repos.map((r) => ({
+			repo_id: r.id,
+			tasks: tasks.get(r.id) ?? 0,
+		}));
+	};
+
+	/**
 	 * Repositories the hub has only observed (GitHub sync / local checkout scan rows, or session telemetry
 	 * naming a repo with no row), minus the allowlist (case-insensitive). Read-only display data: nothing
 	 * here makes a repository execution-eligible — only the trusted managed config does.
@@ -454,7 +474,21 @@ export function createWorkspaceReadModel(
 
 		snapshot(now) {
 			const latest = latestRequests();
-			const tasks = store.listTasks(MAX_TASKS).map((row) => {
+			const pending = store
+				.listApprovalRequests({ status: "pending" })
+				.slice()
+				.reverse() // listApprovalRequests is newest first; the HQ inbox is oldest first
+				.slice(0, MAX_REQUESTS)
+				.map(requestView);
+			const queue = executionQueue();
+			// P2 F-01: the window always holds every task the emitted inbox and queue name (inbox first),
+			// so a request's task / repository never depends on how recently the task was updated
+			const pinned = [
+				...pending.map((r) => r.workspace_task_id),
+				queue.active?.workspace_task_id,
+				...queue.queued.map((q) => q.workspace_task_id),
+			].filter((id): id is string => typeof id === "string");
+			const tasks = store.listTasks(MAX_TASKS, pinned).map((row) => {
 				const engine = engineOf(row);
 				return {
 					task: taskSummary(row),
@@ -466,12 +500,6 @@ export function createWorkspaceReadModel(
 					latest_request: latest.get(row.id) ?? null,
 				};
 			});
-			const pending = store
-				.listApprovalRequests({ status: "pending" })
-				.slice()
-				.reverse() // listApprovalRequests is newest first; the HQ inbox is oldest first
-				.slice(0, MAX_REQUESTS)
-				.map(requestView);
 			return ok(
 				200,
 				validated(
@@ -485,8 +513,9 @@ export function createWorkspaceReadModel(
 						repos: repos(),
 						observed_repos: observedRepos(),
 						tasks,
+						repo_task_counts: repoTaskCounts(),
 						pending_requests: pending,
-						execution_queue: executionQueue(),
+						execution_queue: queue,
 						generated_at: now.toISOString(),
 					},
 					"snapshot",

@@ -15,6 +15,7 @@ import type {
 	ArtifactListItem,
 	ArtifactTextResponse,
 	DecisionAction,
+	DecisionReceiptBody,
 	DecisionResponse,
 	EngineView,
 	RequestSummary,
@@ -28,6 +29,7 @@ import type {
 import {
 	beginRetry,
 	blocksNewDecision,
+	closingReceipt,
 	type DecisionAttempt,
 	newIdempotencyKey,
 	reconcileWithServer,
@@ -123,6 +125,13 @@ export interface WsState {
 		status: "connecting" | "online" | "offline";
 		lastConfirmedAt: string | null;
 	};
+	/**
+	 * P2 F-02: freshness of the snapshot's repository-level facts, written ONLY by snapshot reads — a task
+	 * detail read or general connection liveness never certifies them. `confirmedAt`: the last successful
+	 * snapshot read (client time); `failedAt`: the latest snapshot read failed after it (null once a later
+	 * snapshot read succeeds).
+	 */
+	snapshotSync: SnapshotSync;
 	snapshot: WorkspaceSnapshot | null;
 	route: Route;
 	details: Readonly<Record<string, DetailEntry>>;
@@ -140,6 +149,13 @@ export interface WsState {
 	/** Why the selection was just cleared (e.g. an unknown deep link); shown in the empty panel. */
 	routeNotice: string | null;
 }
+
+export interface SnapshotSync {
+	confirmedAt: string | null;
+	failedAt: string | null;
+}
+
+const NO_SNAPSHOT_SYNC: SnapshotSync = { confirmedAt: null, failedAt: null };
 
 export interface StoreDeps {
 	transport: WorkspaceTransport;
@@ -332,6 +348,7 @@ const initialState = (source: "hub" | "fixture", route: Route): WsState => ({
 		notice: null,
 	},
 	conn: { status: "connecting", lastConfirmedAt: null },
+	snapshotSync: NO_SNAPSHOT_SYNC,
 	snapshot: null,
 	route,
 	details: {},
@@ -420,6 +437,19 @@ export class WorkspaceStore {
 		);
 	}
 
+	/**
+	 * P2 F-03: this session's committed-decision receipt for exactly `request` (see `closingReceipt`), or
+	 * null. While it is non-null the request is closed to further decisions, whatever the cached read says.
+	 */
+	committedReceipt(
+		request: Pick<ApprovalRequestView, "id" | "binding_hash" | "rev"> | null,
+	): DecisionReceiptBody | null {
+		if (!request) return null;
+		const a = this.state.attempts[request.id];
+		if (!a || !this.seq.isSameAuth(a)) return null;
+		return closingReceipt(a, request);
+	}
+
 	gateContext(): GateContext | null {
 		const g = this.state.gate;
 		if (!g) return null;
@@ -429,7 +459,7 @@ export class WorkspaceStore {
 			online: this.state.conn.status !== "offline",
 			canDecide: this.canDecide(),
 			busy: blocksNewDecision(this.state.attempts[g.requestId]),
-			pending: req?.status === "pending",
+			pending: req?.status === "pending" && this.committedReceipt(req) === null,
 		};
 	}
 
@@ -507,6 +537,8 @@ export class WorkspaceStore {
 				notice: null,
 			},
 			snapshot: null,
+			// a previous session's confirmation never vouches for this session's facts
+			snapshotSync: NO_SNAPSHOT_SYNC,
 			details: {},
 			gate: null,
 			attempts: {},
@@ -634,11 +666,21 @@ export class WorkspaceStore {
 		const r = await this.transport.getSnapshot();
 		if (!this.seq.isCurrent(t)) return;
 		if (r.ok) {
-			this.set({ snapshot: mergeSnapshot(this.state.snapshot, r.data) });
+			this.set({
+				snapshot: mergeSnapshot(this.state.snapshot, r.data),
+				snapshotSync: { confirmedAt: this.nowIso(), failedAt: null },
+			});
 			this.confirmed();
 			this.normalizeRepo();
 			this.ensureGate();
-		} else this.readFailed(t, r);
+		} else {
+			// any failed snapshot read (no answer or an HTTP error) leaves the cached facts unconfirmed
+			if (!isUnauthenticated(r))
+				this.set({
+					snapshotSync: { ...this.state.snapshotSync, failedAt: this.nowIso() },
+				});
+			this.readFailed(t, r);
+		}
 	}
 
 	/** Is this repository on the allowlist (assignable) / observed only / unknown to this hub? */

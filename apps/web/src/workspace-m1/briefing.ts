@@ -16,12 +16,16 @@ import {
 	connectionIsStale,
 	dateTime,
 	failureLabel,
+	INBOX_UNATTRIBUTED_NOTE,
 	INVALIDATION_LABEL,
 	nextAction,
 	OBSERVED_REPO_NOTE,
 	PHASE_LABEL,
 	QUARANTINE_PAUSE_NOTE,
 	queueLine,
+	SNAPSHOT_STALE_AFTER_MS,
+	TASK_WINDOW_UNKNOWN_NOTE,
+	taskWindowNote,
 	UNKNOWN_REPO_NOTE,
 	validityFreshness,
 	validityShortLabel,
@@ -98,6 +102,12 @@ export interface RepoBriefing {
 	sections: BriefingSection[];
 	/** Accepted / rejected results older than the most recent ones listed. */
 	olderFinished: number;
+	/**
+	 * P2 F-01: how much of the repository the snapshot's bounded task window holds — `shown` of `recorded`
+	 * (the hub's complete count; null when not reported). `complete` = every recorded task is shown. Null
+	 * when not applicable (loading, observed-only or unknown repository).
+	 */
+	window: { shown: number; recorded: number | null; complete: boolean } | null;
 	counts: {
 		running: number;
 		queued: number;
@@ -115,12 +125,21 @@ export interface RepoBriefing {
 export interface BriefingInput {
 	snapshot: WorkspaceSnapshot | null;
 	repoId: string;
+	/** General connection liveness (offline / stale connection). */
 	conn: { status: string; lastConfirmedAt: string | null };
+	/**
+	 * P2 F-02: when the snapshot's repository facts were last confirmed by a snapshot read, and whether the
+	 * latest snapshot read failed since (the store's `snapshotSync`). Missing = never confirmed (stale).
+	 */
+	sync: { confirmedAt: string | null; failedAt: string | null } | undefined;
 	now: number;
 }
 
 /** How many finished (accepted / rejected) results the briefing lists, newest first. */
 export const BRIEFING_FINISHED_LIMIT = 5;
+
+/** The snapshot's list caps (`pending_requests`, `execution_queue.queued`; api.ts): a full list may be cut. */
+const SNAPSHOT_LIST_MAX = 500;
 
 export const SECTION_HEADING: Readonly<Record<BriefingSectionId, string>> = {
 	decisions: "Needs Edward's decision",
@@ -161,12 +180,20 @@ const taskRoute = (item: WorkspaceTaskListItem): Route => ({
 	requestId: null,
 });
 
+/**
+ * P2 F-02: the briefing's facts are the snapshot's, so their age is the last successful SNAPSHOT read —
+ * never a task detail read or the connection's liveness (an answered detail of one task does not
+ * refresh another repository's facts). Current only while the connection is fresh, the latest snapshot
+ * read succeeded and it is at most SNAPSHOT_STALE_AFTER_MS old; "last confirmed" is always that read.
+ */
 function freshnessOf(
-	conn: BriefingInput["conn"],
-	now: number,
+	input: BriefingInput,
 	fixture: boolean,
 ): { freshness: BriefingFreshness; line: string } {
-	const at = clockTime(conn.lastConfirmedAt);
+	const { conn, now } = input;
+	const confirmedAt = input.sync?.confirmedAt ?? null;
+	const at = clockTime(confirmedAt);
+	const confirmed = confirmedAt ? Date.parse(confirmedAt) : Number.NaN;
 	if (conn.status === "offline")
 		return {
 			freshness: "offline",
@@ -176,6 +203,16 @@ function freshnessOf(
 		return {
 			freshness: "stale",
 			line: `Connection stale · last confirmed ${at} · this briefing may be out of date.`,
+		};
+	if (input.sync?.failedAt)
+		return {
+			freshness: "stale",
+			line: `Repository record not refreshed — the latest read failed · last confirmed ${at} · this briefing may be out of date.`,
+		};
+	if (!Number.isFinite(confirmed) || now - confirmed > SNAPSHOT_STALE_AFTER_MS)
+		return {
+			freshness: "stale",
+			line: `Repository record stale · last confirmed ${at} · this briefing may be out of date.`,
 		};
 	return {
 		freshness: "current",
@@ -510,7 +547,15 @@ const oldestFirst = (a: BriefingItem, b: BriefingItem) => newestFirst(b, a);
 export function repoBriefing(input: BriefingInput): RepoBriefing {
 	const snap = input.snapshot;
 	const fixture = snap?.provenance.data_source === "fixture";
-	const { freshness, line } = freshnessOf(input.conn, input.now, fixture);
+	const { freshness, line } = freshnessOf(input, fixture);
+	// the validity labels inside the briefing age with the same snapshot facts, not the connection
+	const facts: BriefingInput = {
+		...input,
+		conn: {
+			status: freshness === "current" ? input.conn.status : "stale",
+			lastConfirmedAt: input.sync?.confirmedAt ?? null,
+		},
+	};
 	const counts: RepoBriefing["counts"] = {
 		running: 0,
 		queued: 0,
@@ -527,6 +572,7 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 		state: BriefingState,
 		summary: string,
 		next: RepoBriefing["next"],
+		taskWindow: RepoBriefing["window"] = null,
 	): RepoBriefing => ({
 		repoId: input.repoId,
 		state,
@@ -538,6 +584,7 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 		sections: [],
 		olderFinished: 0,
 		counts,
+		window: taskWindow,
 	});
 	if (!snap) return empty("loading", "Loading the workspace record…", null);
 	const allowlisted = snap.repos.some((r) => r.repo_id === input.repoId);
@@ -550,12 +597,41 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 			: empty("empty", UNKNOWN_REPO_NOTE, null);
 	}
 	const mine = snap.tasks.filter((t) => t.task.repo_id === input.repoId);
-	if (mine.length === 0)
-		return empty("empty", "No tasks are recorded for this repository yet.", {
-			text: "Assign work to start the first task.",
-			label: null,
-			target: null,
-		});
+	const queue = snap.execution_queue;
+	// P2 F-01: `tasks` is a bounded window. Only the hub's complete count may say this repository has no
+	// tasks; when some of its tasks are not shown, a pending request or queued execution the window could
+	// not attribute (or a list at its cap) may be this repository's, so nothing claims "nothing waiting".
+	const recorded =
+		snap.repo_task_counts?.find((c) => c.repo_id === input.repoId)?.tasks ??
+		null;
+	const allShown = recorded !== null && mine.length >= recorded;
+	const taskWindow = { shown: mine.length, recorded, complete: allShown };
+	const listed = new Set(snap.tasks.map((t) => t.task.id));
+	const queued = [queue?.active, ...(queue?.queued ?? [])];
+	const attributed =
+		snap.pending_requests.length < SNAPSHOT_LIST_MAX &&
+		(queue?.queued.length ?? 0) < SNAPSHOT_LIST_MAX &&
+		snap.pending_requests.every((r) => listed.has(r.workspace_task_id)) &&
+		queued.every(
+			(q) => !q?.workspace_task_id || listed.has(q.workspace_task_id),
+		);
+	const maybeHidden = !allShown && !attributed;
+	const windowNote = allShown
+		? ""
+		: recorded === null
+			? TASK_WINDOW_UNKNOWN_NOTE
+			: taskWindowNote(mine.length, recorded);
+	if (mine.length === 0 && recorded === 0)
+		return empty(
+			"empty",
+			"No tasks are recorded for this repository yet.",
+			{
+				text: "Assign work to start the first task.",
+				label: null,
+				target: null,
+			},
+			taskWindow,
+		);
 
 	const buckets: Record<BriefingSectionId, BriefingItem[]> = {
 		decisions: [],
@@ -566,7 +642,7 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 	};
 	const stageOf = new Map(mine.map((m) => [m.task.id, m]));
 	for (const m of mine) {
-		const c = classify(m, snap, input);
+		const c = classify(m, snap, facts);
 		buckets[c.section].push(c.item);
 		switch (c.item.kind) {
 			case "running":
@@ -606,7 +682,6 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 	buckets.drafts.sort(newestFirst);
 	buckets.finished.sort(newestFirst);
 	// running first, then the queue in claim order (the queue line carries the position)
-	const queue = snap.execution_queue;
 	const order = [
 		queue?.active?.workspace_task_id,
 		...(queue?.queued ?? []).map((q) => q.workspace_task_id),
@@ -647,11 +722,19 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 	if (counts.rejected) parts.push(`${counts.rejected} rejected`);
 	if (counts.drafts) parts.push(`${plural(counts.drafts, "draft")} open`);
 	const decisions = counts.needsApproval + counts.needsAcceptance;
-	const quiet = decisions === 0 && inFlight === 0 && counts.attention === 0;
-	const summary = `${quiet ? "Nothing is running or waiting for Edward. " : ""}${parts.join(" · ")}.`;
+	const quiet =
+		decisions === 0 && inFlight === 0 && counts.attention === 0 && !maybeHidden;
+	// every recorded kind adds a part, so `parts` is empty only when none of this repository's tasks is shown
+	const summary = [
+		quiet ? "Nothing is running or waiting for Edward." : "",
+		parts.length > 0 ? `${parts.join(" · ")}.` : "",
+		windowNote,
+	]
+		.filter(Boolean)
+		.join(" ");
 
 	const state: BriefingState =
-		decisions > 0 || counts.attention > 0
+		decisions > 0 || counts.attention > 0 || maybeHidden
 			? "attention"
 			: inFlight > 0
 				? "active"
@@ -674,6 +757,12 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 		null;
 	let next: RepoBriefing["next"];
 	if (pick) next = nextFor(pick);
+	else if (maybeHidden)
+		next = {
+			text: "Open Headquarters to see every pending decision.",
+			label: "Open Headquarters",
+			target: { view: "hq", repoId: null, taskId: null, requestId: null },
+		};
 	else if (buckets.now[0])
 		next = nextFor(buckets.now[0], "Nothing needs Edward now. ");
 	else if (firstOf("attention"))
@@ -686,6 +775,7 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 		};
 
 	const notes: string[] = [];
+	if (maybeHidden) notes.push(INBOX_UNATTRIBUTED_NOTE);
 	if (queue?.claims_paused_by_quarantine)
 		notes.push(
 			`The engine is not claiming work: ${QUARANTINE_PAUSE_NOTE.replace(/^claims paused: /, "")}.`,
@@ -707,5 +797,6 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 		sections,
 		olderFinished,
 		counts,
+		window: taskWindow,
 	};
 }

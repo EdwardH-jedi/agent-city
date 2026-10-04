@@ -685,6 +685,13 @@ export class FixtureWorld {
 			repos: this.repos,
 			observed_repos: this.observedRepos,
 			tasks,
+			// the fixture lists every task, so its window and its complete totals always agree
+			repo_task_counts: this.repos.map((r) => ({
+				repo_id: r.repo_id,
+				tasks: [...this.tasks.values()].filter(
+					(t) => t.summary.repo_id === r.repo_id,
+				).length,
+			})),
 			pending_requests: pending,
 			execution_queue: this.executionQueue(),
 			generated_at: this.ts(),
