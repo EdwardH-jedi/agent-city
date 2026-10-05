@@ -53,6 +53,8 @@ live:
 #   model:            required for claude/openai/codex/local (no default model); null for jev/fake
 #   latency_class:    low | medium | high       cost_class: none | low | medium | high
 #   enabled (default true), max_concurrency 1..16 (default 1), label (optional, display only)
+# Approval binding: ENABLED profiles are part of the policy hash, so changing, enabling or disabling one
+# voids approvals made under the old set; a disabled profile is never used and is not bound.
 # worker_profiles:
 #   - profile_id: fast-clerk
 #     provider: claude
