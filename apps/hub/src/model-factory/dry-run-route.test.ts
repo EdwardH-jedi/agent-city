@@ -348,7 +348,7 @@ describe("2 — profile resolution executes nothing", () => {
 		const sources = readdirSync(dir).filter(
 			(f) => f.endsWith(".ts") && !f.endsWith(".test.ts"),
 		);
-		expect(sources).toEqual(["dry-run-route.ts"]);
+		expect(sources).toEqual(["dry-run-route.ts", "support-launch-plan.ts"]);
 		const allowed = new Set([
 			"@agent-city/schema",
 			"../decision-fabric/contracts.ts",
@@ -358,7 +358,9 @@ describe("2 — profile resolution executes nothing", () => {
 			"../managed/worker-profile-registry.ts",
 			"../support-jobs/guards.ts",
 			"../support-jobs/job.ts",
+			"../support-jobs/scheduler.ts",
 			"../support-jobs/vocabulary.ts",
+			"./dry-run-route.ts",
 		]);
 		for (const f of sources) {
 			const text = readFileSync(join(dir, f), "utf8");
