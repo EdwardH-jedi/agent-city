@@ -54,3 +54,4 @@ export {
 	SUBAGENT_TOOLS,
 } from "./status.ts";
 export * from "./types.ts";
+export * from "./worker-profiles.ts";
