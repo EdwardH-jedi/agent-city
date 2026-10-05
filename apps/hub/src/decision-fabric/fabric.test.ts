@@ -100,9 +100,10 @@ describe("3 — high-confidence safe routing", () => {
 			reason_codes: [],
 			policy_override: null,
 		});
+		// the capability route names the canonical Worker Profile tier
 		expect(routeTarget(r.decision.route ?? "HUMAN")).toEqual({
 			kind: "CAPABILITY",
-			tier: "FAST",
+			tier: "fast",
 		});
 	});
 });

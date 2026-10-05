@@ -14,7 +14,7 @@ const meta = { id: "sj-1", created_seq: 1, created_at: T0 };
 const base = {
 	repo_id: "acme/widgets",
 	kind: "REPO_STATUS",
-	capability: "FAST",
+	capability: "fast",
 } as const;
 
 describe("1. valid support job creation", () => {
@@ -26,7 +26,7 @@ describe("1. valid support job creation", () => {
 			id: "sj-1",
 			repo_id: "acme/widgets",
 			kind: "REPO_STATUS",
-			capability: "FAST",
+			capability: "fast",
 			inputs: [],
 			brief: null,
 			status: "QUEUED",
@@ -45,7 +45,7 @@ describe("1. valid support job creation", () => {
 
 	test.each([...SUPPORT_JOB_KINDS])("%s with its required refs", (kind) => {
 		const r = createSupportJob(
-			{ ...base, kind, capability: "STANDARD", inputs: DEFAULT_REFS[kind] },
+			{ ...base, kind, capability: "standard", inputs: DEFAULT_REFS[kind] },
 			meta,
 		);
 		expect(r.ok).toBe(true);

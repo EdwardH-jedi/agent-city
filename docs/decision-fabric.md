@@ -17,7 +17,7 @@ Remote delivery (push / PR / merge) is not a decision kind at all.
 
 | file | role |
 |---|---|
-| `vocabulary.ts` | **the only routing vocabulary**: capability tiers `FAST < STANDARD < SENIOR < PRINCIPAL`, the separate `HUMAN` route outcome, `isCapabilityRoute`, `routeTarget` |
+| `vocabulary.ts` | **the only routing vocabulary**: route tokens `FAST < STANDARD < SENIOR < PRINCIPAL` (compile-checked against the canonical `WORKER_LINEAR_CAPABILITY_TIERS`, ranked by `WORKER_CAPABILITY_RANK`), the separate `HUMAN` route outcome, `isCapabilityRoute`, `routeTarget` (→ canonical lowercase tier) |
 | `contracts.ts` | decision kinds, structured inputs (`ChangeFacts` flags, all required), closed choice sets, strict `Recommendation` |
 | `hash.ts` | canonical key-sorted JSON + sha256 (`node:crypto`) |
 | `policy.ts` | deterministic enforcement, every threshold exported |
@@ -77,6 +77,9 @@ with every `{rule, from, to}` step, `findings`) side by side, plus `input_hash`,
 
 ## Integration notes
 
-- Replace `vocabulary.ts` with the canonical Worker Profile types; nothing else names tiers.
+- `vocabulary.ts` derives from the canonical Worker Profile tiers (`@agent-city/schema`); it is the only
+  file here that imports the schema, and nothing else names tiers. `routeTarget` hands the Worker
+  Profile Registry a canonical tier; `specialist` is never a route. The dry-run composition with the
+  registry and the support lane is `apps/hub/src/model-factory/`.
 - `ReviewFinding` mirrors the managed `Finding` shape so reviewer findings pass straight through.
 - The `ChangeFacts` flags must come from trusted Hub analysis, never from the provider.

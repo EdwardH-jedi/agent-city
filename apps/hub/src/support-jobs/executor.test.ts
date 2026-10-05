@@ -27,7 +27,7 @@ function stub(
 	const seen: SupportExecutorInput[] = [];
 	return {
 		executor_id: "stub",
-		capabilities: ["FAST", "STANDARD"],
+		capabilities: ["fast", "standard"],
 		seen,
 		async execute(input) {
 			seen.push(input);
@@ -98,7 +98,7 @@ describe("fake executor end-to-end", () => {
 			job_id: "in1",
 			repo_id: "acme/widgets",
 			kind: "LOG_TRIAGE",
-			capability: "FAST",
+			capability: "fast",
 			inputs: [{ kind: "log", id: "ci-log-42" }],
 			brief: "look at retries",
 		});
@@ -111,7 +111,7 @@ describe("fake executor end-to-end", () => {
 		const job = running({ id: "mut", kind: "HANDOFF" });
 		const ex: SupportExecutor = {
 			executor_id: "mutator",
-			capabilities: ["FAST"],
+			capabilities: ["fast"],
 			async execute(input) {
 				(input as { repo_id: string }).repo_id = "evil/repo";
 				return handoff();
@@ -135,8 +135,8 @@ describe("preconditions leave the job untouched", () => {
 	});
 
 	test("executor must serve the job's capability", async () => {
-		const ex = createFakeSupportExecutor(["FAST"]);
-		const job = running({ id: "y", capability: "STANDARD" });
+		const ex = createFakeSupportExecutor(["fast"]);
+		const job = running({ id: "y", capability: "standard" });
 		expect(await runSupportJob(job, ex)).toEqual({
 			ok: false,
 			error: "capability_unsupported",
@@ -360,7 +360,7 @@ describe("cancellation", () => {
 		const ctl = new AbortController();
 		const ex: SupportExecutor = {
 			executor_id: "aborting",
-			capabilities: ["FAST"],
+			capabilities: ["fast"],
 			async execute(_input, ctx) {
 				ctl.abort();
 				expect(ctx.signal.aborted).toBe(true);
@@ -378,7 +378,7 @@ describe("cancellation", () => {
 		const ctl = new AbortController();
 		const ex: SupportExecutor = {
 			executor_id: "aborting",
-			capabilities: ["FAST"],
+			capabilities: ["fast"],
 			async execute() {
 				ctl.abort();
 				throw new Error("aborted");

@@ -94,13 +94,14 @@ describe("12 — source boundaries", () => {
 		]);
 	});
 
-	test("non-test files import only zod, node:crypto and siblings", () => {
+	test("non-test files import only zod, node:crypto and siblings (+ the canonical schema in vocabulary.ts)", () => {
 		const bad: string[] = [];
 		for (const f of SOURCES)
 			for (const spec of importsOf(read(f)))
 				if (
 					spec !== "zod" &&
 					spec !== "node:crypto" &&
+					!(f === "vocabulary.ts" && spec === "@agent-city/schema") &&
 					!/^\.\/[a-z-]+\.ts$/.test(spec)
 				)
 					bad.push(`${f}: ${spec}`);
@@ -119,7 +120,10 @@ describe("12 — source boundaries", () => {
 			"./contracts.ts",
 			"./vocabulary.ts",
 		]);
-		expect(importsOf(read("vocabulary.ts"))).toEqual(["zod"]);
+		expect(importsOf(read("vocabulary.ts"))).toEqual([
+			"@agent-city/schema",
+			"zod",
+		]);
 		for (const f of SOURCES)
 			if (f !== "fabric.ts" && f !== "isolation.test.ts")
 				expect(importsOf(read(f))).not.toContain("./fabric.ts");

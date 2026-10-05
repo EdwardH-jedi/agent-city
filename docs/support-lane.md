@@ -12,7 +12,7 @@ route, no UI, no Git mutation.** Wiring a real executor, persistence and an API 
 
 | Module | What it owns |
 | --- | --- |
-| `vocabulary.ts` | Capability (`FAST` / `STANDARD`) and `profile_id` shape — the single swap point for the canonical Worker Profile types |
+| `vocabulary.ts` | Capability = canonical `WorkerCapabilityTier` narrowed to `fast` / `standard`; `profile_id` = canonical `WorkerProfileId` (both from `@agent-city/schema`) |
 | `job.ts` | `SupportJob` / `SupportJobRequest` (zod `strictObject`, every string/array bounded), typed input refs, `createSupportJob` |
 | `state.ts` | State machine and lifecycle helpers (start, cancel intent, complete, fail, assign profile) |
 | `artifact.ts` | Strict per-kind artifact bodies and `validateExecutorOutput` |

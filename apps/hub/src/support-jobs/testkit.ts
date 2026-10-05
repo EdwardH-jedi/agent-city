@@ -44,7 +44,7 @@ export function queued(spec: JobSpec): SupportJob {
 		{
 			repo_id: spec.repo_id ?? "acme/widgets",
 			kind,
-			capability: spec.capability ?? "FAST",
+			capability: spec.capability ?? "fast",
 			inputs: spec.inputs ?? DEFAULT_REFS[kind],
 			brief: spec.brief ?? null,
 			priority: spec.priority ?? 50,
