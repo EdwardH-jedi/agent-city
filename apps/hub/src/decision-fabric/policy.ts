@@ -70,6 +70,7 @@ export const POLICY_RULES = [
 	"TOTAL_REPAIR_LIMIT",
 	"BLOCKER_FINDING_NOT_READY",
 	"REVIEWER_REJECT_NOT_READY",
+	"REVIEWER_REJECT_NO_SECOND_OPINION",
 	"CONSECUTIVE_FAILURE_LIMIT",
 	"BUDGET_EXHAUSTED",
 	"PRIORITY_AT_BOUND",
@@ -90,14 +91,16 @@ export const HUMAN_ONLY_FLAGS = [
 }[];
 
 /**
- * Minimum implementation tier per sensitive flag. Auth/authorization: never the fast tier (literal
- * floor STANDARD); security and DB migrations: at least SENIOR. Several flags → the highest floor.
+ * Minimum implementation tier per sensitive flag. Authentication, authorization / approval-contract,
+ * security and DB-migration changes all need at least SENIOR: auth and authorization are
+ * security-sensitive, so the conservative reading of "never FAST" + "security-sensitive ≥ SENIOR"
+ * applies to them too. Several flags → the highest floor.
  */
 export const ROUTE_FLOORS = [
-	{ flag: "touches_auth", floor: "STANDARD", rule: "AUTH_ROUTE_FLOOR" },
+	{ flag: "touches_auth", floor: "SENIOR", rule: "AUTH_ROUTE_FLOOR" },
 	{
 		flag: "touches_authorization",
-		floor: "STANDARD",
+		floor: "SENIOR",
 		rule: "AUTHORIZATION_ROUTE_FLOOR",
 	},
 	{ flag: "touches_security", floor: "SENIOR", rule: "SECURITY_ROUTE_FLOOR" },
@@ -404,9 +407,13 @@ function postReview(
 		findings.some((f) => f.severity === "blocker")
 	)
 		apply(t, "BLOCKER_FINDING_NOT_READY", "HUMAN_REQUIRED");
-	// Last, so no earlier step can undo it: a reviewer REJECT is never "ready", whatever was recommended.
+	// Last, so no earlier step can undo it: a reviewer REJECT is never "ready", whatever was recommended,
+	// and is never sent shopping for another reviewer's opinion — after a rejection the outcomes are a
+	// repair (actionable findings), a person, or STOP.
 	if (reviewer_verdict === "REJECT" && t.choice === "READY_FOR_HUMAN")
 		apply(t, "REVIEWER_REJECT_NOT_READY", "HUMAN_REQUIRED");
+	if (reviewer_verdict === "REJECT" && t.choice === "SECOND_REVIEW")
+		apply(t, "REVIEWER_REJECT_NO_SECOND_OPINION", "HUMAN_REQUIRED");
 
 	let route: RouteOutcome | null = null;
 	if (t.choice === "READY_FOR_HUMAN" || t.choice === "HUMAN_REQUIRED")

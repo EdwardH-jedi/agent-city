@@ -728,10 +728,15 @@ describe("9/10 — no live provider; live-off config and policy hash unchanged",
 		expect(policyHash(empty, REPO)).toBe(oldPolicyHash(cfg));
 	});
 
-	test("profiles are bound by the policy hash but leave live off", () => {
+	test("enabled profiles are bound by the policy hash but leave live off; disabled ones are not bound", () => {
 		const cfg = parseManagedConfig({ ...RAW, worker_profiles: ALL });
 		expect(cfg.live).toEqual({ enabled: false });
 		expect(policyHash(cfg, REPO)).not.toBe(oldPolicyHash(cfg));
+		const allOff = parseManagedConfig({
+			...RAW,
+			worker_profiles: ALL.map((p) => ({ ...p, enabled: false })),
+		});
+		expect(policyHash(allOff, REPO)).toBe(oldPolicyHash(allOff));
 	});
 
 	test("config → registry → dry run launches nothing", async () => {

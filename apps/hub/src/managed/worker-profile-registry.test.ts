@@ -271,7 +271,7 @@ describe("config: policyHash", () => {
 		}
 	});
 
-	test("adding, changing or disabling a profile changes the hash; reordering does not", () => {
+	test("adding, changing or disabling an enabled profile changes the hash; reordering does not", () => {
 		const absent = policyHash(parseManagedConfig(RAW), REPO);
 		const hashOf = (profiles: unknown[]) =>
 			policyHash(
@@ -284,7 +284,6 @@ describe("config: policyHash", () => {
 		expect(two).not.toBe(one);
 		expect(hashOf([P.reviewer, P.claudeEngineer])).toBe(two);
 		const variants: Record<string, unknown>[] = [
-			{ enabled: false },
 			{ model: "opus" },
 			{ capability_tier: "senior" },
 			{ max_concurrency: 3 },
@@ -299,6 +298,34 @@ describe("config: policyHash", () => {
 			expect(seen.has(h)).toBe(false);
 			seen.add(h);
 		}
+		// disabling the only enabled profile takes it out of the binding: back to the profile-less hash
+		expect(hashOf([{ ...P.claudeEngineer, enabled: false }])).toBe(absent);
+		// disabling one of two leaves exactly the other one bound
+		expect(hashOf([P.claudeEngineer, { ...P.reviewer, enabled: false }])).toBe(
+			one,
+		);
+	});
+
+	test("a disabled profile never voids an approval: adding or editing one leaves the hash unchanged", () => {
+		const hashOf = (profiles: unknown[]) =>
+			policyHash(
+				parseManagedConfig({ ...RAW, worker_profiles: profiles }),
+				REPO,
+			);
+		const absent = policyHash(parseManagedConfig(RAW), REPO);
+		const off = { ...P.reviewer, enabled: false };
+		expect(hashOf([off])).toBe(absent);
+		expect(hashOf([off])).toBe(oldPolicyHash(parseManagedConfig(RAW), REPO));
+		const one = hashOf([P.claudeEngineer]);
+		expect(hashOf([P.claudeEngineer, off])).toBe(one);
+		for (const v of [
+			{ model: "opus" },
+			{ label: "Spare" },
+			{ max_concurrency: 9 },
+		])
+			expect(hashOf([P.claudeEngineer, { ...off, ...v }])).toBe(one);
+		// enabling it is a change to what may run: the hash moves
+		expect(hashOf([P.claudeEngineer, { ...off, enabled: true }])).not.toBe(one);
 	});
 });
 

@@ -185,13 +185,16 @@ export const sha256Hex = (data: string | Uint8Array): string =>
  * the output roots. Part of the approval binding: changing any of it after approval voids the
  * approval — for queued AND resumed stages. Other repos' entries are excluded on purpose.
  *
- * Worker profiles are part of it only when at least one is configured: an absent or empty list
- * hashes exactly like a config from before profiles existed, so existing approvals stay valid.
- * They are hashed sorted by profile_id (ids are unique), so reordering the file voids nothing while
- * any change to a profile (incl. enabling/disabling one) does.
+ * Worker profiles are part of it only when at least one ENABLED profile is configured: a disabled
+ * profile can never be resolved or selected (the registry fails closed on it), so it cannot change
+ * what an approved run may do — adding, editing or keeping one voids nothing. An absent or empty
+ * list, or one with only disabled profiles, hashes exactly like a config from before profiles
+ * existed, so existing approvals stay valid. Enabled profiles are hashed sorted by profile_id (ids
+ * are unique): reordering the file voids nothing, while any change to an enabled profile — and
+ * enabling or disabling one — does.
  */
 export function policyHash(cfg: ManagedConfig, repoId: string): string {
-	const profiles = cfg.worker_profiles ?? [];
+	const profiles = (cfg.worker_profiles ?? []).filter((p) => p.enabled);
 	return sha256Hex(
 		canonicalJson({
 			repo: findRepo(cfg, repoId),

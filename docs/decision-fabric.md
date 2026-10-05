@@ -59,13 +59,14 @@ input (key order irrelevant, array order significant).
 | `requests_remote_delivery` / `touches_deploy_or_credentials` | human outcome for every kind (HUMAN / HUMAN_REQUIRED / ESCALATE_TO_HUMAN / PAUSE_FOR_HUMAN) |
 | no usable recommendation (invalid input, provider error/timeout, malformed, mismatched, unsupported choice) | kind's fail-closed choice |
 | confidence `< MIN_CONFIDENCE` (0.7) | conservative: route ≥ SENIOR, review ≥ DEEP_REVIEW, post-review → HUMAN_REQUIRED, retry → escalate, priority → KEEP, continue → pause/escalate |
-| route floors | auth → ≥ STANDARD, authorization/approval contracts → ≥ STANDARD, security → ≥ SENIOR, DB migration → ≥ SENIOR |
+| route floors | auth → ≥ SENIOR, authorization/approval contracts → ≥ SENIOR, security → ≥ SENIOR, DB migration → ≥ SENIOR |
 | review floors | any source mutation or non-support artifact → ≥ STANDARD_REVIEW; auth/security/migration → ≥ DEEP_REVIEW; authorization → ≥ SECOND_REVIEW. NO_SEMANTIC_REVIEW only for read-only support artifacts with no flags |
-| post-review | REVIEWER REJECT never yields READY_FOR_HUMAN (applied last); blocker finding → not ready; repairs need an actionable finding; ≤ 2 same-tier repairs, ≤ 4 total; no tier above PRINCIPAL → HUMAN_REQUIRED; findings are carried through unchanged |
+| post-review | REVIEWER REJECT never yields READY_FOR_HUMAN nor a SECOND_REVIEW (no review shopping; applied last); blocker finding → not ready; repairs need an actionable finding; ≤ 2 same-tier repairs, ≤ 4 total; no tier above PRINCIPAL → HUMAN_REQUIRED; findings are carried through unchanged |
 | escalation / autonomy | ≤ 2 attempts per tier; 3 consecutive failures → human; budget exhausted → STOP; a task waiting ≥ 1 h is not lowered |
 
-The route floors follow the spec literally (auth/authorization: "never FAST"). They live in one
-exported table (`ROUTE_FLOORS`) to tune.
+Auth and authorization changes are security-sensitive, so they take the SENIOR floor too (the
+conservative reading of "never FAST" + "security-sensitive ≥ SENIOR"; an earlier draft used STANDARD).
+The floors live in one exported table (`ROUTE_FLOORS`).
 
 ## Result
 

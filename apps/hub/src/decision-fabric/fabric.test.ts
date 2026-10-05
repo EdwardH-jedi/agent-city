@@ -157,11 +157,12 @@ describe("4 — low confidence routes conservatively", () => {
 
 describe("5 — auth / authorization / security / deploy overrides", () => {
 	const cases = [
-		[{ touches_auth: true }, "FAST", "STANDARD", "AUTH_ROUTE_FLOOR"],
+		[{ touches_auth: true }, "FAST", "SENIOR", "AUTH_ROUTE_FLOOR"],
+		[{ touches_auth: true }, "STANDARD", "SENIOR", "AUTH_ROUTE_FLOOR"],
 		[
 			{ touches_authorization: true },
 			"FAST",
-			"STANDARD",
+			"SENIOR",
 			"AUTHORIZATION_ROUTE_FLOOR",
 		],
 		[{ touches_security: true }, "FAST", "SENIOR", "SECURITY_ROUTE_FLOOR"],
@@ -288,6 +289,36 @@ describe("7 — a reviewer REJECT never becomes READY_FOR_HUMAN", () => {
 			},
 		]);
 		expect(r.decision.findings).toEqual(findings);
+	});
+
+	test("after a REJECT a confident SECOND_REVIEW is not review shopping: a person decides", async () => {
+		const findings = [finding()];
+		const r = decided(
+			await decide(
+				fixedProvider({ choice: "SECOND_REVIEW", confidence: 0.99 }),
+				request(
+					"POST_REVIEW",
+					postReview({ reviewer_verdict: "REJECT", findings }),
+				),
+			),
+		);
+		expect(r.decision.choice).toBe("HUMAN_REQUIRED");
+		expect(r.decision.route).toBe("HUMAN");
+		expect(r.decision.policy_override?.steps).toEqual([
+			{
+				rule: "REVIEWER_REJECT_NO_SECOND_OPINION",
+				from: "SECOND_REVIEW",
+				to: "HUMAN_REQUIRED",
+			},
+		]);
+		// an APPROVE may still ask for more scrutiny
+		const ok = decided(
+			await decide(
+				fixedProvider({ choice: "SECOND_REVIEW", confidence: 0.99 }),
+				request("POST_REVIEW", postReview({ reviewer_verdict: "APPROVE" })),
+			),
+		);
+		expect(ok.decision.choice).toBe("SECOND_REVIEW");
 	});
 
 	test("a provider cannot overwrite findings: a `findings` key in its output is rejected", async () => {

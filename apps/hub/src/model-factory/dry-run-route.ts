@@ -25,6 +25,11 @@
 // - A job without one gets the first eligible profile in registry order (lowest sufficient tier,
 //   then profile_id) — reported as `source: "selected"`, distinct from `"assigned"`. The job itself
 //   is not changed (assignSupportProfile is never called here).
+//
+// Implementation tasks (dryRunTaskRoute) take the same path with the implementer lane: trusted change
+// facts → TASK_ROUTE → policy floors (auth / authorization / security / migration ≥ SENIOR, deploy /
+// credentials / remote delivery → a person) → an implementer profile with a worktree. Still a
+// recommendation only: no proposal, no Gate 1, no managed task, no provider.
 import {
 	WORKER_CAPABILITY_RANK,
 	type WorkerLinearCapabilityTier,
@@ -32,9 +37,9 @@ import {
 	type WorkerProfile,
 	type WorkerRole,
 } from "@agent-city/schema";
-import type {
+import {
 	ChangeFacts,
-	DecisionInput,
+	type DecisionInput,
 } from "../decision-fabric/contracts.ts";
 import {
 	type DecideOptions,
@@ -45,6 +50,7 @@ import type { DecisionProvider } from "../decision-fabric/provider.ts";
 import { routeTarget } from "../decision-fabric/vocabulary.ts";
 import type {
 	WorkerProfileRegistry,
+	WorkerProfileRequirement,
 	WorkerProfileResolutionFailure,
 } from "../managed/worker-profile-registry.ts";
 import { deepFreeze } from "../support-jobs/guards.ts";
@@ -211,46 +217,157 @@ export async function dryRunSupportRoute(
 			profile,
 		});
 
-	if (job.profile_id !== null) {
-		const r = deps.registry.resolve(job.profile_id, requirement);
+	return done(
+		recommendProfile(
+			deps.registry,
+			requirement,
+			SUPPORT_LANE_MUTABILITY,
+			job.profile_id,
+		),
+	);
+}
+
+/**
+ * An assigned profile is resolved EXACTLY (unknown / disabled / unfit / wrong mutability → no
+ * profile, never a substitute); without one, the first eligible enabled profile in registry order
+ * (lowest sufficient tier, then profile_id) is selected.
+ */
+function recommendProfile(
+	registry: WorkerProfileRegistry,
+	requirement: WorkerProfileRequirement,
+	mutability: WorkerMutabilityClass,
+	assigned: string | null,
+): DryRunProfile {
+	if (assigned !== null) {
+		const r = registry.resolve(assigned, requirement);
 		if (!r.ok)
-			return done({
+			return {
 				status: "NO_PROFILE",
 				reason: r.reason,
-				profile_id: job.profile_id,
+				profile_id: assigned,
 				profile: null,
-			});
-		if (r.profile.mutability !== SUPPORT_LANE_MUTABILITY)
-			return done({
+			};
+		if (r.profile.mutability !== mutability)
+			return {
 				status: "NO_PROFILE",
 				reason: "mutability_mismatch",
-				profile_id: job.profile_id,
+				profile_id: assigned,
 				profile: null,
-			});
-		return done({
+			};
+		return {
 			status: "PROFILE_RECOMMENDED",
 			source: "assigned",
 			profile_id: r.profile.profile_id,
 			profile: r.profile,
-		});
+		};
 	}
-
-	const pick = deps.registry
+	const pick = registry
 		.select(requirement)
-		.find((p) => p.mutability === SUPPORT_LANE_MUTABILITY);
-	return done(
-		pick
-			? {
-					status: "PROFILE_RECOMMENDED",
-					source: "selected",
-					profile_id: pick.profile_id,
-					profile: pick,
-				}
-			: {
-					status: "NO_PROFILE",
-					reason: "no_matching_profile",
-					profile_id: null,
-					profile: null,
-				},
+		.find((p) => p.mutability === mutability);
+	return pick
+		? {
+				status: "PROFILE_RECOMMENDED",
+				source: "selected",
+				profile_id: pick.profile_id,
+				profile: pick,
+			}
+		: {
+				status: "NO_PROFILE",
+				reason: "no_matching_profile",
+				profile_id: null,
+				profile: null,
+			};
+}
+
+// ── implementation tasks ─────────────────────────────────────────────────────────────────────
+
+/** The worker role and mutability an implementation task is served by. */
+export const IMPLEMENTATION_ROLE: WorkerRole = "implementer";
+export const IMPLEMENTATION_MUTABILITY: WorkerMutabilityClass = "worktree";
+
+export type DryRunTaskRoute = Readonly<{
+	mode: typeof DRY_RUN_MODE;
+	authority: "ADVISORY";
+	/** The trusted change facts as validated; null when they did not validate (→ fail closed). */
+	change: Readonly<ChangeFacts> | null;
+	/** The complete Decision Fabric outcome (recommendation and enforced decision side by side). */
+	fabric: FabricOutcome;
+	/** Canonical tier of the enforced route; null for HUMAN / no decision. */
+	routed_tier: WorkerLinearCapabilityTier | null;
+	/** max(min_capability, routed_tier); null when no lookup happens. */
+	required_tier: WorkerLinearCapabilityTier | null;
+	profile: DryRunProfile;
+}>;
+
+export interface DryRunTaskRequest {
+	/** What the change touches, from trusted Hub analysis — never from a provider or the task text. */
+	change: unknown;
+	/** Task size for TASK_ROUTE, from trusted Hub analysis. */
+	scope: DryRunScope;
+	/** Optional trusted minimum tier (like a support job's capability): raised to, never lowered. */
+	min_capability?: WorkerLinearCapabilityTier | null;
+	/** An implementer profile already named by trusted configuration: resolved exactly. */
+	profile_id?: string | null;
+}
+
+/**
+ * Recommend (never assign, never run, never queue, never propose) an implementer profile for one
+ * implementation task. A provider can raise the tier but never lower it below the policy floors or
+ * `min_capability`; a HUMAN route or an undecided / fail-closed outcome means no profile lookup.
+ */
+export async function dryRunTaskRoute(
+	req: DryRunTaskRequest,
+	deps: DryRunDeps,
+): Promise<DryRunTaskRoute> {
+	const parsed = ChangeFacts.safeParse(req.change);
+	const base = {
+		mode: DRY_RUN_MODE,
+		authority: "ADVISORY",
+		change: parsed.success ? parsed.data : null,
+	} as const;
+	const fabric = await decide(
+		deps.provider,
+		{
+			decision_kind: "TASK_ROUTE",
+			input: { change: req.change, scope: req.scope },
+		},
+		deps.decide_options,
 	);
+	const human = (
+		reason: "route_human" | "decision_fail_closed" | "decision_unsupported",
+	): DryRunTaskRoute =>
+		deepFreeze({
+			...base,
+			fabric,
+			routed_tier: null,
+			required_tier: null,
+			profile: {
+				status: "HUMAN_REQUIRED",
+				reason,
+				profile_id: null,
+				profile: null,
+			},
+		});
+	if (fabric.outcome !== "DECIDED" || fabric.decision_kind !== "TASK_ROUTE")
+		return human("decision_unsupported");
+	const target = routeTarget(fabric.decision.route ?? "HUMAN");
+	if (target.kind === "HUMAN")
+		return human(
+			fabric.decision.fail_closed ? "decision_fail_closed" : "route_human",
+		);
+	const required_tier = req.min_capability
+		? higherTier(req.min_capability, target.tier)
+		: target.tier;
+	return deepFreeze({
+		...base,
+		fabric,
+		routed_tier: target.tier,
+		required_tier,
+		profile: recommendProfile(
+			deps.registry,
+			{ role: IMPLEMENTATION_ROLE, min_capability: required_tier },
+			IMPLEMENTATION_MUTABILITY,
+			req.profile_id ?? null,
+		),
+	});
 }

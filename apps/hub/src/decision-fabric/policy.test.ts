@@ -102,8 +102,8 @@ describe("explicit constants", () => {
 		expect(MAX_CONSECUTIVE_FAILURES).toBe(3);
 		expect(STARVATION_WAIT_S).toBe(3600);
 		expect(ROUTE_FLOORS.map((f) => [f.flag, f.floor])).toEqual([
-			["touches_auth", "STANDARD"],
-			["touches_authorization", "STANDARD"],
+			["touches_auth", "SENIOR"],
+			["touches_authorization", "SENIOR"],
 			["touches_security", "SENIOR"],
 			["touches_db_migration", "SENIOR"],
 		]);
