@@ -26,6 +26,13 @@ credential field exists, and unknown keys are rejected. Inputs are typed referen
 cannot be paths. The capability is abstract; `profile_id` stays null until a future router assigns
 one (`assignSupportProfile`, QUEUED only).
 
+Public boundaries never throw on hostile input: `createSupportJob`, `parseSupportJob`, every state
+transition and `runSupportJob` parse through `parseGuarded` (`guards.ts`), so a throwing getter or
+Proxy trap becomes a classified result (`(root):unreadable`, `null`, `invalid_job`, `invariant`) and the
+parsed job is a plain copy read once. An executor rejection whose `name` / `message` cannot be read
+still settles FAILED / `EXECUTOR_ERROR` with the fixed detail `executor error not readable`;
+cancellation still takes precedence and no artifact is kept.
+
 ## States
 
 ```

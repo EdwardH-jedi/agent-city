@@ -8,8 +8,9 @@
 //     └──► CANCELLED ◄─────┘ (cancel)
 //
 // Terminal: COMPLETED, FAILED, CANCELLED. Nothing re-queues; a retry is a new job.
-import { deepFreeze } from "./guards.ts";
+import { deepFreeze, guarded } from "./guards.ts";
 import {
+	parseSupportJob,
 	type SupportFailure,
 	SupportJob,
 	SupportJobStatus,
@@ -35,10 +36,12 @@ export const isTerminalSupportStatus = (s: SupportJobStatus): boolean =>
 
 /** Is `from → to` a legal support transition? Anything outside the support enum is false. */
 export function canSupportTransition(from: unknown, to: unknown): boolean {
-	const f = SupportJobStatus.safeParse(from);
-	const t = SupportJobStatus.safeParse(to);
-	if (!f.success || !t.success) return false;
-	return SUPPORT_JOB_TRANSITIONS[f.data].includes(t.data);
+	return guarded(() => {
+		const f = SupportJobStatus.safeParse(from);
+		const t = SupportJobStatus.safeParse(to);
+		if (!f.success || !t.success) return false;
+		return SUPPORT_JOB_TRANSITIONS[f.data].includes(t.data);
+	}, false);
 }
 
 export type SupportTransitionError =
@@ -59,14 +62,24 @@ interface TransitionFields {
 	failure?: SupportFailure;
 }
 
+const INVARIANT: SupportTransitionResult = Object.freeze({
+	ok: false,
+	error: "invariant",
+});
+
+/**
+ * Build the next job from a parsed current job and a patch. The patch is produced inside the guard
+ * (it may read caller-supplied result / failure values), so an unreadable value is `invariant`,
+ * never a thrown exception.
+ */
 function rebuild(
 	job: SupportJob,
-	patch: Partial<Record<keyof SupportJob, unknown>>,
+	patch: () => Partial<Record<keyof SupportJob, unknown>>,
 ): SupportTransitionResult {
-	const next = SupportJob.safeParse({ ...job, ...patch });
-	return next.success
-		? { ok: true, job: deepFreeze(next.data) }
-		: { ok: false, error: "invariant" };
+	return guarded<SupportTransitionResult>(() => {
+		const next = SupportJob.safeParse({ ...job, ...patch() });
+		return next.success ? { ok: true, job: deepFreeze(next.data) } : INVARIANT;
+	}, INVARIANT);
 }
 
 /**
@@ -79,19 +92,19 @@ export function transitionSupportJob(
 	to: unknown,
 	fields: TransitionFields = {},
 ): SupportTransitionResult {
-	const current = SupportJob.safeParse(job);
-	if (!current.success) return { ok: false, error: "invalid_job" };
-	const target = SupportJobStatus.safeParse(to);
-	if (!target.success) return { ok: false, error: "unknown_state" };
-	if (!canSupportTransition(current.data.status, target.data))
+	const current = parseSupportJob(job);
+	if (!current) return { ok: false, error: "invalid_job" };
+	const target = guarded(() => SupportJobStatus.safeParse(to), null);
+	if (!target?.success) return { ok: false, error: "unknown_state" };
+	if (!canSupportTransition(current.status, target.data))
 		return { ok: false, error: "illegal_transition" };
-	if (target.data === "RUNNING" && current.data.disabled)
+	if (target.data === "RUNNING" && current.disabled)
 		return { ok: false, error: "disabled" };
-	return rebuild(current.data, {
+	return rebuild(current, () => ({
 		status: target.data,
 		result: fields.result ?? null,
 		failure: fields.failure ?? null,
-	});
+	}));
 }
 
 /** QUEUED → RUNNING (refused while the job is disabled). */
@@ -104,15 +117,15 @@ export const startSupportJob = (job: SupportJob): SupportTransitionResult =>
  * an already CANCELLED job is returned unchanged; COMPLETED / FAILED cannot be cancelled.
  */
 export function requestSupportCancel(job: SupportJob): SupportTransitionResult {
-	const current = SupportJob.safeParse(job);
-	if (!current.success) return { ok: false, error: "invalid_job" };
-	switch (current.data.status) {
+	const current = parseSupportJob(job);
+	if (!current) return { ok: false, error: "invalid_job" };
+	switch (current.status) {
 		case "QUEUED":
-			return transitionSupportJob(current.data, "CANCELLED");
+			return transitionSupportJob(current, "CANCELLED");
 		case "RUNNING":
-			return rebuild(current.data, { cancel_requested: true });
+			return rebuild(current, () => ({ cancel_requested: true }));
 		case "CANCELLED":
-			return { ok: true, job: deepFreeze(current.data) };
+			return { ok: true, job: current };
 		default:
 			return { ok: false, error: "illegal_transition" };
 	}
@@ -123,8 +136,11 @@ export function completeSupportJob(
 	job: SupportJob,
 	result: SupportResultMeta,
 ): SupportTransitionResult {
-	if (job.cancel_requested) return transitionSupportJob(job, "CANCELLED");
-	return transitionSupportJob(job, "COMPLETED", { result });
+	const current = parseSupportJob(job);
+	if (!current) return { ok: false, error: "invalid_job" };
+	if (current.cancel_requested)
+		return transitionSupportJob(current, "CANCELLED");
+	return transitionSupportJob(current, "COMPLETED", { result });
 }
 
 /** RUNNING → FAILED with a classification — or CANCELLED if cancellation was requested. */
@@ -132,8 +148,11 @@ export function failSupportJob(
 	job: SupportJob,
 	failure: SupportFailure,
 ): SupportTransitionResult {
-	if (job.cancel_requested) return transitionSupportJob(job, "CANCELLED");
-	return transitionSupportJob(job, "FAILED", { failure });
+	const current = parseSupportJob(job);
+	if (!current) return { ok: false, error: "invalid_job" };
+	if (current.cancel_requested)
+		return transitionSupportJob(current, "CANCELLED");
+	return transitionSupportJob(current, "FAILED", { failure });
 }
 
 /** Record the profile a (future) router resolved for the job's capability. QUEUED only. */
@@ -141,11 +160,11 @@ export function assignSupportProfile(
 	job: SupportJob,
 	profile_id: unknown,
 ): SupportTransitionResult {
-	const current = SupportJob.safeParse(job);
-	if (!current.success) return { ok: false, error: "invalid_job" };
-	if (current.data.status !== "QUEUED")
+	const current = parseSupportJob(job);
+	if (!current) return { ok: false, error: "invalid_job" };
+	if (current.status !== "QUEUED")
 		return { ok: false, error: "illegal_transition" };
-	const id = SupportProfileId.safeParse(profile_id);
-	if (!id.success) return { ok: false, error: "invalid_profile" };
-	return rebuild(current.data, { profile_id: id.data });
+	const id = guarded(() => SupportProfileId.safeParse(profile_id), null);
+	if (!id?.success) return { ok: false, error: "invalid_profile" };
+	return rebuild(current, () => ({ profile_id: id.data }));
 }

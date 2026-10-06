@@ -267,3 +267,80 @@ describe("5. illegal transitions fail", () => {
 		expect(startSupportJob(job)).toEqual({ ok: false, error: "invalid_job" });
 	});
 });
+
+/** `value` with an enumerable getter `key` that throws. */
+const withThrowingGetter = <T extends object>(value: T, key: string): T => {
+	const copy = { ...value };
+	Object.defineProperty(copy, key, {
+		enumerable: true,
+		get() {
+			throw new Error("unreadable");
+		},
+	});
+	return copy;
+};
+/** A value whose every trap throws. */
+const hostile = (): never =>
+	new Proxy(
+		{},
+		{
+			get() {
+				throw new Error("trap");
+			},
+			has() {
+				throw new Error("trap");
+			},
+			ownKeys() {
+				throw new Error("trap");
+			},
+			getOwnPropertyDescriptor() {
+				throw new Error("trap");
+			},
+			getPrototypeOf() {
+				throw new Error("trap");
+			},
+		},
+	) as never;
+
+describe("MF-P2-02 — unreadable jobs and values never throw out of a transition", () => {
+	test("every lifecycle helper returns invalid_job for an unreadable job", () => {
+		const done = meta(running({ id: "s-0" }));
+		for (const bad of [
+			withThrowingGetter(running({ id: "s-1" }), "status"),
+			hostile() as SupportJob,
+		]) {
+			for (const r of [
+				transitionSupportJob(bad, "CANCELLED"),
+				startSupportJob(bad),
+				requestSupportCancel(bad),
+				completeSupportJob(bad, done),
+				failSupportJob(bad, failure),
+				assignSupportProfile(bad, "clerk-fast"),
+			])
+				expect(r).toEqual({ ok: false, error: "invalid_job" });
+		}
+	});
+
+	test("an unreadable result or failure value is an invariant failure", () => {
+		expect(completeSupportJob(running({ id: "s-2" }), hostile())).toEqual({
+			ok: false,
+			error: "invariant",
+		});
+		expect(failSupportJob(running({ id: "s-3" }), hostile())).toEqual({
+			ok: false,
+			error: "invariant",
+		});
+	});
+
+	test("an unreadable target state or profile id is refused", () => {
+		expect(transitionSupportJob(queued({ id: "s-4" }), hostile())).toEqual({
+			ok: false,
+			error: "unknown_state",
+		});
+		expect(canSupportTransition(hostile(), "RUNNING")).toBe(false);
+		expect(assignSupportProfile(queued({ id: "s-5" }), hostile())).toEqual({
+			ok: false,
+			error: "invalid_profile",
+		});
+	});
+});

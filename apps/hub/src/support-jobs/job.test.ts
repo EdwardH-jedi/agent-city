@@ -1,5 +1,6 @@
 // Support job domain: creation, rejection of bad input, and absence of any mutation authority.
 import { describe, expect, test } from "bun:test";
+import { UNREADABLE_ISSUE } from "./guards.ts";
 import {
 	createSupportJob,
 	parseSupportJob,
@@ -222,5 +223,79 @@ describe("3. read-only contract: no mutation authority", () => {
 		expect(parseSupportJob(job)).not.toBeNull();
 		for (const key of authorityKeys)
 			expect(parseSupportJob({ ...job, [key]: "x" })).toBeNull();
+	});
+});
+
+/** `value` with an enumerable getter `key` that throws. */
+const withThrowingGetter = <T extends object>(value: T, key: string): T => {
+	const copy = { ...value };
+	Object.defineProperty(copy, key, {
+		enumerable: true,
+		get() {
+			throw new Error("unreadable");
+		},
+	});
+	return copy;
+};
+/** A value whose every trap throws. */
+const hostile = (): never =>
+	new Proxy(
+		{},
+		{
+			get() {
+				throw new Error("trap");
+			},
+			has() {
+				throw new Error("trap");
+			},
+			ownKeys() {
+				throw new Error("trap");
+			},
+			getOwnPropertyDescriptor() {
+				throw new Error("trap");
+			},
+			getPrototypeOf() {
+				throw new Error("trap");
+			},
+		},
+	) as never;
+
+describe("MF-P2-02 — unreadable input is a failure, never an exception", () => {
+	test("createSupportJob: a throwing getter or Proxy in the request or the meta → {ok:false}, fixed issue", () => {
+		const cases: [unknown, unknown][] = [
+			[withThrowingGetter(base, "brief"), meta],
+			[hostile(), meta],
+			[base, withThrowingGetter(meta, "id")],
+			[base, hostile()],
+		];
+		for (const [req, m] of cases) {
+			let r: ReturnType<typeof createSupportJob> | undefined;
+			expect(() => {
+				r = createSupportJob(req, m as typeof meta);
+			}).not.toThrow();
+			expect(r).toEqual({ ok: false, issues: [UNREADABLE_ISSUE] });
+		}
+	});
+
+	test("parseSupportJob: a throwing getter or Proxy row → null", () => {
+		expect(
+			parseSupportJob(withThrowingGetter(queued({ id: "u-1" }), "status")),
+		).toBeNull();
+		expect(parseSupportJob(hostile())).toBeNull();
+	});
+
+	test("a getter that changes between reads is read once: the job is one plain snapshot", () => {
+		let reads = 0;
+		const req = { ...base };
+		Object.defineProperty(req, "brief", {
+			enumerable: true,
+			get: () => (++reads === 1 ? "first read" : "later read"),
+		});
+		const r = createSupportJob(req, meta);
+		expect(reads).toBe(1);
+		expect(r.ok && r.job.brief).toBe("first read");
+		expect(
+			r.ok && Object.getOwnPropertyDescriptor(r.job, "brief")?.get,
+		).toBeUndefined();
 	});
 });

@@ -6,7 +6,7 @@
 // rejected rather than ignored, and every string / array is bounded. Pure — no I/O.
 import { normalizeRepoId } from "@agent-city/schema";
 import { z } from "zod";
-import { containsSecret, deepFreeze, formatIssues } from "./guards.ts";
+import { containsSecret, deepFreeze, parseGuarded } from "./guards.ts";
 import { SupportCapability, SupportProfileId } from "./vocabulary.ts";
 
 /** Kinds of informational artifact a support job may produce (PR_DRAFT = text; never opens a PR). */
@@ -258,17 +258,19 @@ export type SupportCreateResult =
 	| { readonly ok: true; readonly job: SupportJob }
 	| { readonly ok: false; readonly issues: readonly string[] };
 
-/** Validate an untrusted request and build a frozen QUEUED job. Never throws. */
+/**
+ * Validate an untrusted request and build a frozen QUEUED job. Never throws: an unreadable
+ * request or meta (throwing getter / Proxy trap) is `{ ok: false, issues: ["(root):unreadable"] }`.
+ */
 export function createSupportJob(
 	request: unknown,
 	meta: SupportJobMeta,
 ): SupportCreateResult {
-	const req = SupportJobRequest.safeParse(request);
-	if (!req.success)
-		return { ok: false, issues: formatIssues(req.error.issues) };
-	const m = SupportJobMeta.safeParse(meta);
-	if (!m.success) return { ok: false, issues: formatIssues(m.error.issues) };
-	const job = SupportJob.safeParse({
+	const req = parseGuarded(SupportJobRequest, request);
+	if (!req.ok) return { ok: false, issues: req.issues };
+	const m = parseGuarded(SupportJobMeta, meta);
+	if (!m.ok) return { ok: false, issues: m.issues };
+	const job = parseGuarded(SupportJob, {
 		...req.data,
 		...m.data,
 		status: "QUEUED",
@@ -277,13 +279,15 @@ export function createSupportJob(
 		result: null,
 		failure: null,
 	});
-	if (!job.success)
-		return { ok: false, issues: formatIssues(job.error.issues) };
+	if (!job.ok) return { ok: false, issues: job.issues };
 	return { ok: true, job: deepFreeze(job.data) };
 }
 
-/** Re-validate a job value that came from outside this module (e.g. a future store row). */
+/**
+ * Re-validate a job value that came from outside this module (e.g. a future store row). Never
+ * throws: invalid or unreadable → null. The result is a frozen plain copy.
+ */
 export function parseSupportJob(value: unknown): SupportJob | null {
-	const parsed = SupportJob.safeParse(value);
-	return parsed.success ? deepFreeze(parsed.data) : null;
+	const parsed = parseGuarded(SupportJob, value);
+	return parsed.ok ? deepFreeze(parsed.data) : null;
 }

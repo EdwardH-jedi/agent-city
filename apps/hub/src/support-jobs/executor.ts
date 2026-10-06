@@ -11,10 +11,11 @@ import {
 	type SupportArtifact,
 	validateExecutorOutput,
 } from "./artifact.ts";
-import { deepFreeze, safeDetail } from "./guards.ts";
+import { deepFreeze, guarded, safeDetail } from "./guards.ts";
 import {
+	parseSupportJob,
 	type SupportInputRef,
-	SupportJob,
+	type SupportJob,
 	type SupportJobKind,
 } from "./job.ts";
 import {
@@ -94,9 +95,15 @@ const settled = (
 			})
 		: Object.freeze({ ok: false as const, error: "settle_failed" as const });
 
+/** Fixed detail for a thrown value whose name / message cannot be read. */
+export const UNREADABLE_ERROR_DETAIL = "executor error not readable";
+
+/** Bounded, redacted detail of a thrown value; never throws (fixed fallback, nothing reflected). */
 function errorDetail(err: unknown): string {
-	if (err instanceof Error) return safeDetail(`${err.name}: ${err.message}`);
-	return "executor threw a non-Error value";
+	return guarded(() => {
+		if (err instanceof Error) return safeDetail(`${err.name}: ${err.message}`);
+		return "executor threw a non-Error value";
+	}, UNREADABLE_ERROR_DETAIL);
 }
 
 /**
@@ -109,11 +116,10 @@ export async function runSupportJob(
 	executor: SupportExecutor,
 	options: { readonly signal?: AbortSignal } = {},
 ): Promise<SupportRunResult> {
-	const parsed = SupportJob.safeParse(job);
-	if (!parsed.success) return { ok: false, error: "invalid_job" };
-	const current = deepFreeze(parsed.data);
+	const current = parseSupportJob(job);
+	if (!current) return { ok: false, error: "invalid_job" };
 	if (current.status !== "RUNNING") return { ok: false, error: "not_running" };
-	if (!executor.capabilities.includes(current.capability))
+	if (!guarded(() => executor.capabilities.includes(current.capability), false))
 		return { ok: false, error: "capability_unsupported" };
 
 	const signal = options.signal ?? new AbortController().signal;

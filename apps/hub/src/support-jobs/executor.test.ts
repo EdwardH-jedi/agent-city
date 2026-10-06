@@ -10,6 +10,7 @@ import {
 	runSupportJob,
 	type SupportExecutor,
 	type SupportExecutorInput,
+	UNREADABLE_ERROR_DETAIL,
 } from "./executor.ts";
 import { createFakeSupportExecutor, fakeSupportBody } from "./fake-executor.ts";
 import {
@@ -388,5 +389,119 @@ describe("cancellation", () => {
 			signal: ctl.signal,
 		});
 		expect(r.ok && r.job.status).toBe("CANCELLED");
+	});
+});
+
+/** `value` with an enumerable getter `key` that throws. */
+const withThrowingGetter = <T extends object>(value: T, key: string): T => {
+	const copy = { ...value };
+	Object.defineProperty(copy, key, {
+		enumerable: true,
+		get() {
+			throw new Error("unreadable");
+		},
+	});
+	return copy;
+};
+/** A value whose every trap throws. */
+const hostile = (): never =>
+	new Proxy(
+		{},
+		{
+			get() {
+				throw new Error("trap");
+			},
+			has() {
+				throw new Error("trap");
+			},
+			ownKeys() {
+				throw new Error("trap");
+			},
+			getOwnPropertyDescriptor() {
+				throw new Error("trap");
+			},
+			getPrototypeOf() {
+				throw new Error("trap");
+			},
+		},
+	) as never;
+
+describe("MF-P2-02 — every executor rejection settles, whatever was thrown", () => {
+	const unreadableError = (key: "message" | "name") => {
+		const e = new Error("fixture");
+		Object.defineProperty(e, key, {
+			get() {
+				throw new Error("unreadable executor error");
+			},
+		});
+		return e;
+	};
+	const thrown: [string, unknown][] = [
+		["message accessor throws", unreadableError("message")],
+		["name accessor throws", unreadableError("name")],
+		["Proxy error (instanceof throws)", hostile()],
+	];
+	for (const [what, err] of thrown)
+		test(`${what} → FAILED / EXECUTOR_ERROR with a fixed detail, no artifact`, async () => {
+			const job = running({ id: "e-1", kind: "HANDOFF" });
+			const r = await runSupportJob(job, stub(err, true));
+			expect(r.ok).toBe(true);
+			if (!r.ok) return;
+			expect(r.job.status).toBe("FAILED");
+			expect(r.job.failure).toEqual({
+				classification: "EXECUTOR_ERROR",
+				detail: UNREADABLE_ERROR_DETAIL,
+			});
+			expect(r.artifact).toBeNull();
+			expect(job.status).toBe("RUNNING"); // the argument job is unchanged
+		});
+
+	test("cancellation still wins over an unreadable error: CANCELLED, nothing kept", async () => {
+		const ac = new AbortController();
+		const executor: SupportExecutor = {
+			executor_id: "cancel",
+			capabilities: ["fast"],
+			async execute() {
+				ac.abort();
+				throw unreadableError("message");
+			},
+		};
+		const r = await runSupportJob(
+			running({ id: "e-2", kind: "HANDOFF" }),
+			executor,
+			{ signal: ac.signal },
+		);
+		expect(r.ok && r.job.status).toBe("CANCELLED");
+		expect(r.ok && r.artifact).toBeNull();
+	});
+
+	test("an unreadable job or capability list is refused before the executor runs", async () => {
+		const ex = stub(handoff());
+		expect(
+			await runSupportJob(
+				withThrowingGetter(running({ id: "e-3", kind: "HANDOFF" }), "status"),
+				ex,
+			),
+		).toEqual({ ok: false, error: "invalid_job" });
+		expect(await runSupportJob(hostile(), ex)).toEqual({
+			ok: false,
+			error: "invalid_job",
+		});
+		expect(ex.seen).toEqual([]);
+		const capabilitiesThrow = {
+			executor_id: "caps",
+			get capabilities(): never {
+				throw new Error("trap");
+			},
+			async execute() {
+				return handoff();
+			},
+		} as unknown as SupportExecutor;
+		expect(
+			await runSupportJob(
+				running({ id: "e-4", kind: "HANDOFF" }),
+				capabilitiesThrow,
+			),
+		).toEqual({ ok: false, error: "capability_unsupported" });
 	});
 });

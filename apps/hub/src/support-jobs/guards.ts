@@ -185,6 +185,45 @@ export function collectStrings(value: unknown, out: string[] = []): string[] {
 	return out;
 }
 
+/**
+ * Run `fn`; anything it throws (a hostile getter or Proxy trap inside untrusted input) becomes
+ * `fallback`. The thrown value is never inspected, logged or returned.
+ */
+export function guarded<T>(fn: () => T, fallback: T): T {
+	try {
+		return fn();
+	} catch {
+		return fallback;
+	}
+}
+
+/** The single issue reported for an input whose properties cannot be read. */
+export const UNREADABLE_ISSUE = "(root):unreadable";
+
+export type GuardedParse<T> =
+	| { readonly ok: true; readonly data: T }
+	| { readonly ok: false; readonly issues: readonly string[] };
+
+/**
+ * `schema.safeParse` that never throws. On success `data` is zod's own plain copy (every property
+ * read once), so callers keep using one snapshot; a throwing getter / Proxy trap yields
+ * UNREADABLE_ISSUE, and validation issues are reported via formatIssues (no echoed input).
+ */
+export function parseGuarded<S extends z.ZodType>(
+	schema: S,
+	value: unknown,
+): GuardedParse<z.output<S>> {
+	return guarded<GuardedParse<z.output<S>>>(
+		() => {
+			const r = schema.safeParse(value);
+			return r.success
+				? { ok: true, data: r.data }
+				: { ok: false, issues: formatIssues(r.error.issues) };
+		},
+		{ ok: false, issues: [UNREADABLE_ISSUE] },
+	);
+}
+
 /** Recursively freeze a plain value in place and return it. */
 export function deepFreeze<T>(value: T): T {
 	if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {

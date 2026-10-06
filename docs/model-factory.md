@@ -37,7 +37,10 @@ build an adapter, start a process or call a provider.
 - `dryRunTaskRoute(change, scope, min_capability?, profile_id?)` — an implementation task with
   trusted change facts → TASK_ROUTE → an **implementer with a worktree**. Policy floors apply:
   auth / authorization / security / DB migration ≥ SENIOR; deploy / credentials / remote delivery →
-  a person (no profile lookup); low confidence is raised to SENIOR.
+  a person (no profile lookup); low confidence is raised to SENIOR. The request is read **once**,
+  inside a guard: that plain snapshot is what the fabric hashes and the policy enforces, and it is
+  returned as `change`. Unreadable or invalid facts, scope, `min_capability` or `profile_id` fail
+  closed (`INPUT_INVALID`, no provider call, `change: null`) — never replaced by all-false facts.
 - `planSupportLaunches(jobs)` — the support scheduler (concurrency 4, running jobs hold slots,
   cancelled / disabled jobs never start, priority → created_seq → id) × routing × profile
   `max_concurrency`. Jobs without a usable profile are **held** and free their slot; at most 64 jobs

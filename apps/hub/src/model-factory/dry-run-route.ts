@@ -32,14 +32,16 @@
 // recommendation only: no proposal, no Gate 1, no managed task, no provider.
 import {
 	WORKER_CAPABILITY_RANK,
+	WORKER_LINEAR_CAPABILITY_TIERS,
 	type WorkerLinearCapabilityTier,
 	type WorkerMutabilityClass,
 	type WorkerProfile,
 	type WorkerRole,
 } from "@agent-city/schema";
 import {
-	ChangeFacts,
+	type ChangeFacts,
 	type DecisionInput,
+	TaskRouteInput,
 } from "../decision-fabric/contracts.ts";
 import {
 	type DecideOptions,
@@ -53,7 +55,7 @@ import type {
 	WorkerProfileRequirement,
 	WorkerProfileResolutionFailure,
 } from "../managed/worker-profile-registry.ts";
-import { deepFreeze } from "../support-jobs/guards.ts";
+import { deepFreeze, guarded } from "../support-jobs/guards.ts";
 import { parseSupportJob, type SupportJobKind } from "../support-jobs/job.ts";
 import type { SupportCapability } from "../support-jobs/vocabulary.ts";
 
@@ -146,7 +148,9 @@ export async function dryRunSupportRoute(
 	req: DryRunRequest,
 	deps: DryRunDeps,
 ): Promise<DryRunRoute> {
-	const job = parseSupportJob(req.job);
+	// each request field is read once, inside a guard (an unreadable job / scope fails closed)
+	const job = guarded(() => parseSupportJob(req.job), null);
+	const scope = guarded<unknown>(() => req.scope, null);
 	const base = {
 		mode: DRY_RUN_MODE,
 		authority: "ADVISORY",
@@ -181,7 +185,7 @@ export async function dryRunSupportRoute(
 		deps.provider,
 		{
 			decision_kind: "TASK_ROUTE",
-			input: { change: { ...SUPPORT_JOB_CHANGE_FACTS }, scope: req.scope },
+			input: { change: { ...SUPPORT_JOB_CHANGE_FACTS }, scope },
 		},
 		deps.decide_options,
 	);
@@ -288,7 +292,10 @@ export const IMPLEMENTATION_MUTABILITY: WorkerMutabilityClass = "worktree";
 export type DryRunTaskRoute = Readonly<{
 	mode: typeof DRY_RUN_MODE;
 	authority: "ADVISORY";
-	/** The trusted change facts as validated; null when they did not validate (→ fail closed). */
+	/**
+	 * The change facts exactly as normalized once — the same snapshot the fabric hashed and the policy
+	 * enforced. null when the request did not validate or could not be read (→ fail closed).
+	 */
 	change: Readonly<ChangeFacts> | null;
 	/** The complete Decision Fabric outcome (recommendation and enforced decision side by side). */
 	fabric: FabricOutcome;
@@ -310,26 +317,61 @@ export interface DryRunTaskRequest {
 	profile_id?: string | null;
 }
 
+/** A task request read once: the single snapshot used for policy, hashing and returned evidence. */
+type NormalizedTaskRequest = Readonly<{
+	input: DecisionInput<"TASK_ROUTE">;
+	min_capability: WorkerLinearCapabilityTier | null;
+	profile_id: string | null;
+}>;
+
+const isLinearTier = (v: unknown): v is WorkerLinearCapabilityTier =>
+	typeof v === "string" &&
+	(WORKER_LINEAR_CAPABILITY_TIERS as readonly string[]).includes(v);
+
+/**
+ * Read every request field exactly once, inside a guard. Valid → plain copies (zod's copy of the
+ * change facts and scope); invalid or unreadable (a throwing getter / Proxy trap) → null, which
+ * fails closed. Unreadable facts are never replaced by all-false ones, and an unknown minimum tier
+ * is refused rather than ignored.
+ */
+function normalizeTaskRequest(
+	req: DryRunTaskRequest,
+): NormalizedTaskRequest | null {
+	return guarded<NormalizedTaskRequest | null>(() => {
+		const { change, scope, min_capability = null, profile_id = null } = req;
+		const input = TaskRouteInput.safeParse({ change, scope });
+		if (!input.success) return null;
+		if (min_capability !== null && !isLinearTier(min_capability)) return null;
+		if (profile_id !== null && typeof profile_id !== "string") return null;
+		return { input: input.data, min_capability, profile_id };
+	}, null);
+}
+
+/** Not a TaskRouteInput: the fabric reports INPUT_INVALID and never asks the provider. */
+const INVALID_TASK_INPUT = null;
+
 /**
  * Recommend (never assign, never run, never queue, never propose) an implementer profile for one
  * implementation task. A provider can raise the tier but never lower it below the policy floors or
  * `min_capability`; a HUMAN route or an undecided / fail-closed outcome means no profile lookup.
+ * The change facts are normalized once: the fabric decides on that snapshot and the result returns
+ * it as `change`, so the reported facts are always the ones the policy enforced.
  */
 export async function dryRunTaskRoute(
 	req: DryRunTaskRequest,
 	deps: DryRunDeps,
 ): Promise<DryRunTaskRoute> {
-	const parsed = ChangeFacts.safeParse(req.change);
+	const norm = normalizeTaskRequest(req);
 	const base = {
 		mode: DRY_RUN_MODE,
 		authority: "ADVISORY",
-		change: parsed.success ? parsed.data : null,
+		change: norm?.input.change ?? null,
 	} as const;
 	const fabric = await decide(
 		deps.provider,
 		{
 			decision_kind: "TASK_ROUTE",
-			input: { change: req.change, scope: req.scope },
+			input: norm?.input ?? INVALID_TASK_INPUT,
 		},
 		deps.decide_options,
 	);
@@ -350,13 +392,15 @@ export async function dryRunTaskRoute(
 		});
 	if (fabric.outcome !== "DECIDED" || fabric.decision_kind !== "TASK_ROUTE")
 		return human("decision_unsupported");
+	// an unreadable / invalid request already made the fabric fail closed (INPUT_INVALID)
+	if (norm === null) return human("decision_fail_closed");
 	const target = routeTarget(fabric.decision.route ?? "HUMAN");
 	if (target.kind === "HUMAN")
 		return human(
 			fabric.decision.fail_closed ? "decision_fail_closed" : "route_human",
 		);
-	const required_tier = req.min_capability
-		? higherTier(req.min_capability, target.tier)
+	const required_tier = norm.min_capability
+		? higherTier(norm.min_capability, target.tier)
 		: target.tier;
 	return deepFreeze({
 		...base,
@@ -367,7 +411,7 @@ export async function dryRunTaskRoute(
 			deps.registry,
 			{ role: IMPLEMENTATION_ROLE, min_capability: required_tier },
 			IMPLEMENTATION_MUTABILITY,
-			req.profile_id ?? null,
+			norm.profile_id,
 		),
 	});
 }

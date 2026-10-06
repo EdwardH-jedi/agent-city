@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { WorkerProfileInput } from "@agent-city/schema";
 import { decide, type FabricOutcome } from "../decision-fabric/fabric.ts";
 import { fixedProvider } from "../decision-fabric/fake-provider.ts";
+import { hashDecisionInput } from "../decision-fabric/hash.ts";
 import type { DecisionProvider } from "../decision-fabric/provider.ts";
 import {
 	change,
@@ -414,5 +415,160 @@ describe("determinism and authority", () => {
 			"required_tier",
 			"routed_tier",
 		]);
+	});
+});
+
+describe("MF-P2-01 — policy, input hash and returned evidence use one guarded snapshot", () => {
+	const fastOnly = buildWorkerProfileRegistry([
+		profile({ profile_id: "impl-fast", capability_tier: "fast" }),
+	]);
+	/** A provider that counts its calls (and recommends FAST, confidently). */
+	const counting = () => {
+		const inner = recommend("FAST", 0.99);
+		const state = { calls: 0 };
+		const provider: DecisionProvider = {
+			id: "fake:count",
+			recommend: async (req) => {
+				state.calls += 1;
+				return inner.recommend(req);
+			},
+		};
+		return { provider, state };
+	};
+	const throwing = (value: object, key: string) => {
+		const copy = { ...value };
+		Object.defineProperty(copy, key, {
+			enumerable: true,
+			get() {
+				throw new Error("unreadable change facts");
+			},
+		});
+		return copy;
+	};
+	const hostile = () =>
+		new Proxy(
+			{},
+			{
+				get() {
+					throw new Error("trap");
+				},
+				ownKeys() {
+					throw new Error("trap");
+				},
+				getOwnPropertyDescriptor() {
+					throw new Error("trap");
+				},
+			},
+		);
+
+	test("a getter that changes between reads is read once; the reported auth fact gets the SENIOR floor", async () => {
+		let reads = 0;
+		const facts = change();
+		Object.defineProperty(facts, "touches_auth", {
+			enumerable: true,
+			get: () => ++reads === 1,
+		});
+		const r = await dryRunTaskRoute(
+			{ change: facts, scope: "TRIVIAL" },
+			deps(recommend("FAST", 0.99), fastOnly),
+		);
+		expect(reads).toBe(1);
+		expect(r.change?.touches_auth).toBe(true);
+		expect(decided(r.fabric).decision.choice).toBe("SENIOR");
+		expect(r.routed_tier).toBe("senior");
+		expect(r.profile).toMatchObject({
+			status: "NO_PROFILE",
+			reason: "no_matching_profile",
+		});
+	});
+
+	test("the fabric's input hash is the hash of exactly the returned facts", async () => {
+		for (const facts of [change(), change({ touches_security: true })]) {
+			const r = await dryRunTaskRoute(
+				{ change: facts, scope: "SMALL" },
+				deps(recommend("STANDARD")),
+			);
+			expect(decided(r.fabric).input_hash).toBe(
+				hashDecisionInput("TASK_ROUTE", { change: r.change, scope: "SMALL" }),
+			);
+		}
+	});
+
+	test("unreadable facts, an unreadable request or a Proxy fail closed — the provider is never asked", async () => {
+		const requests: unknown[] = [
+			{ change: throwing(change(), "touches_auth"), scope: "TRIVIAL" },
+			{ change: hostile(), scope: "TRIVIAL" },
+			throwing({ scope: "TRIVIAL" }, "change"),
+			hostile(),
+		];
+		for (const req of requests) {
+			const { provider, state } = counting();
+			let r: Awaited<ReturnType<typeof dryRunTaskRoute>> | undefined;
+			await expect(
+				(async () => {
+					r = await dryRunTaskRoute(
+						req as Parameters<typeof dryRunTaskRoute>[0],
+						deps(provider),
+					);
+				})(),
+			).resolves.toBeUndefined();
+			expect(state.calls).toBe(0);
+			expect(r?.change).toBeNull(); // never replaced by all-false facts
+			expect(r?.profile).toEqual({
+				status: "HUMAN_REQUIRED",
+				reason: "decision_fail_closed",
+				profile_id: null,
+				profile: null,
+			});
+			const f = decided(r?.fabric ?? null);
+			expect(f.rejection_code).toBe("INPUT_INVALID");
+			expect(f.recommendation_status).toBe("NOT_REQUESTED");
+		}
+	});
+
+	test("an unknown minimum tier or a non-string profile id is refused, never ignored", async () => {
+		for (const extra of [
+			{ min_capability: "ultra" },
+			{ min_capability: "specialist" },
+			{ profile_id: 42 },
+		]) {
+			const { provider, state } = counting();
+			const r = await dryRunTaskRoute(
+				{ change: change(), scope: "SMALL", ...extra } as Parameters<
+					typeof dryRunTaskRoute
+				>[0],
+				deps(provider),
+			);
+			expect(state.calls).toBe(0);
+			expect(r.profile).toMatchObject({
+				status: "HUMAN_REQUIRED",
+				reason: "decision_fail_closed",
+			});
+		}
+	});
+
+	test("support route: an unreadable job or scope fails closed without a provider call", async () => {
+		const { provider, state } = counting();
+		const noJob = await dryRunSupportRoute(
+			throwing({ scope: "TRIVIAL" }, "job") as Parameters<
+				typeof dryRunSupportRoute
+			>[0],
+			deps(provider),
+		);
+		expect(noJob.profile).toMatchObject({
+			status: "NO_PROFILE",
+			reason: "invalid_job",
+		});
+		const noScope = await dryRunSupportRoute(
+			throwing({ job: queued({ id: "mf-scope" }) }, "scope") as Parameters<
+				typeof dryRunSupportRoute
+			>[0],
+			deps(provider),
+		);
+		expect(noScope.profile).toMatchObject({
+			status: "HUMAN_REQUIRED",
+			reason: "decision_fail_closed",
+		});
+		expect(state.calls).toBe(0);
 	});
 });
