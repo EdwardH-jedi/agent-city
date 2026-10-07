@@ -598,6 +598,16 @@ describe("links, freshness and determinism", () => {
 						status: "accepted",
 						closed_at: `2026-10-03T0${k}:00:00.000Z`,
 					},
+					// review repair: an accepted result counts as finished only with a stored validity record
+					validity: {
+						decision_id: id("wsd"),
+						status: "valid",
+						reason: null,
+						detail: null,
+						checked_at: "2026-10-03T10:04:50.000Z",
+						first_invalid_at: null,
+						evidence_bundle_digest: null,
+					},
 				}),
 		);
 		const b = brief(snap(finished));
@@ -763,11 +773,11 @@ describe("P2 F-01 — a truncated task window never reads as an empty repository
 		expect(b.summary).toContain("Showing 0 of 1 recorded tasks");
 		expect(b.summary).toContain("1 task is not in this snapshot");
 		expect(b.window).toEqual({ shown: 0, recorded: 1, complete: false });
-		// every inbox / queue entry resolves, so nothing hidden can be waiting for Edward
-		expect(b.state).toBe("idle");
-		expect(
-			b.summary.startsWith("Nothing is running or waiting for Edward."),
-		).toBe(true);
+		// review repair APP-P2-01: this used to read "idle / Nothing is running or waiting for Edward" — the
+		// reviewed defect. Without the hub's complete per-repository aggregates the omitted tasks are unknown
+		// (they may be failed, blocked or invalid), so the briefing makes no quiet claim.
+		expect(b.state).toBe("attention");
+		expect(b.summary).not.toContain("Nothing is running or waiting for Edward");
 	});
 
 	test("A's pending request (pinned into the window by the hub) is attributed to A, with older A tasks stated", () => {
@@ -787,7 +797,7 @@ describe("P2 F-01 — a truncated task window never reads as an empty repository
 			s.pending_requests[0]?.id as string,
 		]);
 		expect(b.summary).toBe(
-			`1 awaiting execution approval. ${"Showing 1 of 7 recorded tasks; 6 tasks are not in this snapshot (it lists the most recently updated tasks, plus every task awaiting a decision or in the execution queue)."}`,
+			`1 awaiting execution approval. ${"Showing 1 of 7 recorded tasks; 6 tasks are not in this snapshot's bounded list — open the repository history to see them."}`,
 		);
 		expect(b.window).toEqual({ shown: 1, recorded: 7, complete: false });
 	});
@@ -828,7 +838,19 @@ describe("P2 F-01 — a truncated task window never reads as an empty repository
 	});
 
 	test("exact boundary: shown = recorded is complete (summary unchanged); one hidden task is stated", () => {
-		const a = item({ stage: "accepted", phase: "accepted" });
+		const a = item({
+			stage: "accepted",
+			phase: "accepted",
+			validity: {
+				decision_id: id("wsd"),
+				status: "valid",
+				reason: null,
+				detail: null,
+				checked_at: "2026-10-03T10:04:50.000Z",
+				first_invalid_at: null,
+				evidence_bundle_digest: null,
+			},
+		});
 		const full = brief(snap([a], { counts: { [A]: 1 } }));
 		expect(full.window).toEqual({ shown: 1, recorded: 1, complete: true });
 		expect(full.summary).toBe(
@@ -958,5 +980,141 @@ describe("P2 F-02 — a fresh connection never certifies stale repository facts"
 		)[0];
 		expect(stale?.text).toContain("may be out of date");
 		expect(stale?.text).not.toContain("current evidence verified");
+	});
+});
+
+// ── review repair APP-P2-01: complete per-repository aggregates (REPAIR_READ_CONTRACT_2026-10-05.md) ──
+describe("APP-P2-01 — omitted history is never quiet when the hub reports complete aggregates", () => {
+	const manyB = (k: number) =>
+		Array.from({ length: k }, (_, n) =>
+			item({
+				repo: B,
+				title: `B ${n}`,
+				updated: `2026-10-03T09:${String(n).padStart(2, "0")}:00.000Z`,
+			}),
+		);
+	const PHASES = [
+		"planning",
+		"awaiting_run_approval",
+		"queued",
+		"implementing",
+		"verifying",
+		"reviewing",
+		"repairing",
+		"finalizing",
+		"awaiting_acceptance",
+		"accepted",
+		"changes_requested",
+		"rejected",
+		"blocked",
+		"failed",
+		"interrupted",
+		"cancel_requested",
+		"cancelled",
+	] as const;
+	const summary = (
+		repo: string,
+		o: {
+			tasks: number;
+			attention?: number;
+			needsApproval?: number;
+			invalid?: number;
+			drafts?: number;
+		},
+	) => ({
+		repo_id: repo,
+		tasks: o.tasks,
+		complete: true as const,
+		as_of: "2026-10-03T10:05:00.000Z",
+		phases: Object.fromEntries(PHASES.map((p) => [p, 0])) as Record<
+			(typeof PHASES)[number],
+			number
+		>,
+		categories: {
+			running: 0,
+			queued: 0,
+			cancelRequested: 0,
+			needsApproval: o.needsApproval ?? 0,
+			needsAcceptance: 0,
+			attention: o.attention ?? 0,
+			cancelled: 0,
+			accepted: 0,
+			rejected: 0,
+			drafts: o.drafts ?? 0,
+		},
+		active_tasks: 0,
+		pending_requests: o.needsApproval ?? 0,
+		acceptance: {
+			valid: 0,
+			invalid: o.invalid ?? 0,
+			unknown: 0,
+			unverifiable: 0,
+			oldest_checked_at: null,
+			latest_checked_at: null,
+		},
+	});
+	const withSummaries = (s: WorkspaceSnapshot, sums: unknown[]) =>
+		({ ...s, repo_summaries: sums }) as WorkspaceSnapshot;
+
+	test("the reviewed case: 3 omitted A tasks (failed, blocked, accepted-invalid) → attention, routed to the history read", () => {
+		const s = withSummaries(snap(manyB(3), { counts: { [A]: 3, [B]: 500 } }), [
+			summary(A, { tasks: 3, attention: 3, invalid: 1 }),
+			summary(B, { tasks: 500, drafts: 500 }),
+		]);
+		const b = brief(s);
+		expect(b.state).toBe("attention");
+		expect(b.summary).not.toContain("Nothing is running or waiting for Edward");
+		expect(b.summary).toContain("3 stopped, blocked or invalid");
+		expect(b.counts.attention).toBe(3);
+		expect(b.next?.open).toEqual({ history: "attention" });
+		expect(b.next?.text).toContain("3 stopped, blocked or invalid tasks");
+		expect(b.next?.text).not.toContain("Assign work");
+		expect(b.notes.join(" ")).toContain("1 invalid");
+	});
+
+	test("with a pinned pending A task the decision comes first, and the omitted attention is still counted", () => {
+		const a = item({
+			stage: "awaiting_run_approval",
+			phase: "awaiting_run_approval",
+		});
+		const s = withSummaries(
+			snap([a, ...manyB(2)], {
+				pending: [{ task: a, kind: "run" }],
+				counts: { [A]: 4, [B]: 500 },
+			}),
+			[
+				summary(A, { tasks: 4, attention: 3, needsApproval: 1, invalid: 1 }),
+				summary(B, { tasks: 500, drafts: 500 }),
+			],
+		);
+		const b = brief(s);
+		expect(b.state).toBe("attention");
+		expect(b.counts).toMatchObject({ attention: 3, needsApproval: 1 });
+		expect(b.next?.target?.view).toBe("hq"); // the shown decision
+		expect(b.summary).toContain("3 stopped, blocked or invalid");
+	});
+
+	test("hidden pending decisions route to the server-filtered inbox, never to 'nothing waiting'", () => {
+		const s = withSummaries(snap(manyB(2), { counts: { [A]: 2, [B]: 500 } }), [
+			summary(A, { tasks: 2, needsApproval: 2 }),
+			summary(B, { tasks: 500, drafts: 500 }),
+		]);
+		const b = brief(s);
+		expect(b.state).toBe("attention");
+		expect(b.next?.open).toEqual({ inbox: true });
+		expect(b.next?.target?.view).toBe("hq");
+	});
+
+	test("zero versus unknown: a complete zero is empty; a partial window without aggregates is not quiet", () => {
+		const zero = withSummaries(snap(manyB(2), { counts: { [A]: 0, [B]: 2 } }), [
+			summary(A, { tasks: 0 }),
+			summary(B, { tasks: 2, drafts: 2 }),
+		]);
+		expect(brief(zero).state).toBe("empty");
+		const unknown = snap(manyB(2), { counts: { [A]: 2, [B]: 2 } }); // no aggregates
+		expect(brief(unknown).state).toBe("attention");
+		expect(brief(unknown).summary).not.toContain(
+			"Nothing is running or waiting for Edward",
+		);
 	});
 });

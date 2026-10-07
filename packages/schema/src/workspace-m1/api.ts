@@ -58,6 +58,8 @@ export const WORKSPACE_API_BASE = "/api/workspace";
 export const WORKSPACE_ROUTES = {
 	session: "/session",
 	snapshot: "/snapshot",
+	history: "/task-history",
+	inbox: "/inbox",
 	tasks: "/tasks",
 	task: "/tasks/:id",
 	draft: "/tasks/:id/draft",
@@ -149,6 +151,9 @@ export const ExecutionQueue = z.strictObject({
 	active: QueueEntry.nullable(),
 	queued: z.array(QueueEntry).max(500),
 	claims_paused_by_quarantine: z.boolean(),
+	/** Complete execution count (not unique workspace-task count), including the active slot. */
+	total_executions: z.number().int().nonnegative().optional(),
+	queued_complete: z.boolean().optional(),
 });
 export type ExecutionQueue = z.infer<typeof ExecutionQueue>;
 
@@ -164,6 +169,83 @@ export const RepoTaskCount = z.strictObject({
 });
 export type RepoTaskCount = z.infer<typeof RepoTaskCount>;
 
+const Count = z.number().int().nonnegative();
+export const RepositoryCategories = z.strictObject({
+	running: Count,
+	queued: Count,
+	cancelRequested: Count,
+	needsApproval: Count,
+	needsAcceptance: Count,
+	attention: Count,
+	cancelled: Count,
+	accepted: Count,
+	rejected: Count,
+	drafts: Count,
+});
+export type RepositoryCategories = z.infer<typeof RepositoryCategories>;
+export const RepoSummary = z.strictObject({
+	repo_id: RepoId,
+	tasks: Count,
+	complete: z.literal(true),
+	as_of: UtcTs,
+	phases: z.record(WorkspacePhase, Count),
+	categories: RepositoryCategories,
+	active_tasks: Count,
+	pending_requests: Count,
+	acceptance: z.strictObject({
+		valid: Count,
+		invalid: Count,
+		unknown: Count,
+		unverifiable: Count,
+		oldest_checked_at: UtcTs.nullable(),
+		latest_checked_at: UtcTs.nullable(),
+	}),
+});
+export type RepoSummary = z.infer<typeof RepoSummary>;
+/**
+ * Page size of the snapshot's first inbox page (`pending_requests` / `pending_page`). Its continuation cursor is
+ * bound to this size, so a client continuing it uses the same limit (review repair APP-P2-02).
+ */
+export const SNAPSHOT_INBOX_LIMIT = 500;
+export const PageMeta = z.strictObject({
+	total: Count,
+	returned: Count,
+	complete: z.boolean(),
+	has_more: z.boolean(),
+	next_cursor: z.string().max(2048).nullable(),
+	as_of: UtcTs,
+});
+export type PageMeta = z.infer<typeof PageMeta>;
+/**
+ * T0-FINAL-P2-01 (REPAIR_READ_CONTRACT_2026-10-05.md, "Inbox membership generation"): the hub's generation
+ * of the pending membership of exactly one inbox scope (its repositories and gate), read with the page. Equal
+ * values name the same pending set; any request opening or closing in the scope changes it, also when the total
+ * stays equal. Opaque: compare for equality only; it grants nothing. Absent (a source that does not compute
+ * it) = unknown.
+ */
+export const InboxMembershipGeneration = z
+	.string()
+	.regex(/^v1:[0-9a-f]{16}:\d{1,15}:\d{1,15}$/);
+export const InboxPageMeta = z.strictObject({
+	...PageMeta.shape,
+	membership_generation: InboxMembershipGeneration.optional(),
+});
+export type InboxPageMeta = z.infer<typeof InboxPageMeta>;
+export const TaskHistoryPage = z.strictObject({
+	repo_id: RepoId,
+	filter: z.enum(["all", "attention"]),
+	items: z.array(WorkspaceTaskListItem).max(100),
+	page: PageMeta,
+});
+export type TaskHistoryPage = z.infer<typeof TaskHistoryPage>;
+export const PendingInboxPage = z.strictObject({
+	repo_id: RepoId.nullable(),
+	kind: z.enum(["run", "result"]).nullable(),
+	items: z.array(ApprovalRequestView).max(500),
+	page: InboxPageMeta,
+});
+export type PendingInboxPage = z.infer<typeof PendingInboxPage>;
+
 export const WorkspaceSnapshot = z.strictObject({
 	provenance: Provenance,
 	repos: z.array(WorkspaceRepo).max(50),
@@ -177,8 +259,11 @@ export const WorkspaceSnapshot = z.strictObject({
 	tasks: z.array(WorkspaceTaskListItem).max(500),
 	/** API v1.2 corrective (P2 F-01): complete per-repository totals, one entry per allowlisted repository. */
 	repo_task_counts: z.array(RepoTaskCount).max(50),
-	/** Every approval request with status `pending` (the HQ inbox), oldest first. */
+	/** Complete stored facts, independent of the bounded display window. Missing = unknown. */
+	repo_summaries: z.array(RepoSummary).max(50).optional(),
+	/** Bounded oldest pending requests; `pending_page` describes truncation and continuation. */
 	pending_requests: z.array(ApprovalRequestView).max(500),
+	pending_page: InboxPageMeta.optional(),
 	/** API v1.2: the global execution queue (one active execution across all repositories). */
 	execution_queue: ExecutionQueue,
 	generated_at: UtcTs,

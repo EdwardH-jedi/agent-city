@@ -52,7 +52,16 @@ export function Briefing() {
 							className="wsm1-link-button"
 							title={b.next.label}
 							onClick={() => {
-								if (b.next?.target) store.navigate(b.next.target);
+								const n = b.next;
+								if (!n?.target) return;
+								// reads only (review repair): open the repository history / filtered inbox
+								if (n.open && "history" in n.open)
+									store.openHistory(repoId, n.open.history);
+								else {
+									store.navigate(n.target);
+									if (n.open && "inbox" in n.open)
+										void store.loadInbox(repoId, null);
+								}
 							}}
 						>
 							{b.next.label}

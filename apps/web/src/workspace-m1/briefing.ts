@@ -96,7 +96,16 @@ export interface RepoBriefing {
 	freshnessLine: string;
 	summary: string;
 	/** The next available human action (null when there is none to offer, e.g. observed repositories). */
-	next: { text: string; label: string | null; target: Route | null } | null;
+	next: {
+		text: string;
+		label: string | null;
+		target: Route | null;
+		/**
+		 * Review repair APP-P2-01 / APP-P2-02: a READ the control also starts — this repository's history (e.g. the
+		 * omitted stopped / blocked / invalid tasks) or its server-filtered inbox. Never a decision or command.
+		 */
+		open?: { history: "all" | "attention" } | { inbox: true };
+	} | null;
 	/** Facts about the whole engine that affect this repository (e.g. a global quarantine pause). */
 	notes: string[];
 	sections: BriefingSection[];
@@ -137,9 +146,6 @@ export interface BriefingInput {
 
 /** How many finished (accepted / rejected) results the briefing lists, newest first. */
 export const BRIEFING_FINISHED_LIMIT = 5;
-
-/** The snapshot's list caps (`pending_requests`, `execution_queue.queued`; api.ts): a full list may be cut. */
-const SNAPSHOT_LIST_MAX = 500;
 
 export const SECTION_HEADING: Readonly<Record<BriefingSectionId, string>> = {
 	decisions: "Needs Edward's decision",
@@ -317,7 +323,10 @@ function classify(
 
 	// 2 — stopped, blocked or invalid
 	const v = item.acceptance_validity;
-	if (v?.status === "invalid")
+	if (
+		v?.status === "invalid" ||
+		(item.phase === "accepted" && (!v || v.status === "unknown"))
+	)
 		return {
 			section: "attention",
 			item: {
@@ -325,10 +334,11 @@ function classify(
 				kind: "validity_invalid",
 				requestId: null,
 				text: `Accepted — ${validityShortLabel(v)}.`,
-				at: v.first_invalid_at ?? v.checked_at,
-				when: v.first_invalid_at
+				// the claim rests on the validity record; with none, no time is claimed (never the task's update)
+				at: v ? (v.first_invalid_at ?? v.checked_at) : null,
+				when: v?.first_invalid_at
 					? when("first found invalid", v.first_invalid_at)
-					: when("checked", v.checked_at),
+					: when("checked", v?.checked_at ?? null),
 				...toTask,
 			},
 		};
@@ -606,16 +616,11 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 		null;
 	const allShown = recorded !== null && mine.length >= recorded;
 	const taskWindow = { shown: mine.length, recorded, complete: allShown };
-	const listed = new Set(snap.tasks.map((t) => t.task.id));
-	const queued = [queue?.active, ...(queue?.queued ?? [])];
-	const attributed =
-		snap.pending_requests.length < SNAPSHOT_LIST_MAX &&
-		(queue?.queued.length ?? 0) < SNAPSHOT_LIST_MAX &&
-		snap.pending_requests.every((r) => listed.has(r.workspace_task_id)) &&
-		queued.every(
-			(q) => !q?.workspace_task_id || listed.has(q.workspace_task_id),
-		);
-	const maybeHidden = !allShown && !attributed;
+	const aggregate = snap.repo_summaries?.find(
+		(r) => r.repo_id === input.repoId,
+	);
+	// Every missing aggregate on a partial window is unknown, even with an attributable inbox.
+	const maybeHidden = !allShown && !aggregate;
 	const windowNote = allShown
 		? ""
 		: recorded === null
@@ -677,6 +682,7 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 				counts.attention++;
 		}
 	}
+	if (aggregate) Object.assign(counts, aggregate.categories);
 	buckets.decisions.sort(oldestFirst);
 	buckets.attention.sort(newestFirst);
 	buckets.drafts.sort(newestFirst);
@@ -750,18 +756,46 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 			target: i.target,
 		};
 	};
-	const pick =
-		firstOf("decisions") ??
-		firstOf("attention", "cancelled") ??
-		firstOf("drafts") ??
-		null;
+	// what the window shows vs the complete aggregate: hidden decisions / attention are routed to the bounded
+	// reads that reach them — never summarized away as "nothing needs Edward"
+	const shownDecisions = buckets.decisions.length;
+	const shownAttention = buckets.attention.filter(
+		(i) => i.kind !== "cancelled",
+	).length;
+	const hiddenDecisions = aggregate ? decisions > shownDecisions : false;
+	const hiddenAttention = aggregate ? counts.attention > shownAttention : false;
+	const repoRoute = (view: "projects" | "hq"): Route => ({
+		view,
+		repoId: view === "projects" ? input.repoId : null,
+		taskId: null,
+		requestId: null,
+	});
 	let next: RepoBriefing["next"];
-	if (pick) next = nextFor(pick);
-	else if (maybeHidden)
+	if (firstOf("decisions"))
+		next = nextFor(firstOf("decisions") as BriefingItem);
+	else if (hiddenDecisions || maybeHidden)
 		next = {
-			text: "Open Headquarters to see every pending decision.",
-			label: "Open Headquarters",
-			target: { view: "hq", repoId: null, taskId: null, requestId: null },
+			text: "Pending decisions of this repository are not in this snapshot's list. Open Headquarters filtered to this repository.",
+			label: "Open this repository's pending decisions",
+			target: repoRoute("hq"),
+			open: { inbox: true },
+		};
+	else if (firstOf("attention", "cancelled"))
+		next = nextFor(firstOf("attention", "cancelled") as BriefingItem);
+	else if (hiddenAttention)
+		next = {
+			text: `${plural(counts.attention - shownAttention, "stopped, blocked or invalid task")} of this repository ${counts.attention - shownAttention === 1 ? "is" : "are"} not in this snapshot's list. Open the repository history to inspect ${counts.attention - shownAttention === 1 ? "it" : "them"}.`,
+			label: "Open repository history (needs attention)",
+			target: repoRoute("projects"),
+			open: { history: "attention" },
+		};
+	else if (firstOf("drafts")) next = nextFor(firstOf("drafts") as BriefingItem);
+	else if (aggregate && !allShown && inFlight > buckets.now.length)
+		next = {
+			text: "Work in progress of this repository is not in this snapshot's list. Open the repository history to inspect it.",
+			label: "Open repository history",
+			target: repoRoute("projects"),
+			open: { history: "all" },
 		};
 	else if (buckets.now[0])
 		next = nextFor(buckets.now[0], "Nothing needs Edward now. ");
@@ -776,6 +810,13 @@ export function repoBriefing(input: BriefingInput): RepoBriefing {
 
 	const notes: string[] = [];
 	if (maybeHidden) notes.push(INBOX_UNATTRIBUTED_NOTE);
+	if (aggregate) {
+		const a = aggregate.acceptance;
+		if (a.invalid || a.unknown || a.unverifiable)
+			notes.push(
+				`Stored acceptance facts: ${a.invalid} invalid, ${a.unknown} unknown, ${a.unverifiable} historical unverifiable. Checks are periodic; these counts do not certify fresh artifact verification.`,
+			);
+	}
 	if (queue?.claims_paused_by_quarantine)
 		notes.push(
 			`The engine is not claiming work: ${QUARANTINE_PAUSE_NOTE.replace(/^claims paused: /, "")}.`,

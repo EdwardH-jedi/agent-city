@@ -176,6 +176,9 @@ describe("ADV-MR repository identity and isolation", () => {
 			active: null,
 			queued: [],
 			claims_paused_by_quarantine: false,
+			// review repair APP-P2-02: the queue discloses its own completeness
+			total_executions: 0,
+			queued_complete: true,
 		});
 		const ga = await openGate1(c, H.fx, { title: "Alpha identity" }, A);
 		const gb = await openGate1(c, H.fx, { title: "Beta identity" }, B);

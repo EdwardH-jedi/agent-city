@@ -793,12 +793,12 @@ export const UNKNOWN_REPO_NOTE =
 export const TASK_WINDOW_UNKNOWN_NOTE =
 	"This snapshot lists only the most recently updated tasks; whether this repository has others is not reported.";
 export const INBOX_UNATTRIBUTED_NOTE =
-	"Some pending decisions or queued executions in this snapshot could not be matched to their task — open Headquarters to see every pending decision.";
+	"Some pending decisions or queued executions in this snapshot could not be matched to their task — open Headquarters and filter by this repository to inspect its pending decisions.";
 
 /** `shown` of a repository's `recorded` tasks are in the snapshot window (recorded > shown). */
 export function taskWindowNote(shown: number, recorded: number): string {
 	const hidden = recorded - shown;
-	return `Showing ${shown} of ${recorded} recorded tasks; ${hidden} ${hidden === 1 ? "task is" : "tasks are"} not in this snapshot (it lists the most recently updated tasks, plus every task awaiting a decision or in the execution queue).`;
+	return `Showing ${shown} of ${recorded} recorded tasks; ${hidden} ${hidden === 1 ? "task is" : "tasks are"} not in this snapshot's bounded list — open the repository history to see ${hidden === 1 ? "it" : "them"}.`;
 }
 
 export const QUARANTINE_PAUSE_NOTE =

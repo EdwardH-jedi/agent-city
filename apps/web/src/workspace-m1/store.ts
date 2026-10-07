@@ -18,6 +18,7 @@ import type {
 	DecisionReceiptBody,
 	DecisionResponse,
 	EngineView,
+	PageMeta,
 	RequestSummary,
 	SessionView,
 	WorkspaceSnapshot,
@@ -26,6 +27,7 @@ import type {
 	WorkspaceTaskSummary,
 	WorkspaceTaskView,
 } from "@agent-city/schema/workspace-m1";
+import { SNAPSHOT_INBOX_LIMIT } from "@agent-city/schema/workspace-m1";
 import {
 	beginRetry,
 	blocksNewDecision,
@@ -132,6 +134,13 @@ export interface WsState {
 	 * snapshot read succeeds).
 	 */
 	snapshotSync: SnapshotSync;
+	/** Repository history pages (review repair APP-P2-01); null when not opened. */
+	history: CollectionState<WorkspaceTaskListItem, HistoryScope> | null;
+	/**
+	 * Inbox pages beyond what the snapshot carries (APP-P2-02): a server-filtered repository scope, or — for the
+	 * unfiltered scope (`isGlobalInbox`) — only the continuation pages after the snapshot's own first page.
+	 */
+	inbox: CollectionState<ApprovalRequestView, InboxScope> | null;
 	snapshot: WorkspaceSnapshot | null;
 	route: Route;
 	details: Readonly<Record<string, DetailEntry>>;
@@ -156,6 +165,96 @@ export interface SnapshotSync {
 }
 
 const NO_SNAPSHOT_SYNC: SnapshotSync = { confirmedAt: null, failedAt: null };
+
+/** The exact scope of a history collection: one repository, one filter. */
+export interface HistoryScope {
+	feed: "history";
+	repoId: string;
+	filter: "all" | "attention";
+}
+/** The exact scope of an inbox collection: a repository (null = all) and a gate (null = both). */
+export interface InboxScope {
+	feed: "inbox";
+	repoId: string | null;
+	kind: "run" | "result" | null;
+}
+export type CollectionScope = HistoryScope | InboxScope;
+
+/**
+ * A bounded, keyset-paged read collection (review repair APP-P2-01 / APP-P2-02). Display data only: opening an
+ * item goes through the task detail / gate / challenge / receipt path; nothing here grants a decision.
+ */
+export interface CollectionState<
+	T,
+	S extends CollectionScope = CollectionScope,
+> {
+	/**
+	 * The scope as structured fields (T0-RR-P3-01): readers take the repository / filter from here, never by
+	 * splitting `key` — a legal repository id may contain any allowed punctuation, `|` included.
+	 */
+	scope: S;
+	/** `collectionKey(scope)`: an unambiguous identity of the scope, compared whole (equality only). */
+	key: string;
+	items: T[];
+	/** Metadata of the last answered page (its `next_cursor` continues exactly this scope). */
+	page: PageMeta | null;
+	status: "loading" | "ready" | "error";
+	error: string | null;
+}
+
+/** Page sizes of the client's collection reads (the hub validates 1–100 / 1–500). */
+export const HISTORY_PAGE_SIZE = 50;
+export const INBOX_PAGE_SIZE = 50;
+
+/**
+ * The key of a scope: a JSON tuple, so every field round-trips exactly whatever characters a repository id
+ * holds (no raw delimiter). Used for equality only; nothing parses it back.
+ */
+export const collectionKey = (s: CollectionScope): string =>
+	JSON.stringify(
+		s.feed === "history"
+			? ["history", s.repoId, s.filter]
+			: ["inbox", s.repoId, s.kind],
+	);
+export const historyScope = (
+	repoId: string,
+	filter: "all" | "attention",
+): HistoryScope => ({ feed: "history", repoId, filter });
+export const inboxScope = (
+	repoId: string | null,
+	kind: "run" | "result" | null,
+): InboxScope => ({ feed: "inbox", repoId, kind });
+export const historyKey = (repoId: string, filter: "all" | "attention") =>
+	collectionKey(historyScope(repoId, filter));
+export const inboxKey = (
+	repoId: string | null,
+	kind: "run" | "result" | null,
+) => collectionKey(inboxScope(repoId, kind));
+/** The unfiltered inbox: its collection holds only the continuation after the snapshot's first page. */
+export const isGlobalInbox = (s: InboxScope): boolean =>
+	s.repoId === null && s.kind === null;
+
+/** Append a page, deduplicated by id; a duplicate keeps the newer of the two (never regresses). */
+export function mergePage<T>(
+	have: readonly T[],
+	page: readonly T[],
+	idOf: (t: T) => string,
+	older: (incoming: T, current: T) => boolean,
+): T[] {
+	const out = [...have];
+	const at = new Map(out.map((t, i) => [idOf(t), i]));
+	for (const t of page) {
+		const i = at.get(idOf(t));
+		if (i === undefined) {
+			at.set(idOf(t), out.length);
+			out.push(t);
+		} else {
+			const cur = out[i] as T;
+			if (!older(t, cur)) out[i] = t;
+		}
+	}
+	return out;
+}
 
 export interface StoreDeps {
 	transport: WorkspaceTransport;
@@ -185,13 +284,21 @@ export function isOlderDetail(
 
 type Validity = AcceptanceValidityView | null | undefined;
 
+/** Validity states the hub never changes again (migration 009 `managed_acceptance_validity_update`). */
+const STICKY_VALIDITY: ReadonlySet<string> = new Set([
+	"invalid",
+	"unverifiable",
+]);
+
 /**
  * Current acceptance validity has its own clock: a validity re-check does not bump the task rev, so
  * the rev-based merge cannot order it. Rule (one place): for the same decision the NEWER check wins
- * (`checked_at`, ties → incoming); `undefined` (not reported by this answer) keeps the current
- * value; anything else follows the hub. The hub keeps `invalid`/`unverifiable` sticky, so an
- * out-of-order older answer (e.g. a snapshot read started before a detail re-check) can never put a
- * "verified" badge back after a newer check said `invalid`.
+ * (`checked_at`); on an equal `checked_at` a known sticky `invalid`/`unverifiable` verdict stays
+ * (T0-SAME-P2-01: the hub never changes a sticky row, so an equal-time non-sticky answer is the
+ * older observation), otherwise the incoming one wins; `undefined` (not reported by this answer)
+ * keeps the current value; anything else follows the hub. An out-of-order older answer (e.g. a
+ * snapshot read started before a detail re-check) can never put a "verified" badge back after a
+ * check said `invalid`.
  */
 export function newerValidity(current: Validity, incoming: Validity): Validity {
 	if (incoming === undefined) return current;
@@ -199,7 +306,10 @@ export function newerValidity(current: Validity, incoming: Validity): Validity {
 	if (current.decision_id !== incoming.decision_id) return incoming;
 	const c = Date.parse(current.checked_at);
 	const i = Date.parse(incoming.checked_at);
-	if (Number.isFinite(c) && Number.isFinite(i) && i < c) return current;
+	if (Number.isFinite(c) && Number.isFinite(i)) {
+		if (i < c) return current;
+		if (i === c && STICKY_VALIDITY.has(current.status)) return current;
+	}
 	return incoming;
 }
 
@@ -265,6 +375,32 @@ export function isOlderItem(
 }
 
 /**
+ * The snapshot's first inbox page after its list changed locally (merge / fold): when that page was the WHOLE
+ * pending set (no further page), its total is exactly the list; a truncated page keeps the server's total until
+ * the next read (the client cannot see past the cut).
+ */
+function withPendingList(
+	snap: WorkspaceSnapshot,
+	pending: ApprovalRequestView[],
+): WorkspaceSnapshot {
+	const page = snap.pending_page;
+	return {
+		...snap,
+		pending_requests: pending,
+		...(page && !page.has_more
+			? {
+					pending_page: {
+						...page,
+						total: pending.length,
+						returned: pending.length,
+						complete: true,
+					},
+				}
+			: {}),
+	};
+}
+
+/**
  * Latest snapshot wins, but no task row may regress (lower task rev, or an older engine view of the
  * same execution) — and where the cached row has the newer task rev, that task's pending requests are
  * kept from the cache too (inbox membership never regresses). Snapshot-level facts (repos, observed
@@ -289,7 +425,7 @@ export function mergeSnapshot(
 		...next.pending_requests.filter((r) => !keptOld.has(r.workspace_task_id)),
 		...prev.pending_requests.filter((r) => keptOld.has(r.workspace_task_id)),
 	].sort(byCreated);
-	return { ...next, tasks, pending_requests: pending };
+	return withPendingList({ ...next, tasks }, pending);
 }
 
 /**
@@ -323,7 +459,234 @@ export function foldTaskIntoSnapshot(
 		...snap.pending_requests.filter((r) => r.workspace_task_id !== v.task.id),
 		...v.approval_requests.filter((r) => r.status === "pending"),
 	].sort(byCreated);
-	return { ...snap, tasks, pending_requests: pending };
+	return withPendingList({ ...snap, tasks }, pending);
+}
+
+/**
+ * Fold a fresher task read into the LOADED collection rows — never their membership, which is the server's
+ * query: a history row is replaced unless the read is older; an inbox row of that task takes the read's newer
+ * revision of itself and leaves the list once it is no longer pending (the rule the snapshot's own list follows).
+ */
+export function foldTaskIntoCollections(
+	state: Pick<WsState, "history" | "inbox">,
+	v: Pick<
+		WorkspaceTaskView,
+		"task" | "phase" | "approval_requests" | "acceptance_validity" | "engine"
+	>,
+): Pick<WsState, "history" | "inbox"> {
+	let { history, inbox } = state;
+	const i = history?.items.findIndex((t) => t.task.id === v.task.id) ?? -1;
+	const cur = i >= 0 ? history?.items[i] : undefined;
+	const engine = v.engine ?? null;
+	if (history && cur && !isOlderItem({ task: v.task, engine }, cur)) {
+		const item: WorkspaceTaskListItem = {
+			task: v.task,
+			phase: v.phase,
+			acceptance_validity:
+				newerValidity(cur.acceptance_validity, v.acceptance_validity) ?? null,
+			engine,
+			latest_request: latestRequestOf(v.approval_requests ?? []),
+		};
+		history = {
+			...history,
+			items: history.items.map((t, j) => (j === i ? item : t)),
+		};
+	}
+	if (inbox?.items.some((r) => r.workspace_task_id === v.task.id)) {
+		const items = inbox.items.flatMap((r) => {
+			const fresh =
+				r.workspace_task_id === v.task.id
+					? (v.approval_requests ?? []).find((x) => x.id === r.id)
+					: undefined;
+			if (!fresh || fresh.rev < r.rev) return [r];
+			if (fresh.status !== "pending") return [];
+			// a task read may not carry the page's display ownership; keep it
+			return [
+				{
+					...fresh,
+					repo_id: fresh.repo_id ?? r.repo_id,
+					task_title: fresh.task_title ?? r.task_title,
+				},
+			];
+		});
+		// a request the fresher read proves decided has left the pending set: the loaded total follows
+		const left = inbox.items.length - items.length;
+		inbox = {
+			...inbox,
+			items,
+			page:
+				inbox.page && left > 0
+					? { ...inbox.page, total: Math.max(0, inbox.page.total - left) }
+					: inbox.page,
+		};
+	}
+	return { history, inbox };
+}
+
+/**
+ * What the cache knows NOW about the rows of a collection page that is settling (T0-RR-P2-01): task details,
+ * the snapshot's task rows and this session's committed receipts. A page read may have started before any of
+ * them was confirmed, so the page is reconciled against them — never the other way round. Read-only facts:
+ * nothing here can approve, accept or reopen anything.
+ */
+export interface KnownFacts {
+	detail(taskId: string): WorkspaceTaskDetail | null;
+	snapshotRow(taskId: string): WorkspaceTaskListItem | undefined;
+	/** A committed decision receipt of this session closes exactly this request (see `closingReceipt`). */
+	receiptCloses(request: ApprovalRequestView): boolean;
+}
+
+/** A task read as a list row (the shape the snapshot list and history share). */
+function listItemOf(
+	v: Pick<
+		WorkspaceTaskView,
+		"task" | "phase" | "approval_requests" | "acceptance_validity" | "engine"
+	>,
+): WorkspaceTaskListItem {
+	return {
+		task: v.task,
+		phase: v.phase,
+		acceptance_validity: v.acceptance_validity ?? null,
+		engine: v.engine ?? null,
+		latest_request: latestRequestOf(v.approval_requests ?? []),
+	};
+}
+
+/**
+ * The best-known version of one task row: the newest of `incoming` and the `known` rows by task / engine rev
+ * (`isOlderItem`), with acceptance validity ordered by its own clock across ALL of them (`newerValidity`) — a
+ * same-rev row read before a newer validity check can never put back the older verdict.
+ */
+export function newestListItem(
+	incoming: WorkspaceTaskListItem,
+	known: readonly (WorkspaceTaskListItem | undefined)[],
+): WorkspaceTaskListItem {
+	let best = incoming;
+	for (const k of known) if (k && isOlderItem(best, k)) best = k;
+	let validity: Validity = best.acceptance_validity;
+	for (const k of [incoming, ...known])
+		if (k && k !== best)
+			validity = newerValidity(k.acceptance_validity, validity);
+	return { ...best, acceptance_validity: validity ?? null };
+}
+
+/**
+ * Settle a history page into the CURRENT rows: a row already loaded keeps its place and takes the best-known
+ * version; a new row is appended as its best-known version (the task's detail / snapshot row may be newer
+ * than the page). Membership stays the server's query.
+ */
+export function reconcileHistoryPage(
+	current: readonly WorkspaceTaskListItem[],
+	page: readonly WorkspaceTaskListItem[],
+	known: KnownFacts,
+): WorkspaceTaskListItem[] {
+	const out = [...current];
+	const at = new Map(out.map((t, i) => [t.task.id, i]));
+	for (const row of page) {
+		const id = row.task.id;
+		const i = at.get(id);
+		const d = known.detail(id);
+		const best = newestListItem(row, [
+			i === undefined ? undefined : out[i],
+			d ? listItemOf(d) : undefined,
+			known.snapshotRow(id),
+		]);
+		if (i === undefined) {
+			at.set(id, out.length);
+			out.push(best);
+		} else out[i] = best;
+	}
+	return out;
+}
+
+/**
+ * The best-known version of a pending inbox row, or null once the cache knows the request is no longer
+ * pending: a task detail lists it closed, the snapshot row's latest request names it closed, or this session
+ * committed a decision on it. A request leaves `pending` exactly once (`canTransitionApproval`), so closure
+ * evidence never goes stale and needs no separate tombstone.
+ */
+export function knownPendingRow(
+	row: ApprovalRequestView,
+	known: KnownFacts,
+): ApprovalRequestView | null {
+	let best = row;
+	const read = known
+		.detail(row.workspace_task_id)
+		?.approval_requests.find((x) => x.id === row.id);
+	if (read) {
+		if (read.status !== "pending") return null;
+		if (read.rev > best.rev)
+			// a task read may not carry the page's display ownership; keep it
+			best = {
+				...read,
+				repo_id: read.repo_id ?? row.repo_id,
+				task_title: read.task_title ?? row.task_title,
+			};
+	}
+	const latest = known.snapshotRow(row.workspace_task_id)?.latest_request;
+	if (latest?.id === row.id && latest.status !== "pending") return null;
+	if (known.receiptCloses(best)) return null;
+	return best;
+}
+
+/**
+ * Settle an inbox page into the CURRENT rows: rows the cache now knows closed leave (current and incoming
+ * alike, so a delayed page cannot resurrect a request removed while it was in flight), duplicates keep the
+ * higher request rev. `dropped` counts incoming rows the page still counted as pending.
+ */
+export function reconcileInboxPage(
+	current: readonly ApprovalRequestView[],
+	page: readonly ApprovalRequestView[],
+	known: KnownFacts,
+): { items: ApprovalRequestView[]; dropped: number } {
+	const keep = (r: ApprovalRequestView) => {
+		const k = knownPendingRow(r, known);
+		return k ? [k] : [];
+	};
+	const incoming = page.flatMap(keep);
+	return {
+		items: mergePage(
+			current.flatMap(keep),
+			incoming,
+			(x) => x.id,
+			(a, b) => a.rev < b.rev,
+		),
+		dropped: page.length - incoming.length,
+	};
+}
+
+/**
+ * T0-RR-P2-02: the pending-membership aggregates a SERVER-read snapshot shows — the first inbox page (ids, in
+ * order), its total and continuation cursor, and every repository's complete pending / approval / acceptance
+ * counts. Read times are excluded. Aggregates only: a request closed and another opened in the same repository
+ * and gate beyond the first page leave them all equal (T0-FINAL-P2-01) — see `membershipBasis`.
+ */
+export function pendingMembership(s: WorkspaceSnapshot): string {
+	return JSON.stringify([
+		s.pending_page?.total ?? s.pending_requests.length,
+		s.pending_page?.next_cursor ?? null,
+		s.pending_requests.map((r) => r.id),
+		(s.repo_summaries ?? []).map((x) => [
+			x.repo_id,
+			x.pending_requests,
+			x.categories.needsApproval,
+			x.categories.needsAcceptance,
+		]),
+	]);
+}
+
+/**
+ * T0-RR-P2-02 / T0-FINAL-P2-01: the membership the unfiltered inbox continuation continues — the hub's
+ * `membership_generation` of the snapshot's first page (the global scope; it changes on every opening or
+ * closing, also at an equal total) plus the aggregates. When a later SERVER-read snapshot shows another basis,
+ * the cached continuation could hide a new request or keep a decided one, so it is dropped and read again on
+ * demand. Without a generation (a source that does not compute it) the aggregates alone decide.
+ */
+export function membershipBasis(s: WorkspaceSnapshot): string {
+	return JSON.stringify([
+		s.pending_page?.membership_generation ?? null,
+		pendingMembership(s),
+	]);
 }
 
 /** A command answer (WorkspaceTaskView) folded into the cached detail (runs/artifacts kept). */
@@ -349,6 +712,8 @@ const initialState = (source: "hub" | "fixture", route: Route): WsState => ({
 	},
 	conn: { status: "connecting", lastConfirmedAt: null },
 	snapshotSync: NO_SNAPSHOT_SYNC,
+	history: null,
+	inbox: null,
 	snapshot: null,
 	route,
 	details: {},
@@ -370,6 +735,10 @@ export class WorkspaceStore {
 	private readonly transport: WorkspaceTransport;
 	private readonly now: () => number;
 	private readonly random: () => string;
+	/** T0-RR-P2-02: `membershipBasis` of the latest server-read snapshot (null before one / after sign-out). */
+	private membership: string | null = null;
+	/** The membership the unfiltered inbox continuation continues (set when it starts at the snapshot cursor). */
+	private continuationBasis: string | null = null;
 
 	constructor(deps: StoreDeps, route: Route = HOME) {
 		this.transport = deps.transport;
@@ -527,6 +896,8 @@ export class WorkspaceStore {
 
 	private signedIn(session: SessionView): void {
 		const authGen = this.seq.bumpAuth();
+		this.membership = null;
+		this.continuationBasis = null;
 		this.set({
 			authGen,
 			auth: {
@@ -539,6 +910,8 @@ export class WorkspaceStore {
 			snapshot: null,
 			// a previous session's confirmation never vouches for this session's facts
 			snapshotSync: NO_SNAPSHOT_SYNC,
+			history: null,
+			inbox: null,
 			details: {},
 			gate: null,
 			attempts: {},
@@ -605,6 +978,8 @@ export class WorkspaceStore {
 
 	private purge(notice: string | null): void {
 		const authGen = this.seq.bumpAuth();
+		this.membership = null;
+		this.continuationBasis = null;
 		this.set({
 			...initialState(this.state.source, { ...HOME }),
 			authGen,
@@ -666,9 +1041,25 @@ export class WorkspaceStore {
 		const r = await this.transport.getSnapshot();
 		if (!this.seq.isCurrent(t)) return;
 		if (r.ok) {
+			// T0-RR-P2-02 / T0-FINAL-P2-01: a newer snapshot showing another membership basis than the one the
+			// unfiltered continuation continues makes that cache stale (an exhausted end can hide new arrivals; a
+			// cached tail can keep requests decided elsewhere, also at an equal total). Drop it — and any page still
+			// in flight — so the inbox falls back to this snapshot's first page and cursor; Load more reads on from
+			// there, on demand.
+			this.membership = membershipBasis(r.data);
+			const box = this.state.inbox;
+			const stale =
+				box !== null &&
+				isGlobalInbox(box.scope) &&
+				this.continuationBasis !== this.membership;
+			if (stale) {
+				this.seq.invalidate("inbox");
+				this.continuationBasis = null;
+			}
 			this.set({
 				snapshot: mergeSnapshot(this.state.snapshot, r.data),
 				snapshotSync: { confirmedAt: this.nowIso(), failedAt: null },
+				...(stale ? { inbox: null } : {}),
 			});
 			this.confirmed();
 			this.normalizeRepo();
@@ -726,7 +1117,10 @@ export class WorkspaceStore {
 			if (cur && isOlderDetail(r.data, cur)) return;
 			const data = withMergedValidity(r.data, cur);
 			this.setDetail(taskId, { data, loading: false, error: null });
-			this.set({ snapshot: foldTaskIntoSnapshot(this.state.snapshot, data) });
+			this.set({
+				snapshot: foldTaskIntoSnapshot(this.state.snapshot, data),
+				...foldTaskIntoCollections(this.state, data),
+			});
 			this.confirmed();
 			this.afterDetail(taskId);
 		} else {
@@ -867,10 +1261,201 @@ export class WorkspaceStore {
 		)
 			patch.composing = null;
 		if (subjectLeft) patch.command = null;
+		// collections belong to one repository / view: leaving it drops them and any late page
+		const h = this.state.history;
+		if (h && (next.view !== "projects" || h.scope.repoId !== next.repoId)) {
+			this.seq.invalidate("history");
+			patch.history = null;
+		}
+		if (this.state.inbox && next.view !== "hq") {
+			this.seq.invalidate("inbox");
+			patch.inbox = null;
+		}
 		this.set(patch);
 		this.ensureGate();
 		if (next.taskId && this.state.auth.status === "signed_in")
 			void this.loadDetail(next.taskId);
+	}
+
+	// ── bounded collections (review repair APP-P2-01 / APP-P2-02) ───────────
+
+	private collectionError(r: TransportResult<unknown>): string {
+		if (r.ok) return "";
+		return r.kind === "http"
+			? errorCopy(r.error.error, r.error.message)
+			: "No answer from the hub.";
+	}
+
+	/** The facts a settling collection page is reconciled against (T0-RR-P2-01), as of now. */
+	private knownFacts(): KnownFacts {
+		const { details, snapshot } = this.state;
+		const rows = new Map((snapshot?.tasks ?? []).map((t) => [t.task.id, t]));
+		return {
+			detail: (taskId) => details[taskId]?.data ?? null,
+			snapshotRow: (taskId) => rows.get(taskId),
+			receiptCloses: (request) => this.committedReceipt(request) !== null,
+		};
+	}
+
+	/**
+	 * Load one repository's history: the first page, or (`more`) the next page of exactly the same scope. A
+	 * failure keeps every confirmed row; a late answer for another scope / repository / session is dropped.
+	 * An answer settles into the CURRENT rows and newer facts (T0-RR-P2-01), never into the rows captured
+	 * when the request started: validity re-checks or task reads confirmed meanwhile are kept.
+	 */
+	async loadHistory(
+		repoId: string,
+		filter: "all" | "attention",
+		more = false,
+	): Promise<void> {
+		if (this.state.auth.status !== "signed_in") return;
+		const scope = historyScope(repoId, filter);
+		const key = collectionKey(scope);
+		const cur = this.state.history?.key === key ? this.state.history : null;
+		const cursor = more ? (cur?.page?.next_cursor ?? undefined) : undefined;
+		if (more && !cursor) return;
+		const base = more ? cur : null;
+		const t = this.seq.begin("history");
+		this.set({
+			history: {
+				scope,
+				key,
+				items: base?.items ?? [],
+				page: base?.page ?? null,
+				status: "loading",
+				error: null,
+			},
+		});
+		const r = await this.transport.getTaskHistory({
+			repo_id: repoId,
+			filter,
+			limit: HISTORY_PAGE_SIZE,
+			...(cursor ? { cursor } : {}),
+		});
+		// same auth generation, same request slot, same exact scope — else the answer is dropped
+		const now = this.state.history;
+		if (!this.seq.isCurrent(t) || !now || now.key !== key) return;
+		if (r.ok) {
+			this.set({
+				history: {
+					...now,
+					items: reconcileHistoryPage(
+						now.items,
+						r.data.items,
+						this.knownFacts(),
+					),
+					page: r.data.page,
+					status: "ready",
+					error: null,
+				},
+			});
+			this.confirmed();
+		} else {
+			this.set({
+				history: { ...now, status: "error", error: this.collectionError(r) },
+			});
+			this.readFailed(t, r);
+		}
+	}
+
+	/** Open a repository's history (read-only; e.g. from the briefing's next action). */
+	openHistory(repoId: string, filter: "all" | "attention"): void {
+		this.navigate({ view: "projects", repoId, taskId: null, requestId: null });
+		void this.loadHistory(repoId, filter);
+	}
+
+	closeHistory(): void {
+		this.seq.invalidate("history");
+		this.set({ history: null });
+	}
+
+	/**
+	 * Load inbox pages. With a repository or gate filter: the server-filtered first page or (`more`) its next
+	 * page. Without filters: only CONTINUATION pages after the snapshot's own first page, starting from the
+	 * snapshot's cursor (same page size) — a continuation of exactly the snapshot membership it started from
+	 * (T0-RR-P2-02, see `loadSnapshot`). Never an automatic load-everything loop. An answer settles into the
+	 * CURRENT rows (T0-RR-P2-01): a request the cache meanwhile knows closed is not put back.
+	 */
+	async loadInbox(
+		repoId: string | null,
+		kind: "run" | "result" | null,
+		more = false,
+	): Promise<void> {
+		if (this.state.auth.status !== "signed_in") return;
+		const scope = inboxScope(repoId, kind);
+		const key = collectionKey(scope);
+		const global = isGlobalInbox(scope);
+		const cur = this.state.inbox?.key === key ? this.state.inbox : null;
+		let cursor: string | undefined;
+		if (global) {
+			// continuation only: until a continuation page has ARRIVED (a failed first attempt has no page), the snapshot's cursor;
+			// afterwards the last page's — and none once the end is reached
+			cursor = cur?.page
+				? (cur.page.next_cursor ?? undefined)
+				: (this.state.snapshot?.pending_page?.next_cursor ?? undefined);
+			if (!cursor) return;
+			if (!cur?.page) this.continuationBasis = this.membership;
+		} else if (more) {
+			cursor = cur?.page?.next_cursor ?? undefined;
+			if (!cursor) return;
+		}
+		const base = global || more ? cur : null;
+		const t = this.seq.begin("inbox");
+		this.set({
+			inbox: {
+				scope,
+				key,
+				items: base?.items ?? [],
+				page: base?.page ?? null,
+				status: "loading",
+				error: null,
+			},
+		});
+		const r = await this.transport.getInbox({
+			...(repoId ? { repo_id: repoId } : {}),
+			...(kind ? { kind } : {}),
+			limit: global ? SNAPSHOT_INBOX_LIMIT : INBOX_PAGE_SIZE,
+			...(cursor ? { cursor } : {}),
+		});
+		// same auth generation, same request slot (a newer membership invalidates it), same exact scope
+		const now = this.state.inbox;
+		if (!this.seq.isCurrent(t) || !now || now.key !== key) return;
+		if (r.ok) {
+			const { items, dropped } = reconcileInboxPage(
+				now.items,
+				r.data.items,
+				this.knownFacts(),
+			);
+			this.set({
+				inbox: {
+					...now,
+					items,
+					// requests this page still counted but the cache knows closed have left the pending set
+					page:
+						dropped > 0
+							? {
+									...r.data.page,
+									total: Math.max(0, r.data.page.total - dropped),
+								}
+							: r.data.page,
+					status: "ready",
+					error: null,
+				},
+			});
+			this.confirmed();
+		} else {
+			this.set({
+				inbox: { ...now, status: "error", error: this.collectionError(r) },
+			});
+			this.readFailed(t, r);
+		}
+	}
+
+	/** Drop the inbox collection (filter cleared); a late page for it is ignored. */
+	closeInbox(): void {
+		this.seq.invalidate("inbox");
+		this.continuationBasis = null;
+		this.set({ inbox: null });
 	}
 
 	// ── evidence viewer ─────────────────────────────────────────────────────
@@ -1165,6 +1750,7 @@ export class WorkspaceStore {
 				});
 				this.set({
 					snapshot: foldTaskIntoSnapshot(this.state.snapshot, r.data),
+					...foldTaskIntoCollections(this.state, r.data),
 				});
 			}
 			if (current)

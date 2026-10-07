@@ -16,6 +16,7 @@ import {
 	APPROVAL_STATUS_LABEL,
 	acceptanceStatus,
 	acceptedResultRequest,
+	clockTime,
 	dateTime,
 	engineLabel,
 	GATE_ATTR,
@@ -43,6 +44,7 @@ import {
 	ProvenanceChips,
 	useWs,
 } from "./parts.tsx";
+import { inboxKey } from "./store.ts";
 import {
 	AcceptanceValidityBlock,
 	freshnessOf,
@@ -71,49 +73,96 @@ function repoOf(
 
 function Inbox() {
 	const { store, state } = useWs();
-	const [gate, setGate] = useState<GateFilter>("all");
-	const [repo, setRepo] = useState<string>("all");
+	// review repair APP-P2-02: a repository filter is a SERVER query (its own bounded pages); the
+	// unfiltered view is the snapshot's first page plus explicit continuation pages. Search and the gate
+	// filter of the unfiltered view apply to the loaded rows only — the disclosure line says so.
+	// T0-RR-P3-01: the loaded filter comes from the collection's structured scope — the exact repository id,
+	// whatever punctuation it holds (never recovered by splitting a key)
+	const scoped = state.inbox?.scope ?? null;
+	const [gate, setGate] = useState<GateFilter>(
+		scoped?.repoId != null && scoped.kind !== null ? scoped.kind : "all",
+	);
+	const [repo, setRepo] = useState<string>(scoped?.repoId ?? "all");
 	const [query, setQuery] = useState("");
 	const id = useId();
 	const tasks = state.snapshot?.tasks ?? [];
-	const all = state.snapshot?.pending_requests ?? [];
-	const repoFor = (taskId: string) =>
-		tasks.find((x) => x.task.id === taskId)?.task.repo_id ?? "";
-	// repositories with pending requests, in allowlist order (stable across polls)
-	const order = (state.snapshot?.repos ?? []).map((r) => r.repo_id);
-	const pendingRepos = [
-		...new Set(all.map((r) => repoFor(r.workspace_task_id)).filter(Boolean)),
-	].sort((a, b) => {
-		const ia = order.indexOf(a);
-		const ib = order.indexOf(b);
-		return (ia < 0 ? order.length : ia) - (ib < 0 ? order.length : ib);
-	});
-	// a filter for a repository that no longer has pending requests still applies (shows none) and stays selectable
-	const repoOptions =
-		repo !== "all" && !pendingRepos.includes(repo)
-			? [...pendingRepos, repo]
-			: pendingRepos;
+	const first = state.snapshot?.pending_requests ?? [];
+	const firstPage = state.snapshot?.pending_page ?? null;
+	const repoOf = (r: ApprovalRequestView) =>
+		r.repo_id ??
+		tasks.find((x) => x.task.id === r.workspace_task_id)?.task.repo_id ??
+		null;
+	const titleFor = (r: ApprovalRequestView) =>
+		r.task_title ?? titleOf(r.workspace_task_id, tasks);
+	const kind = gate === "all" ? null : gate;
+	const filtered = repo !== "all";
+	const box =
+		state.inbox?.key ===
+		inboxKey(filtered ? repo : null, filtered ? kind : null)
+			? state.inbox
+			: null;
+	const loaded: ApprovalRequestView[] = filtered
+		? (box?.items ?? [])
+		: [
+				...first,
+				...(box?.items ?? []).filter((r) => !first.some((f) => f.id === r.id)),
+			];
+	const total = filtered
+		? (box?.page?.total ?? null)
+		: (firstPage?.total ?? first.length);
+	const hasMore = filtered
+		? (box?.page?.has_more ?? false)
+		: box
+			? (box.page?.has_more ?? false)
+			: (firstPage?.has_more ?? false);
+	const pick = (nextRepo: string, nextGate: GateFilter) => {
+		setRepo(nextRepo);
+		setGate(nextGate);
+		if (nextRepo === "all") store.closeInbox();
+		else void store.loadInbox(nextRepo, nextGate === "all" ? null : nextGate);
+	};
+	const more = () =>
+		void store.loadInbox(filtered ? repo : null, filtered ? kind : null, true);
+	// a failed FIRST filtered page is read again from the start; a failed later page continues its cursor
+	const retry = () =>
+		filtered && !box?.page?.next_cursor
+			? void store.loadInbox(repo, kind)
+			: more();
 	const q = query.trim().toLowerCase();
-	const items = all.filter((r) => {
-		if (gate !== "all" && r.kind !== gate) return false;
-		if (repo !== "all" && repoFor(r.workspace_task_id) !== repo) return false;
+	const items = loaded.filter((r) => {
+		if (!filtered && gate !== "all" && r.kind !== gate) return false;
 		if (!q) return true;
-		return `${titleOf(r.workspace_task_id, tasks)} ${repoFor(r.workspace_task_id)}`
-			.toLowerCase()
-			.includes(q);
+		return `${titleFor(r)} ${repoOf(r) ?? ""}`.toLowerCase().includes(q);
 	});
+	const repos = state.snapshot?.repos ?? [];
+	const pendingIn = (repoId: string) =>
+		state.snapshot?.repo_summaries?.find((x) => x.repo_id === repoId)
+			?.pending_requests;
+	const disclosure = filtered
+		? box?.status === "loading" && !box.page
+			? `Loading the pending requests of ${repo}…`
+			: box?.page
+				? `Showing ${loaded.length} of ${box.page.total} pending in ${repo}${kind ? ` (${kind === "run" ? "execution approval" : "result acceptance"})` : ""} · read at ${clockTime(box.page.as_of)}.`
+				: ""
+		: `Showing ${loaded.length} of ${total} pending across all repositories${hasMore ? " — load more to see the rest" : ""}.${gate !== "all" || q ? " Gate and search filters apply to the loaded rows." : ""}`;
 	return (
-		<section aria-label="Approval inbox" className="wsm1-card wsm1-inbox">
+		<section
+			aria-label="Approval inbox"
+			className="wsm1-card wsm1-inbox"
+			data-inbox-scope={filtered ? repo : "all"}
+		>
 			<div className="wsm1-card-head">
 				<h2>Approval inbox</h2>
-				<span className="wsm1-muted">{all.length} pending</span>
+				<span className="wsm1-muted" data-testid="inbox-total">
+					{firstPage?.total ?? first.length} pending
+				</span>
 			</div>
 			<div className="wsm1-filters">
 				<label htmlFor={`${id}-gate`}>Gate</label>
 				<select
 					id={`${id}-gate`}
 					value={gate}
-					onChange={(e) => setGate(e.target.value as GateFilter)}
+					onChange={(e) => pick(repo, e.target.value as GateFilter)}
 				>
 					<option value="all">All gates</option>
 					<option value="run">Execution approval</option>
@@ -123,14 +172,18 @@ function Inbox() {
 				<select
 					id={`${id}-repo`}
 					value={repo}
-					onChange={(e) => setRepo(e.target.value)}
+					onChange={(e) => pick(e.target.value, gate)}
 				>
 					<option value="all">All repositories</option>
-					{repoOptions.map((r) => (
-						<option key={r} value={r}>
-							{r}
-						</option>
-					))}
+					{repos.map((r) => {
+						const n = pendingIn(r.repo_id);
+						return (
+							<option key={r.repo_id} value={r.repo_id}>
+								{r.repo_id}
+								{n !== undefined ? ` (${n} pending)` : ""}
+							</option>
+						);
+					})}
 				</select>
 				<label htmlFor={`${id}-q`}>Search</label>
 				<input
@@ -141,16 +194,25 @@ function Inbox() {
 					onChange={(e) => setQuery(e.target.value)}
 				/>
 			</div>
+			<p
+				className="wsm1-hint"
+				data-testid="inbox-disclosure"
+				aria-live="polite"
+			>
+				{disclosure}
+			</p>
 			{items.length === 0 ? (
 				<p className="wsm1-muted">
-					{all.length === 0
-						? "Nothing awaits a decision."
-						: "No pending request matches the filter."}
+					{box?.status === "loading"
+						? "Loading…"
+						: total === 0
+							? "Nothing awaits a decision."
+							: "No loaded pending request matches the filter."}
 				</p>
 			) : (
 				<ul className="wsm1-list">
 					{items.map((r) => {
-						const t = tasks.find((x) => x.task.id === r.workspace_task_id);
+						const repoId = repoOf(r);
 						const selected = state.route.requestId === r.id;
 						return (
 							<li key={r.id}>
@@ -159,7 +221,7 @@ function Inbox() {
 									className="wsm1-item"
 									data-request-id={r.id}
 									data-gate={GATE_ATTR[r.kind]}
-									data-repo-id={t?.task.repo_id ?? undefined}
+									data-repo-id={repoId ?? undefined}
 									aria-current={selected ? "true" : undefined}
 									onClick={() =>
 										store.navigate({
@@ -171,11 +233,11 @@ function Inbox() {
 									}
 								>
 									<span className="wsm1-item-title wsm1-wrap">
-										{inboxItemName(r, titleOf(r.workspace_task_id, tasks))}
+										{inboxItemName(r, titleFor(r))}
 									</span>
 									<span className="wsm1-muted wsm1-wrap">
 										<span data-testid="inbox-repo">
-											{t?.task.repo_id ?? "repository unknown"}
+											{repoId ?? "repository unknown"}
 										</span>{" "}
 										· waiting since {dateTime(r.created_at)}
 									</span>
@@ -185,6 +247,24 @@ function Inbox() {
 					})}
 				</ul>
 			)}
+			{box?.status === "error" ? (
+				<p role="alert" className="wsm1-error-text" data-testid="inbox-error">
+					{box.error} The requests already shown stay as they were read.{" "}
+					<button type="button" onClick={retry}>
+						Retry
+					</button>
+				</p>
+			) : null}
+			{hasMore ? (
+				<button
+					type="button"
+					data-testid="inbox-load-more"
+					disabled={box?.status === "loading"}
+					onClick={more}
+				>
+					Load more pending requests
+				</button>
+			) : null}
 		</section>
 	);
 }

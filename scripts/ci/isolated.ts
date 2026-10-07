@@ -15,7 +15,9 @@
 // to <root>/<label>/suite.log; <root>/<label>/run.json records the outcome (no environment values).
 // Exit code: the command's own; 124 on the time limit; 130 / 143 when the wrapper itself received SIGINT /
 // SIGTERM (an interrupted suite never reports success, even if the command then exits 0); 128+n when the
-// command died of signal n that the wrapper did not send. run.json records the command's own exit code and
+// command died of signal n that the wrapper did not send; 127 / 126 / 1 when the command could not be
+// launched at all (ENOENT / EACCES / other launch error, settled at once — no exit event is awaited,
+// no process group is signalled, run.json says "no_process_launched"). run.json records the command's own exit code and
 // signal separately. This exit code describes the wrapper's run only — it does not say how a CI service
 // reports a cancelled job.
 import { spawn } from "node:child_process";
@@ -105,10 +107,16 @@ for (const [name, value] of sets) env[name] = value;
 const [cmd, ...args] = command as [string, ...string[]];
 const log = createWriteStream(join(dir, "suite.log"));
 const t0 = Date.now();
+type Terminal = {
+	code: number | null;
+	signal: string | null;
+	error: string | null;
+};
+let launchError: string | null = null;
 const child = spawn(cmd === "bun" ? join(bin, "bun") : cmd, args, {
 	env,
 	cwd: process.cwd(),
-	detached: true, // own process group → the whole tree can be stopped
+	detached: true,
 	stdio: ["ignore", "pipe", "pipe"],
 });
 child.stdout?.on("data", (b: Buffer) => {
@@ -120,15 +128,21 @@ child.stderr?.on("data", (b: Buffer) => {
 	log.write(b);
 });
 
-const group = (signal: NodeJS.Signals | 0): boolean => {
+// A missing pid means the launch failed and no process group exists ("none"): there is nothing to
+// signal and nothing to report as cleaned up. EPERM and other failures are unknown, never proof
+// that cleanup succeeded. Launch failure is settled without waiting for an exit that never comes.
+const group = (
+	signal: NodeJS.Signals | 0,
+): "present" | "absent" | "unknown" | "none" => {
+	if (!child.pid) return "none";
 	try {
-		if (child.pid) process.kill(-child.pid, signal);
-		return true;
-	} catch {
-		return false; // ESRCH: nothing left in the group
+		process.kill(-child.pid, signal);
+		return "present";
+	} catch (e) {
+		return (e as NodeJS.ErrnoException).code === "ESRCH" ? "absent" : "unknown";
 	}
 };
-let stoppedBy = null as string | null; // set from signal / timer callbacks
+let stoppedBy: string | null = null;
 let killTimer: ReturnType<typeof setTimeout> | null = null;
 function stop(reason: string) {
 	if (stoppedBy) return;
@@ -141,19 +155,47 @@ const limit = setTimeout(
 	() => stop(`time limit ${timeoutS} s`),
 	timeoutS * 1000,
 );
-process.on("SIGINT", () => stop("SIGINT"));
-process.on("SIGTERM", () => stop("SIGTERM"));
-
-const closed = new Promise<void>((r) => child.on("close", () => r()));
-const [code, signal] = await new Promise<[number | null, string | null]>((r) =>
-	child.on("exit", (c, s) => r([c, s])),
-);
+const interrupt = () => stop("SIGINT");
+const terminate = () => stop("SIGTERM");
+process.on("SIGINT", interrupt);
+process.on("SIGTERM", terminate);
+let closeResolve: () => void;
+const closed = new Promise<void>((r) => {
+	closeResolve = r;
+});
+const terminal = new Promise<Terminal>((resolve) => {
+	let settled = false;
+	const finish = (value: Terminal) => {
+		if (!settled) {
+			settled = true;
+			resolve(value);
+		}
+	};
+	child.on("error", (e: NodeJS.ErrnoException) => {
+		launchError = e.code ?? "SPAWN_ERROR";
+		// Only the error category is recorded; error messages may include sensitive argv/paths.
+		console.error(`isolated[${label}]: launch error ${launchError}`);
+		finish({ code: null, signal: null, error: launchError });
+	});
+	child.on("exit", (code, signal) => finish({ code, signal, error: null }));
+	child.on("close", (code, signal) => {
+		closeResolve();
+		finish({ code, signal, error: launchError });
+	});
+});
+const { code, signal, error } = await terminal;
 clearTimeout(limit);
 if (killTimer) clearTimeout(killTimer);
-// anything the command left behind (e.g. a browser) dies with the run
+process.off("SIGINT", interrupt);
+process.off("SIGTERM", terminate);
 const leftovers = group(0);
-if (leftovers) group("SIGKILL");
-await Promise.race([closed, Bun.sleep(5_000)]); // remaining output, bounded
+const killAttempted = leftovers === "present" || leftovers === "unknown";
+if (killAttempted) group("SIGKILL");
+// remaining output, bounded; a launch that never produced a process has no streams to drain
+await Promise.race([closed, Bun.sleep(child.pid ? 5_000 : 250)]);
+// Give reaping a bounded opportunity, then report proof honestly.
+for (let i = 0; i < 10 && group(0) === "present"; i++) await Bun.sleep(50);
+const cleanup = group(0);
 await new Promise<void>((r) => log.end(r));
 
 const signalNumber = (s: string | null): number =>
@@ -163,11 +205,17 @@ const exit = stoppedBy?.startsWith("time limit")
 	? 124
 	: interrupted
 		? 128 + signalNumber(stoppedBy) // 130 / 143, whatever the command itself exited with
-		: code !== null
-			? code
-			: signalNumber(signal) > 0
-				? 128 + signalNumber(signal)
-				: 1;
+		: error
+			? error === "ENOENT"
+				? 127
+				: error === "EACCES"
+					? 126
+					: 1
+			: code !== null
+				? code
+				: signalNumber(signal) > 0
+					? 128 + signalNumber(signal)
+					: 1;
 writeFileSync(
 	join(dir, "run.json"),
 	`${JSON.stringify(
@@ -179,7 +227,18 @@ writeFileSync(
 			child_signal: signal,
 			interrupted,
 			stopped_by: stoppedBy,
-			leftover_processes_killed: leftovers,
+			launch_error: error,
+			process_group_created: child.pid !== undefined,
+			cleanup_status:
+				cleanup === "none"
+					? "no_process_launched"
+					: cleanup === "absent"
+						? "confirmed_absent"
+						: cleanup === "present"
+							? "remaining"
+							: "unknown",
+			cleanup_kill_attempted: killAttempted,
+			leftover_processes_killed: killAttempted && cleanup === "absent",
 			seconds: Math.round((Date.now() - t0) / 100) / 10,
 		},
 		null,
@@ -187,6 +246,6 @@ writeFileSync(
 	)}\n`,
 );
 console.error(
-	`isolated[${label}]: exit ${exit} after ${Math.round((Date.now() - t0) / 1000)} s; leftover processes ${leftovers ? "killed" : "none"}`,
+	`isolated[${label}]: exit ${exit} after ${Math.round((Date.now() - t0) / 1000)} s; leftover processes ${cleanup === "absent" ? "confirmed absent" : cleanup === "none" ? "none (no process was launched)" : cleanup}`,
 );
 process.exit(exit);

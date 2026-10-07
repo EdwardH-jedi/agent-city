@@ -258,9 +258,9 @@ export function CampusView({ model, actions }: CampusViewProps) {
 					<HqGlyph />
 					<span className="cmp-hq-name">Headquarters</span>
 					<span id={`${uid}-hq`} className="cmp-hq-count">
-						{pending.length === 0
+						{(model.pending_total ?? pending.length) === 0
 							? "Nothing waiting"
-							: `${plural(pending.length, "document", "documents")} waiting`}
+							: `${plural(model.pending_total ?? pending.length, "document", "documents")} waiting${(model.pending_total ?? 0) > pending.length ? ` (first ${pending.length} listed)` : ""}`}
 					</span>
 				</button>
 				{pending.length > 0 ? (

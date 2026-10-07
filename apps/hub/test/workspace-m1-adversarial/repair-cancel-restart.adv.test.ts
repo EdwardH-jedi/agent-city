@@ -380,8 +380,10 @@ describe("ADV-REPAIR repair 0/1 boundary and forbidden classes", () => {
 		expect(Object.values(WORKSPACE_ROUTES).sort()).toEqual([
 			"/approval-requests/:id/challenge",
 			"/approval-requests/:id/decisions",
+			"/inbox", // review repair: GET-only read (non-GET refused in review-repair.adv.test.ts)
 			"/session",
 			"/snapshot",
+			"/task-history", // review repair: GET-only read
 			"/tasks",
 			"/tasks/:id",
 			"/tasks/:id/artifacts/:artifact_id",

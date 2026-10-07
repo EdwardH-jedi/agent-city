@@ -18,7 +18,7 @@
 // queue (the engine's own claim order — `claimOrder`, the same function `claimNext` uses) and the
 // observed-only repositories (telemetry `repos` rows / session repo ids outside the allowlist; read-only).
 
-import type { ManagedTask } from "@agent-city/schema";
+import { ACTIVE_TASK_STATES, type ManagedTask } from "@agent-city/schema";
 import {
 	type AcceptanceValidityRow,
 	type AcceptanceValidityView,
@@ -35,20 +35,24 @@ import {
 	type ExecutionQueue,
 	type ManagedDecisionRow,
 	type ObservedRepo,
+	PendingInboxPage,
 	type QueueEntry,
 	RepoId,
 	type RepoTaskCount,
 	type RequestSummary,
 	type RunSummary,
+	SNAPSHOT_INBOX_LIMIT,
+	TaskHistoryPage,
 	type WorkspaceRepo,
 	WorkspaceSnapshot,
 	WorkspaceTaskDetail,
 	WorkspaceTaskId,
+	type WorkspaceTaskListItem,
 	type WorkspaceTaskRow,
 	type WorkspaceTaskSummary,
 	WorkspaceTaskView,
 } from "@agent-city/schema/workspace-m1";
-import type { z } from "zod";
+import { z } from "zod";
 import type { ManagedConfig } from "../../managed/config.ts";
 import {
 	claimOrder,
@@ -70,6 +74,16 @@ import {
 	subjectOf,
 } from "../evidence/validity.ts";
 import type { PersistentWorkspaceStore } from "../persistence/index.ts";
+import {
+	ATTENTION_SQL,
+	type HistoryCursor,
+	type InboxCursor,
+	inboxMembershipGeneration,
+	pageMeta,
+	readCursor,
+	repositorySummaries,
+	TASK_JOIN,
+} from "./collections.ts";
 import { fail, ok, ResponseContractError } from "./outcome.ts";
 
 const MAX_TASKS = 500;
@@ -77,6 +91,8 @@ const MAX_REQUESTS = 500;
 const MAX_RUNS = 50;
 const MAX_ARTIFACTS = 500;
 const MAX_OBSERVED = 200;
+/** Engine states of an active (claimed / resumable) execution, as SQL literals. */
+const ACTIVE_SQL_LIST = ACTIVE_TASK_STATES.map((st) => `'${st}'`).join(", ");
 
 export interface ReadModelDeps {
 	store: PersistentWorkspaceStore;
@@ -154,6 +170,14 @@ export interface WorkspaceReadModel {
 	/** The view returned by every task mutation; null when the task does not exist. */
 	taskView(id: string): WorkspaceTaskView | null;
 	snapshot(now: Date): CommandOutcome<WorkspaceSnapshot>;
+	history(
+		query: Record<string, string>,
+		now: Date,
+	): CommandOutcome<TaskHistoryPage>;
+	inbox(
+		query: Record<string, string>,
+		now: Date,
+	): CommandOutcome<PendingInboxPage>;
 	/** Detail (re-checks an accepted result's validity when due; see the header). */
 	taskDetail(id: string): CommandOutcome<WorkspaceTaskDetail>;
 	/** Detail after AWAITING a due full re-check (bundle + sources + candidate). */
@@ -325,16 +349,16 @@ export function createWorkspaceReadModel(
 		}));
 
 	/** The newest approval request (any status) of every task, one query. */
-	const latestRequests = (): Map<string, RequestSummary> => {
+	const latestRequests = (ids: string[]): Map<string, RequestSummary> => {
 		const rows = db
-			.query<RequestSummary & { workspace_task_id: string }, []>(
+			.query<RequestSummary & { workspace_task_id: string }, [string]>(
 				`SELECT id, workspace_task_id, kind, status, invalidation_reason, created_at, closed_at
 				 FROM (SELECT *, row_number() OVER (
 				         PARTITION BY workspace_task_id ORDER BY created_at DESC, rowid DESC) AS rn
-				       FROM managed_approval_requests)
+				       FROM managed_approval_requests WHERE workspace_task_id IN (SELECT value FROM json_each(?)))
 				 WHERE rn = 1`,
 			)
-			.all();
+			.all(JSON.stringify(ids));
 		return new Map(
 			rows.map(({ workspace_task_id, ...summary }) => [
 				workspace_task_id,
@@ -358,11 +382,22 @@ export function createWorkspaceReadModel(
 		// nothing is leased, and not while an open quarantine pauses every claim.
 		const resumable = [...order.resumable];
 		const active = order.leased[0] ?? resumable.shift() ?? null;
-		const waiting = [...resumable, ...order.queued];
+		const waiting = [...resumable, ...order.queued].slice(0, MAX_REQUESTS);
+		// APP-P2-02: the complete number of executions holding or waiting for the slot (executions, not
+		// unique workspace tasks), so a capped list never reads as the whole queue
+		const totalExecutions =
+			db
+				.query<{ n: number }, []>(
+					`SELECT count(*) AS n FROM managed_tasks
+					 WHERE lease_owner IS NOT NULL OR state IN ('queued', ${ACTIVE_SQL_LIST})`,
+				)
+				.get()?.n ?? 0;
 		return {
 			active: active ? entry(active) : null,
-			queued: waiting.slice(0, MAX_REQUESTS).map(entry),
+			queued: waiting.map(entry),
 			claims_paused_by_quarantine: order.quarantined,
+			total_executions: totalExecutions,
+			queued_complete: (active ? 1 : 0) + waiting.length === totalExecutions,
 		};
 	};
 
@@ -384,6 +419,208 @@ export function createWorkspaceReadModel(
 			tasks: tasks.get(r.id) ?? 0,
 		}));
 	};
+
+	// ── review repair APP-P2-01 / APP-P2-02: bounded read collections (REPAIR_READ_CONTRACT_2026-10-05.md) ──
+	const allowed = config.repos.map((r) => r.id);
+	const listItem = (
+		row: WorkspaceTaskRow,
+		latest: Map<string, RequestSummary>,
+	): WorkspaceTaskListItem => {
+		const engine = engineOf(row);
+		return {
+			task: taskSummary(row),
+			phase: deriveWorkspacePhase(row.stage, engine?.state ?? null),
+			acceptance_validity: acceptanceOf(row),
+			engine,
+			latest_request: latest.get(row.id) ?? null,
+		};
+	};
+	/** Display ownership from the request's own task (never from a client); grants nothing. */
+	const ownership = (request: ApprovalRequestView): ApprovalRequestView => {
+		const owner = store.getTask(request.workspace_task_id);
+		if (!owner) throw new ResponseContractError("request ownership");
+		return {
+			...request,
+			repo_id: owner.repo_id,
+			task_title: owner.draft.title,
+		};
+	};
+	const limitParam = (max: number) =>
+		z
+			.string()
+			.regex(/^[1-9]\d{0,2}$/)
+			.transform(Number)
+			.refine((n) => n <= max);
+	const historyQuery = z.strictObject({
+		repo_id: RepoId,
+		filter: z.enum(["all", "attention"]).default("all"),
+		limit: limitParam(100).default(50),
+		cursor: z.string().max(2048).optional(),
+	});
+	const inboxQuery = z.strictObject({
+		repo_id: RepoId.optional(),
+		kind: z.enum(["run", "result"]).optional(),
+		limit: limitParam(MAX_REQUESTS).default(50),
+		cursor: z.string().max(2048).optional(),
+	});
+
+	/** GET /task-history: one repository's tasks, newest created first, keyset-paged (≤ 100 per page). */
+	const history = (
+		query: Record<string, string>,
+		now: Date,
+	): CommandOutcome<TaskHistoryPage> =>
+		db
+			.transaction((): CommandOutcome<TaskHistoryPage> => {
+				const parsed = historyQuery.safeParse(query);
+				if (!parsed.success) return fail("invalid_request");
+				const q = parsed.data;
+				if (!allowed.includes(q.repo_id)) return fail("repo_not_allowed");
+				const scope = {
+					v: 1 as const,
+					feed: "history" as const,
+					repo: q.repo_id,
+					filter: q.filter,
+					limit: q.limit,
+				};
+				const cursor = readCursor<HistoryCursor>(q.cursor, scope);
+				if (cursor === "invalid") return fail("invalid_request");
+				const where = `t.repo_id = ?${q.filter === "attention" ? ` AND ${ATTENTION_SQL}` : ""}`;
+				const total =
+					db
+						.query<{ n: number }, [string]>(
+							`SELECT count(*) AS n FROM ${TASK_JOIN} WHERE ${where}`,
+						)
+						.get(q.repo_id)?.n ?? 0;
+				const after = cursor
+					? " AND (t.created_at < ? OR (t.created_at = ? AND t.id < ?))"
+					: "";
+				const args: (string | number)[] = [
+					q.repo_id,
+					...(cursor ? [cursor.at, cursor.at, cursor.id] : []),
+					q.limit + 1,
+				];
+				const rows = db
+					.query<{ id: string; created_at: string }, (string | number)[]>(
+						`SELECT t.id, t.created_at FROM ${TASK_JOIN} WHERE ${where}${after}
+						 ORDER BY t.created_at DESC, t.id DESC LIMIT ?`,
+					)
+					.all(...args);
+				const more = rows.length > q.limit;
+				const selected = rows.slice(0, q.limit);
+				const last = selected.at(-1);
+				const latest = latestRequests(selected.map((r) => r.id));
+				const items = selected.map((r) => {
+					const row = store.getTask(r.id);
+					if (!row) throw new ResponseContractError("history row");
+					return listItem(row, latest);
+				});
+				return ok(
+					200,
+					validated(
+						TaskHistoryPage,
+						{
+							repo_id: q.repo_id,
+							filter: q.filter,
+							items,
+							page: pageMeta(
+								total,
+								items.length,
+								more,
+								last ? { ...scope, at: last.created_at, id: last.id } : null,
+								now.toISOString(),
+								cursor === null,
+							),
+						},
+						"history page",
+					),
+				);
+			})
+			.deferred();
+
+	/** GET /inbox: pending approval requests, oldest first, optionally one repository / gate, keyset-paged. */
+	const inbox = (
+		query: Record<string, string>,
+		now: Date,
+	): CommandOutcome<PendingInboxPage> =>
+		db
+			.transaction((): CommandOutcome<PendingInboxPage> => {
+				const parsed = inboxQuery.safeParse(query);
+				if (!parsed.success) return fail("invalid_request");
+				const q = parsed.data;
+				if (q.repo_id && !allowed.includes(q.repo_id))
+					return fail("repo_not_allowed");
+				const scope = {
+					v: 1 as const,
+					feed: "inbox" as const,
+					repo: q.repo_id ?? null,
+					filter: q.kind ?? ("all" as const),
+					limit: q.limit,
+				};
+				const cursor = readCursor<InboxCursor>(q.cursor, scope);
+				if (cursor === "invalid") return fail("invalid_request");
+				const where = `a.status = 'pending' AND t.repo_id IN (SELECT value FROM json_each(?))${q.kind ? " AND a.kind = ?" : ""}`;
+				const repos = q.repo_id ? [q.repo_id] : allowed;
+				const base = [JSON.stringify(repos), ...(q.kind ? [q.kind] : [])];
+				const total =
+					db
+						.query<{ n: number }, string[]>(
+							`SELECT count(*) AS n FROM managed_approval_requests a
+							 JOIN workspace_tasks t ON t.id = a.workspace_task_id WHERE ${where}`,
+						)
+						.get(...base)?.n ?? 0;
+				const after = cursor
+					? " AND (a.created_at > ? OR (a.created_at = ? AND a.id > ?))"
+					: "";
+				const args: (string | number)[] = [
+					...base,
+					...(cursor ? [cursor.at, cursor.at, cursor.id] : []),
+					q.limit + 1,
+				];
+				const rows = db
+					.query<{ id: string; created_at: string }, (string | number)[]>(
+						`SELECT a.id, a.created_at FROM managed_approval_requests a
+						 JOIN workspace_tasks t ON t.id = a.workspace_task_id
+						 WHERE ${where}${after} ORDER BY a.created_at, a.id LIMIT ?`,
+					)
+					.all(...args);
+				const more = rows.length > q.limit;
+				const selected = rows.slice(0, q.limit);
+				const last = selected.at(-1);
+				const items = selected.map((r) => {
+					const row = store.getApprovalRequest(r.id);
+					if (!row) throw new ResponseContractError("inbox row");
+					return ownership(requestView(row));
+				});
+				return ok(
+					200,
+					validated(
+						PendingInboxPage,
+						{
+							repo_id: q.repo_id ?? null,
+							kind: q.kind ?? null,
+							items,
+							page: {
+								...pageMeta(
+									total,
+									items.length,
+									more,
+									last ? { ...scope, at: last.created_at, id: last.id } : null,
+									now.toISOString(),
+									cursor === null,
+								),
+								// T0-FINAL-P2-01: same transaction, same scope as `total`
+								membership_generation: inboxMembershipGeneration(
+									db,
+									repos,
+									q.kind ?? null,
+								),
+							},
+						},
+						"inbox page",
+					),
+				);
+			})
+			.deferred();
 
 	/**
 	 * Repositories the hub has only observed (GitHub sync / local checkout scan rows, or session telemetry
@@ -472,55 +709,53 @@ export function createWorkspaceReadModel(
 		taskView,
 		managedTasksOf,
 
+		history,
+		inbox,
 		snapshot(now) {
-			const latest = latestRequests();
-			const pending = store
-				.listApprovalRequests({ status: "pending" })
-				.slice()
-				.reverse() // listApprovalRequests is newest first; the HQ inbox is oldest first
-				.slice(0, MAX_REQUESTS)
-				.map(requestView);
-			const queue = executionQueue();
-			// P2 F-01: the window always holds every task the emitted inbox and queue name (inbox first),
-			// so a request's task / repository never depends on how recently the task was updated
-			const pinned = [
-				...pending.map((r) => r.workspace_task_id),
-				queue.active?.workspace_task_id,
-				...queue.queued.map((q) => q.workspace_task_id),
-			].filter((id): id is string => typeof id === "string");
-			const tasks = store.listTasks(MAX_TASKS, pinned).map((row) => {
-				const engine = engineOf(row);
-				return {
-					task: taskSummary(row),
-					phase: deriveWorkspacePhase(row.stage, engine?.state ?? null),
-					// the stored row (no re-check here: a list-only viewer sees a change only once a sweep
-					// batch — at most 20, oldest check first — reaches it; CONTRACT_V1_2.md §C)
-					acceptance_validity: acceptanceOf(row),
-					engine,
-					latest_request: latest.get(row.id) ?? null,
-				};
-			});
-			return ok(
-				200,
-				validated(
-					WorkspaceSnapshot,
-					{
-						provenance: {
-							data_source: "hub",
-							execution_mode: "simulated",
-							live_integration_verified: false,
-						},
-						repos: repos(),
-						observed_repos: observedRepos(),
-						tasks,
-						repo_task_counts: repoTaskCounts(),
-						pending_requests: pending,
-						execution_queue: queue,
-						generated_at: now.toISOString(),
-					},
-					"snapshot",
-				),
-			);
+			return db
+				.transaction(() => {
+					const page = inbox({ limit: String(SNAPSHOT_INBOX_LIMIT) }, now);
+					if (!page.ok) return page;
+					const pending = page.body.items;
+					const queue = executionQueue();
+					// Pinning improves the window, but never supplies ownership or complete repository facts.
+					const pinned = [
+						...pending.map((r) => r.workspace_task_id),
+						queue.active?.workspace_task_id,
+						...queue.queued.map((q) => q.workspace_task_id),
+					].filter((id): id is string => typeof id === "string");
+					const rows = store.listTasks(MAX_TASKS, pinned);
+					const latest = latestRequests(rows.map((r) => r.id));
+					const tasks = rows.map((row) => listItem(row, latest));
+					return ok(
+						200,
+						validated(
+							WorkspaceSnapshot,
+							{
+								provenance: {
+									data_source: "hub",
+									execution_mode: "simulated",
+									live_integration_verified: false,
+								},
+								repos: repos(),
+								observed_repos: observedRepos(),
+								tasks,
+								repo_task_counts: repoTaskCounts(),
+								repo_summaries: repositorySummaries(
+									db,
+									allowed,
+									now.toISOString(),
+								),
+								pending_requests: pending,
+								pending_page: page.body.page,
+								execution_queue: queue,
+								generated_at: now.toISOString(),
+							},
+							"snapshot",
+						),
+					);
+				})
+				.deferred();
 		},
 
 		taskDetail,

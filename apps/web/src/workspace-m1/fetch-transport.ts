@@ -10,7 +10,9 @@ import {
 	ChallengeIssueResponse,
 	CSRF_HEADER,
 	DecisionResponse,
+	PendingInboxPage,
 	SessionView,
+	TaskHistoryPage,
 	WORKSPACE_API_BASE,
 	WORKSPACE_ERROR_STATUS,
 	WORKSPACE_ROUTES,
@@ -20,7 +22,11 @@ import {
 	WorkspaceTaskId,
 	WorkspaceTaskView,
 } from "@agent-city/schema/workspace-m1";
-import type { TransportResult, WorkspaceTransport } from "./transport.ts";
+import {
+	queryString,
+	type TransportResult,
+	type WorkspaceTransport,
+} from "./transport.ts";
 
 interface Parser<T> {
 	safeParse(
@@ -167,6 +173,10 @@ export function createFetchTransport(
 			return r;
 		},
 		getSnapshot: () => call("GET", pathFor("snapshot"), WorkspaceSnapshot),
+		getTaskHistory: (q) =>
+			call("GET", `${pathFor("history")}?${queryString(q)}`, TaskHistoryPage),
+		getInbox: (q) =>
+			call("GET", `${pathFor("inbox")}?${queryString(q)}`, PendingInboxPage),
 		createTask: (b) =>
 			call("POST", pathFor("tasks"), WorkspaceTaskView, json(b)),
 		getTask: async (id) =>

@@ -10,7 +10,11 @@ import {
 	ChallengeIssueResponse,
 	DecisionResponse,
 	emptyDraft,
+	type PageMeta,
+	PendingInboxPage,
+	repositoryCategory,
 	SessionView,
+	TaskHistoryPage,
 	type WorkspaceDraft,
 	WorkspaceSnapshot,
 	WorkspaceTaskDetail,
@@ -21,8 +25,14 @@ import {
 	type FixtureEvidence,
 	FixtureWorld,
 	type FixtureWorldOptions,
+	fixtureError,
 } from "./fixture-world.ts";
-import type { TransportResult, WorkspaceTransport } from "./transport.ts";
+import type {
+	HistoryQuery,
+	InboxQuery,
+	TransportResult,
+	WorkspaceTransport,
+} from "./transport.ts";
 
 export type FixtureRoute =
 	| "session"
@@ -31,7 +41,9 @@ export type FixtureRoute =
 	| "command"
 	| "artifact"
 	| "challenge"
-	| "decision";
+	| "decision"
+	| "history"
+	| "inbox";
 
 /** Programmatic controls of the fixture (tests / dev harness / browser QA FX set). */
 export interface FixtureControls {
@@ -99,6 +111,58 @@ interface Parser<T> {
 const sleep = (ms: number) =>
 	new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// ── paged collections over the fixture's own (complete) lists, same contract as the hub ──────────
+const b64 = (o: object): string =>
+	btoa(JSON.stringify(o))
+		.replace(/\+/g, "-")
+		.replace(/\//g, "_")
+		.replace(/=+$/, "");
+function unb64(raw: string): Record<string, unknown> | null {
+	if (!/^[A-Za-z0-9_-]{1,2048}$/.test(raw)) return null;
+	try {
+		const v = JSON.parse(atob(raw.replace(/-/g, "+").replace(/_/g, "/")));
+		return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+	} catch {
+		return null;
+	}
+}
+function page<T>(
+	rows: T[],
+	keyOf: (t: T) => { at: string; id: string },
+	after: (t: T, at: string, id: string) => boolean,
+	scope: Record<string, unknown>,
+	limit: number,
+	cursor: string | undefined,
+	now: string,
+): { items: T[]; page: PageMeta } | "invalid" {
+	let from = rows;
+	if (cursor !== undefined) {
+		const c = unb64(cursor);
+		if (
+			!c ||
+			Object.entries(scope).some(([k, v]) => c[k] !== v) ||
+			typeof c.at !== "string" ||
+			typeof c.id !== "string"
+		)
+			return "invalid";
+		from = rows.filter((t) => after(t, c.at as string, c.id as string));
+	}
+	const items = from.slice(0, limit);
+	const more = from.length > limit;
+	const last = items.at(-1);
+	return {
+		items,
+		page: {
+			total: rows.length,
+			returned: items.length,
+			complete: cursor === undefined && !more,
+			has_more: more,
+			next_cursor: more && last ? b64({ ...scope, ...keyOf(last) }) : null,
+			as_of: now,
+		},
+	};
+}
+
 export function createFixtureTransport(
 	opts: FixtureWorldOptions = {},
 ): FixtureTransport {
@@ -164,6 +228,102 @@ export function createFixtureTransport(
 		signOut: () => answer("session", null, () => world.signOut()),
 		getSnapshot: () =>
 			answer("snapshot", WorkspaceSnapshot, () => world.getSnapshot()),
+		getTaskHistory: (q: HistoryQuery) =>
+			answer("history", TaskHistoryPage, () => {
+				const snap = world.getSnapshot();
+				if (!snap.ok) return snap;
+				const s = snap.data;
+				if (!s.repos.some((r) => r.repo_id === q.repo_id))
+					return fixtureError("repo_not_allowed", "Not on the allowlist.");
+				if (!Number.isInteger(q.limit) || q.limit < 1 || q.limit > 100)
+					return fixtureError("invalid_request", "Bad page size.");
+				const rows = s.tasks
+					.filter(
+						(t) =>
+							t.task.repo_id === q.repo_id &&
+							(q.filter === "all" ||
+								repositoryCategory(
+									t.phase,
+									t.acceptance_validity?.status ?? null,
+									t.engine?.quarantined ?? false,
+								) === "attention"),
+					)
+					.sort((a, b) =>
+						`${b.task.created_at}|${b.task.id}`.localeCompare(
+							`${a.task.created_at}|${a.task.id}`,
+						),
+					);
+				const pg = page(
+					rows,
+					(t) => ({ at: t.task.created_at, id: t.task.id }),
+					(t, at, id) => `${t.task.created_at}|${t.task.id}` < `${at}|${id}`,
+					{
+						feed: "history",
+						repo: q.repo_id,
+						filter: q.filter,
+						limit: q.limit,
+					},
+					q.limit,
+					q.cursor,
+					s.generated_at,
+				);
+				if (pg === "invalid")
+					return fixtureError("invalid_request", "Bad cursor.");
+				return {
+					ok: true,
+					status: 200,
+					data: { repo_id: q.repo_id, filter: q.filter, ...pg },
+				};
+			}),
+		getInbox: (q: InboxQuery) =>
+			answer("inbox", PendingInboxPage, () => {
+				const snap = world.getSnapshot();
+				if (!snap.ok) return snap;
+				const s = snap.data;
+				if (q.repo_id && !s.repos.some((r) => r.repo_id === q.repo_id))
+					return fixtureError("repo_not_allowed", "Not on the allowlist.");
+				if (!Number.isInteger(q.limit) || q.limit < 1 || q.limit > 500)
+					return fixtureError("invalid_request", "Bad page size.");
+				const owner = new Map(s.tasks.map((t) => [t.task.id, t.task]));
+				const rows = s.pending_requests
+					.map((r) => {
+						const t = owner.get(r.workspace_task_id);
+						return {
+							...r,
+							repo_id: r.repo_id ?? t?.repo_id,
+							task_title: r.task_title ?? t?.draft.title,
+						};
+					})
+					.filter(
+						(r) =>
+							(!q.repo_id || r.repo_id === q.repo_id) &&
+							(!q.kind || r.kind === q.kind),
+					)
+					.sort((a, b) =>
+						`${a.created_at}|${a.id}`.localeCompare(`${b.created_at}|${b.id}`),
+					);
+				const pg = page(
+					rows,
+					(r) => ({ at: r.created_at, id: r.id }),
+					(r, at, id) => `${r.created_at}|${r.id}` > `${at}|${id}`,
+					{
+						feed: "inbox",
+						repo: q.repo_id ?? null,
+						filter: q.kind ?? "all",
+						limit: q.limit,
+					},
+					q.limit,
+					q.cursor,
+					s.generated_at,
+				);
+				if (pg === "invalid")
+					return fixtureError("invalid_request", "Bad cursor.");
+				return {
+					ok: true,
+					status: 200,
+					data: { repo_id: q.repo_id ?? null, kind: q.kind ?? null, ...pg },
+				};
+			}),
 		createTask: (body) =>
 			answer("command", WorkspaceTaskView, () =>
 				world.createTask(structuredClone(body)),

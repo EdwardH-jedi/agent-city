@@ -105,7 +105,7 @@ try {
 const expected = {
 	criteria: ["a, b", "c"],
 	phase: "verifying",
-	routes: 11,
+	routes: 13, // + the review-repair read routes /task-history and /inbox
 	snapshotRejectsEmpty: true,
 	decisionRejectsEmpty: true,
 };

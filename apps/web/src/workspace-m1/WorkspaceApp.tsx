@@ -119,7 +119,11 @@ function TopBar() {
 	const source = p?.data_source ?? state.source;
 	const mode = p?.execution_mode ?? "simulated";
 	const verified = p?.live_integration_verified ?? false;
-	const pending = state.snapshot?.pending_requests.length ?? 0;
+	// review repair APP-P2-02: the complete pending total, not the bounded first page
+	const pending =
+		state.snapshot?.pending_page?.total ??
+		state.snapshot?.pending_requests.length ??
+		0;
 	const signedIn = state.auth.status === "signed_in";
 	const offline = state.conn.status === "offline";
 	const stale = state.conn.status === "online" && connectionIsStale(state.conn);

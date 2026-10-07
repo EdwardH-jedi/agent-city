@@ -27,7 +27,12 @@ import {
 	VALIDITY_REASON_LABEL,
 	validityShortLabel,
 } from "./labels.ts";
-import { mergeSnapshot, newerValidity, WorkspaceStore } from "./store.ts";
+import {
+	mergeSnapshot,
+	newerValidity,
+	newestListItem,
+	WorkspaceStore,
+} from "./store.ts";
 import type { TransportResult, WorkspaceTransport } from "./transport.ts";
 import { acceptedAtOf } from "./Validity.tsx";
 
@@ -429,6 +434,93 @@ describe("fixture world: the four validity states (hub rules, contract-valid ans
 	});
 });
 
+describe("T0-SAME-P2-01 — an equal check never replaces a known sticky verdict", () => {
+	const T = "2026-10-02T00:10:00.000Z";
+	const BEFORE = "2026-10-02T00:09:59.999Z";
+	const AFTER = "2026-10-02T00:10:00.001Z";
+	const valid = view({ checked_at: T });
+	const invalid = view({
+		status: "invalid",
+		reason: "bundle_missing",
+		checked_at: T,
+		first_invalid_at: T,
+	});
+	const unverifiable = view({
+		status: "unverifiable",
+		reason: "legacy_no_durable_evidence",
+		checked_at: T,
+	});
+	const unknown = view({ status: "unknown", checked_at: T });
+
+	test("A: current invalid @T, incoming valid @T → invalid", () => {
+		expect(newerValidity(invalid, valid)).toBe(invalid);
+	});
+	test("B: current unverifiable @T, incoming valid @T → unverifiable", () => {
+		expect(newerValidity(unverifiable, valid)).toBe(unverifiable);
+		expect(newerValidity(unverifiable, unknown)).toBe(unverifiable);
+	});
+	test("C: current valid / unknown @T, incoming sticky @T → the sticky incoming", () => {
+		expect(newerValidity(valid, invalid)).toBe(invalid);
+		expect(newerValidity(valid, unverifiable)).toBe(unverifiable);
+		expect(newerValidity(unknown, invalid)).toBe(invalid);
+		expect(newerValidity(invalid, unknown)).toBe(invalid);
+	});
+	test("D: an older incoming never wins", () => {
+		expect(newerValidity(invalid, view({ checked_at: BEFORE }))).toBe(invalid);
+		const olderInvalid = view({ ...invalid, checked_at: BEFORE });
+		expect(newerValidity(valid, olderInvalid)).toBe(valid);
+	});
+	test("E: a newer incoming wins (unchanged)", () => {
+		const newerValid = view({ checked_at: AFTER });
+		expect(newerValidity(invalid, newerValid)).toBe(newerValid);
+		const newerInvalid = view({ ...invalid, checked_at: AFTER });
+		expect(newerValidity(valid, newerInvalid)).toBe(newerInvalid);
+	});
+	test("F: equal check, neither sticky → incoming (the existing tie rule)", () => {
+		const again = view({ checked_at: T });
+		expect(newerValidity(valid, again)).toBe(again);
+		expect(newerValidity(valid, unknown)).toBe(unknown);
+		expect(newerValidity(unknown, valid)).toBe(valid);
+	});
+	test("equal check, both sticky → the known verdict (deterministic; sticky rows never change)", () => {
+		expect(newerValidity(invalid, view({ ...invalid }))).toBe(invalid);
+		expect(newerValidity(unverifiable, invalid)).toBe(unverifiable);
+		expect(newerValidity(invalid, unverifiable)).toBe(invalid);
+	});
+	test("another decision or a missing value still follows the hub", () => {
+		const other = view({
+			decision_id: "wsd-00000000-0000-4000-8000-0000000000cc",
+			checked_at: T,
+		});
+		expect(newerValidity(invalid, other)).toBe(other);
+		expect(newerValidity(invalid, null)).toBeNull();
+		expect(newerValidity(invalid, undefined)).toBe(invalid);
+	});
+	test("folding many reads (history settlement): a sticky verdict wins an equal check whichever row is newest by rev", () => {
+		const row = (v: AcceptanceValidityView, rev: number) =>
+			({
+				task: { id: "wst-00000000-0000-4000-8000-0000000000aa", rev },
+				phase: "accepted",
+				acceptance_validity: v,
+				engine: null,
+				latest_request: null,
+			}) as unknown as Parameters<typeof newestListItem>[0];
+		// the delayed page row is the incoming one; the known detail / snapshot rows say invalid at the same instant
+		expect(
+			newestListItem(row(valid, 4), [undefined, row(invalid, 4)])
+				.acceptance_validity,
+		).toBe(invalid);
+		expect(
+			newestListItem(row(valid, 4), [row(invalid, 4), row(valid, 4)])
+				.acceptance_validity?.status,
+		).toBe("invalid");
+		expect(
+			newestListItem(row(invalid, 4), [row(valid, 4)]).acceptance_validity
+				?.status,
+		).toBe("invalid");
+	});
+});
+
 describe("store: validity merge (one rule)", () => {
 	test("newerValidity: newer check wins; undefined keeps; other decision / null follow the hub", () => {
 		const valid = view({ checked_at: "2026-10-02T00:10:00.000Z" });
@@ -445,7 +537,8 @@ describe("store: validity merge (one rule)", () => {
 		expect(newerValidity(null, valid)).toBe(valid);
 		expect(newerValidity(valid, null)).toBeNull();
 		const same = view({ ...invalid });
-		expect(newerValidity(invalid, same)).toBe(same); // tie → incoming
+		// equal check, both sticky: the known verdict stays (T0-SAME-P2-01; a sticky row never changes)
+		expect(newerValidity(invalid, same)).toBe(invalid);
 		const other = view({
 			decision_id: "wsd-00000000-0000-4000-8000-0000000000bb",
 			checked_at: "2026-10-02T00:01:00.000Z",

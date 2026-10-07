@@ -30,6 +30,7 @@
 		"test:browser:campus": "bun --no-env-file apps/web/e2e/workspace-m1/campus.suite.ts",
 		"test:browser:recovery": "bun --no-env-file apps/web/e2e/workspace-m1/campus-recovery.suite.ts",
 		"test:browser:multi": "bun --no-env-file apps/web/e2e/workspace-m1/multirepo.suite.ts",
+		"test:browser:repair": "bun --no-env-file apps/web/e2e/workspace-m1/review-repair.suite.ts",
 		"build:web:workspace-prod": "bun --no-env-file apps/web/e2e/workspace-m1/build-production.ts",
 		"managed:demo": "bun --no-env-file apps/hub/src/managed/demo.ts",
 		"managed:preflight": "bun apps/hub/src/managed/preflight-cli.ts",

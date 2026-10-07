@@ -559,7 +559,7 @@ function initializeCampusEngine(
 		}
 		const hq = pins.get("hq");
 		if (hq) {
-			const n = model.pending.length;
+			const n = model.pending_total ?? model.pending.length;
 			hq.name.textContent = "Headquarters";
 			hq.state.textContent =
 				n === 0

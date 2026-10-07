@@ -7,6 +7,15 @@ observed-repository campus milestone was not started. Simulated only: no live pr
 execution, no merge / push / deploy. All corrective changes are left **unstaged and uncommitted** for an
 independent Codex review of the exact working tree.
 
+> **Status note (2026-10-05).** The "unstaged and uncommitted" wording above describes the 2026-10-04
+> implementing session only. Those changes were later committed as `d158571a8103d2bee315399ddea09607ccea1702`
+> (`fix(workspace): P2 review corrective F-01..F-04 [checkpoint — pending independent Codex review]`); `d158571`
+> is the committed baseline that the fresh independent review of 2026-10-05 examined (verdict NO-GO, observed
+> campus CLOSED; findings APP-P2-01, APP-P2-02, RUN-P2-01). That review rated F-01 PARTIALLY_FIXED and F-02,
+> F-03, F-04 FIXED_IN_REVIEWED_SCOPE. The repairs of its findings are recorded in
+> [`REVIEW_REPAIR_2026-10-05.md`](REVIEW_REPAIR_2026-10-05.md); they, in turn, are unstaged and uncommitted on
+> top of `d158571`.
+
 Finding numbering: the task brief numbers the findings 1–4; the review's ids are F-01 (task window), F-02
 (freshness), F-04 (committed decision) and F-03 (legacy focus). This record's headings use the review's ids.
 Source comments and test / step names use the brief's numbering: `P2 F-01` = task window, `P2 F-02` =

@@ -77,6 +77,11 @@ export interface CampusModel {
 	tasks: CampusTask[];
 	/** Every pending approval request (oldest first, as the server lists them). */
 	pending: CampusPendingRequest[];
+	/**
+	 * Review repair APP-P2-02 (additive): the complete number of pending requests; `pending` lists at most the
+	 * snapshot's first page. Absent = unknown, read `pending.length`.
+	 */
+	pending_total?: number;
 	selected: {
 		repo_id: string | null;
 		task_id: string | null;
@@ -164,8 +169,8 @@ export function toCampusModel(s: WsState): CampusModel {
 			kind: r.kind,
 			gate_label: r.kind === "run" ? "Execution approval" : "Result acceptance",
 			task_id: r.workspace_task_id,
-			repo_id: byId.get(r.workspace_task_id)?.repo_id ?? "",
-			title: byId.get(r.workspace_task_id)?.title ?? "",
+			repo_id: r.repo_id ?? byId.get(r.workspace_task_id)?.repo_id ?? "",
+			title: r.task_title ?? byId.get(r.workspace_task_id)?.title ?? "",
 			created_at: r.created_at,
 			selected: route.requestId === r.id,
 		}),
@@ -174,13 +179,21 @@ export function toCampusModel(s: WsState): CampusModel {
 		repo_id: r.repo_id,
 		label: r.repo_id.split("/")[1] ?? r.repo_id,
 		selected: route.repoId === r.repo_id,
-		active_tasks: tasks.filter(
-			(t) => t.repo_id === r.repo_id && ACTIVE.has(t.phase),
-		).length,
-		pending_requests: pending.filter((p) => p.repo_id === r.repo_id).length,
-		has_invalid_acceptance: tasks.some(
-			(t) => t.repo_id === r.repo_id && t.validity?.status === "invalid",
-		),
+		active_tasks:
+			snap?.repo_summaries?.find((s) => s.repo_id === r.repo_id)
+				?.active_tasks ??
+			tasks.filter((t) => t.repo_id === r.repo_id && ACTIVE.has(t.phase))
+				.length,
+		pending_requests:
+			snap?.repo_summaries?.find((s) => s.repo_id === r.repo_id)
+				?.pending_requests ??
+			pending.filter((p) => p.repo_id === r.repo_id).length,
+		has_invalid_acceptance:
+			(snap?.repo_summaries?.find((s) => s.repo_id === r.repo_id)?.acceptance
+				.invalid ?? 0) > 0 ||
+			tasks.some(
+				(t) => t.repo_id === r.repo_id && t.validity?.status === "invalid",
+			),
 	}));
 	return {
 		version: CAMPUS_INTERFACE_VERSION,
@@ -193,6 +206,7 @@ export function toCampusModel(s: WsState): CampusModel {
 		repos,
 		tasks,
 		pending,
+		pending_total: snap?.pending_page?.total ?? pending.length,
 		selected: {
 			repo_id: route.repoId,
 			task_id: route.taskId,

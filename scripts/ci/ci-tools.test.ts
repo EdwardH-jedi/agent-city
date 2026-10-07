@@ -255,6 +255,99 @@ describe("isolated.ts", () => {
 		expect(existsSync(join(root, "set-home"))).toBe(false);
 	});
 
+	// RUN-P2-01: launch failures settle promptly. Every case here runs under an OUTER bound independent
+	// of isolated.ts (the wrapper is SIGKILLed if it is still alive), so a regression fails instead of
+	// hanging the suite; reaching the outer bound is itself a failure.
+	async function bounded(
+		label: string,
+		timeout: number,
+		cmd: string[],
+		outerMs = 4_000, // below bun test's 5 s per-test limit, so a hang is reported by this bound
+	): Promise<{ code: number | null; outerHit: boolean; ms: number }> {
+		const t0 = Date.now();
+		const p = Bun.spawn(
+			[
+				"bun",
+				join(HERE, "isolated.ts"),
+				"--root",
+				root,
+				"--label",
+				label,
+				"--timeout",
+				String(timeout),
+				"--",
+				...cmd,
+			],
+			{ stdout: "pipe", stderr: "pipe" },
+		);
+		let outerHit = false;
+		const outer = setTimeout(() => {
+			outerHit = true;
+			p.kill("SIGKILL");
+		}, outerMs);
+		const code = await p.exited;
+		clearTimeout(outer);
+		return { code: outerHit ? null : code, outerHit, ms: Date.now() - t0 };
+	}
+	const meta = (label: string) =>
+		JSON.parse(readFileSync(join(root, label, "run.json"), "utf8"));
+
+	test("a command that does not exist (ENOENT) settles at once: exit 127, run.json written, nothing signalled", async () => {
+		const r = await bounded("enoent", 3, ["no-such-agentcity-command"]);
+		expect(r.outerHit).toBe(false);
+		expect(r.code).toBe(127);
+		expect(r.ms).toBeLessThan(3_000); // before its own 3 s time limit
+		expect(meta("enoent")).toMatchObject({
+			exit: 127,
+			launch_error: "ENOENT",
+			process_group_created: false,
+			cleanup_status: "no_process_launched", // never "cleaned up" from a missing pid
+			cleanup_kill_attempted: false,
+			leftover_processes_killed: false,
+			child_exit: null,
+			interrupted: false,
+			stopped_by: null,
+		});
+	});
+
+	test("a command that is not executable (EACCES) settles at once: exit 126", async () => {
+		const file = join(scratch, "not-executable.sh");
+		writeFileSync(file, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+		const r = await bounded("eacces", 3, [file]);
+		expect(r.outerHit).toBe(false);
+		expect(r.code).toBe(126);
+		expect(meta("eacces")).toMatchObject({
+			exit: 126,
+			launch_error: "EACCES",
+			process_group_created: false,
+			cleanup_status: "no_process_launched",
+		});
+	});
+
+	test("a launch failure racing a 1 s time limit still has exactly one outcome (127, not 124)", async () => {
+		const r = await bounded("enoent-race", 1, ["no-such-agentcity-command"]);
+		expect(r.outerHit).toBe(false);
+		expect(r.code).toBe(127);
+		expect(meta("enoent-race").stopped_by).toBeNull();
+	});
+
+	test("bounded: success and nonzero exits still pass through with a confirmed-absent group", async () => {
+		const ok = await bounded("bounded-ok", 10, ["/bin/sh", "-c", "exit 0"]);
+		const bad = await bounded("bounded-bad", 10, ["/bin/sh", "-c", "exit 5"]);
+		expect([ok.outerHit, ok.code, bad.outerHit, bad.code]).toEqual([
+			false,
+			0,
+			false,
+			5,
+		]);
+		expect(meta("bounded-ok")).toMatchObject({
+			launch_error: null,
+			process_group_created: true,
+			cleanup_status: "confirmed_absent",
+		});
+		expect(meta("bounded-bad").child_exit).toBe(5);
+	});
+
 	test("processes left behind are killed; the exit code is the command's", () => {
 		const marker = `agentcity-orphan-${process.pid}`;
 		const r = wrap(

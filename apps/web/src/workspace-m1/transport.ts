@@ -10,11 +10,13 @@ import type {
 	ChallengeIssueResponse,
 	CreateWorkspaceTaskRequest,
 	DecisionResponse,
+	PendingInboxPage,
 	PublishProposalRequest,
 	RequestRerunRequest,
 	SaveDraftRequest,
 	SessionView,
 	SignInRequest,
+	TaskHistoryPage,
 	WorkspaceErrorBody,
 	WorkspaceErrorCode,
 	WorkspaceSnapshot,
@@ -40,6 +42,28 @@ export type TransportResult<T> =
 	| { ok: true; status: number; data: T }
 	| TransportFailure;
 
+/** Query of GET /task-history. A cursor only continues the exact query that produced it. */
+export interface HistoryQuery {
+	repo_id: string;
+	filter: "all" | "attention";
+	limit: number;
+	cursor?: string;
+}
+/** Query of GET /inbox (no repo_id = every allowlisted repository). */
+export interface InboxQuery {
+	repo_id?: string;
+	kind?: "run" | "result";
+	limit: number;
+	cursor?: string;
+}
+/** Query string of a collection read (only defined values). */
+export const queryString = (q: object): string =>
+	new URLSearchParams(
+		Object.entries(q)
+			.filter(([, v]) => v !== undefined)
+			.map(([k, v]) => [k, String(v)] as [string, string]),
+	).toString();
+
 export interface WorkspaceTransport {
 	/** Where the data comes from: rendered as provenance (`UI fixture` / `Hub record`). */
 	readonly source: "hub" | "fixture";
@@ -51,6 +75,10 @@ export interface WorkspaceTransport {
 	signOut(): Promise<TransportResult<null>>;
 	/** GET /snapshot */
 	getSnapshot(): Promise<TransportResult<WorkspaceSnapshot>>;
+	/** GET /task-history — one repository's tasks, newest created first, keyset-paged (review repair APP-P2-01). */
+	getTaskHistory(q: HistoryQuery): Promise<TransportResult<TaskHistoryPage>>;
+	/** GET /inbox — pending requests, oldest first, optionally one repository / gate, keyset-paged (APP-P2-02). */
+	getInbox(q: InboxQuery): Promise<TransportResult<PendingInboxPage>>;
 	/** POST /tasks (key-idempotent: 201 created | 200 replay) */
 	createTask(
 		body: CreateWorkspaceTaskRequest,

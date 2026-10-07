@@ -349,7 +349,12 @@ export type EvidenceBundleRow = z.infer<typeof EvidenceBundleRow>;
 // ── views (client-facing) ──────────────────────────────────────────────────
 
 export const ApprovalRequestView = z
-	.strictObject(ApprovalRequestFields)
+	.strictObject({
+		...ApprovalRequestFields,
+		/** Additive display ownership, derived from the owning task; never decision authority. */
+		repo_id: RepoId.optional(),
+		task_title: z.string().max(200).optional(),
+	})
 	.superRefine((r, ctx) => {
 		for (const message of approvalProblems(r))
 			ctx.addIssue({ code: "custom", message });

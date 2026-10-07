@@ -189,6 +189,32 @@ export function createWorkspaceRouter(deps: WorkspaceApiDeps): Hono {
 		WORKSPACE_ROUTES.snapshot,
 		read(() => send(reads.snapshot(now()))),
 	);
+	const collectionQuery = (c: Context): Record<string, string> | null => {
+		const params = new URL(c.req.url).searchParams;
+		const out: Record<string, string> = {};
+		for (const [key, value] of params) {
+			if (Object.hasOwn(out, key)) return null;
+			out[key] = value;
+		}
+		return out;
+	};
+	r.get(
+		WORKSPACE_ROUTES.history,
+		read((c) => {
+			const q = collectionQuery(c);
+			return q
+				? send(reads.history(q, now()))
+				: errorResponse("invalid_request");
+		}),
+	);
+	r.get(
+		WORKSPACE_ROUTES.inbox,
+		read((c) => {
+			const q = collectionQuery(c);
+			return q ? send(reads.inbox(q, now())) : errorResponse("invalid_request");
+		}),
+	);
+
 	r.post(
 		WORKSPACE_ROUTES.tasks,
 		mutate((_c, v, body) => send(commands.createTask(v, body, now()))),

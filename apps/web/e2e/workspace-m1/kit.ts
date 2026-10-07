@@ -16,7 +16,7 @@ import type {
 import { SCAN_PATTERNS } from "../../../../packages/schema/src/secret-patterns.ts";
 
 /** Evidence set: FX (fixture), HUB (real hub), MULTI (multi-repository suite). */
-export type SetLabel = "FX" | "HUB" | "MULTI";
+export type SetLabel = "FX" | "HUB" | "MULTI" | "REPAIR";
 export type Status = "PASS" | "FAIL" | "NOT RUN" | "BLOCKED";
 
 export interface CaseResult {

@@ -142,7 +142,7 @@ lead's self-tests and the internal QA roles do not substitute for that review.
 | --- | --- |
 | Reported/verified source | `agent-city-v011`, `hardening/managed-v0.1.1`, `f960055448e4f5a0bd93a7b9ca0aeb0d2ef8597d` (clean; untouched — §8) |
 | Implementation checkout | `agent-city-m1` (independent `git clone --no-local`, own object store), branch `feat/workspace-approvals-m1`, HEAD = baseline `f960055…`, push URL disabled |
-| Change state | everything uncommitted; nothing staged; no commits; no push |
+| Change state | everything uncommitted; nothing staged; no commits; no push (state of that delivery session; the work was committed later — the 2026-10-05 review baseline is the committed `d158571`, see `CORRECTIVE_P2_2026-10-04.md`) |
 | Diff identity (final) | tracked `git diff HEAD \| shasum -a 256` = `86d185c321bb1c4c6583428f759093793982f3044b2f643d85abcc50e358614f`; untracked manifest `git ls-files --others --exclude-standard \| grep -v '^docs/workspace-m1/DELIVERY.md$' \| sort \| xargs shasum -a 256 \| shasum -a 256` = `ce807a5f45c0ba28f536e127bbde2094be271161ae7627b88c7af287c84ec298` (169 files; this file excluded so it can carry the hashes) |
 | Size | 23 tracked files changed (+491/−59); 169 new files + this document (contracts, modules, tests, harness, docs) |
 

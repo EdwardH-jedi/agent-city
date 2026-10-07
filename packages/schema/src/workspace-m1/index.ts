@@ -11,3 +11,5 @@ export * from "./proposal.ts";
 export * from "./result.ts";
 export * from "./rows.ts";
 export * from "./state.ts";
+
+export * from "./summary.ts";
