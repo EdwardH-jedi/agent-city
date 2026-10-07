@@ -7,6 +7,7 @@ import type { Database } from "bun:sqlite";
 import { WORKSPACE_API_BASE } from "@agent-city/schema/workspace-m1";
 import { Hono } from "hono";
 import type { ManagedConfig } from "./managed/config.ts";
+import { createSupportJobRouter } from "./support-lane-api/router.ts";
 import {
 	createWorkspaceAuth,
 	type WorkspaceAuth,
@@ -87,6 +88,16 @@ export function createWorkspaceHub(o: {
 	});
 	const api = new Hono();
 	auth.install(api); // first: a route registered before the guard would be unguarded
+	// before the workspace router (its catch-all answers 404 for every unknown path)
+	api.route(
+		"/",
+		createSupportJobRouter({
+			auth,
+			db,
+			config,
+			...(o.options.clock ? { clock: o.options.clock } : {}),
+		}),
+	);
 	api.route(
 		"/",
 		createWorkspaceRouter({

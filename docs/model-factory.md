@@ -65,7 +65,7 @@ enabled profile changes the hash (and so voids approvals bound to the old config
 
 | Item | Exact next change |
 | --- | --- |
-| Support persistence / API | a new migration (bounded columns mirroring `SupportJob`; no link to managed tasks); a store over `createSupportJob` and the state transitions; support-job routes behind the workspace operator session + CSRF + Origin checks; no route starts a managed run. |
+| Support persistence / API | **Built** (`apps/hub/src/support-lane-api/`, migration 011; docs/support-lane.md "Persistence and API"): store + create / get / list / cancel routes behind the workspace guard; no route starts a job or a managed run. Next: a read-only executor launch path wired to `transition`. |
 | Workspace routing projection | a read-only "routing recommendation" next to a draft (`dryRunTaskRoute` output). Putting a profile into the Gate 1 proposal changes the hashed proposal snapshot, so it needs a new proposal contract version — never a silent change to v1 / v1.2. |
 | Jev decision provider | a `DecisionProvider` over an injected transport, disabled by default; the fabric already validates kind, choice set, confidence bounds, input hash, provider id and timeouts and stores no reasoning. |
 | Profile-aware adapters | `createAdapters(cfg)` builds the Claude / Codex adapters from `live.*`; the next step is building them from a resolved implementer / reviewer profile (`model` from the profile), still gated by `live.enabled`, with no automatic fallback. OpenAI CLI/API flags and auth are not assumed. |

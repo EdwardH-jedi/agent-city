@@ -122,7 +122,16 @@ describe("010 on a genuine 009 database", () => {
 		expect(ws.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
 		const fresh = openDb(":memory:");
 		dbs.push(fresh);
-		expect(schemaSql(ws.db)).toBe(schemaSql(fresh));
+		// a fresh openDb also carries the hub-level 011 (support_jobs); the workspace part is identical
+		expect(schemaSql(ws.db)).toBe(
+			fresh
+				.query<{ sql: string | null }, []>(
+					"SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND tbl_name <> 'support_jobs' ORDER BY type, name",
+				)
+				.all()
+				.map((r) => r.sql)
+				.join("\n"),
+		);
 		expect(
 			[accepted.proposal_id, v1.proposal_id, v2.proposal_id].map((id) =>
 				ws.store.getProposal(id),

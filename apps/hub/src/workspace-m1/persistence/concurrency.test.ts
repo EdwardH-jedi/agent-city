@@ -176,14 +176,14 @@ describe("concurrent decisions", () => {
 			),
 		);
 		expect(outcomes).toEqual(["applied", "noop", "noop", "noop"]);
-		const db = openDb(path);
+		const db = openDb(path); // applies only the hub-level 011 (support_jobs) on top
 		expect(
 			db
 				.query<{ v: number }, []>(
 					"SELECT user_version AS v FROM pragma_user_version",
 				)
 				.get()?.v,
-		).toBe(10);
+		).toBe(11);
 		db.close();
 	}, 30_000);
 

@@ -59,6 +59,15 @@ const schemaSql = (db: Database) =>
 		.all()
 		.map((r) => r.sql)
 		.join("\n");
+/** The schema without the hub-level 011 support_jobs objects (openDb applies 011; the workspace helper stops at 10). */
+const workspaceSchemaSql = (db: Database) =>
+	db
+		.query<{ sql: string | null }, []>(
+			"SELECT sql FROM sqlite_master WHERE tbl_name <> 'support_jobs' ORDER BY type, name",
+		)
+		.all()
+		.map((r) => r.sql)
+		.join("\n");
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -210,7 +219,7 @@ describe("workspace migrations (008_workspace_approvals + 009_accepted_evidence_
 		db.close();
 	});
 
-	test("reopen: openDb skips everything at version 10, data survives, helper is a no-op", () => {
+	test("reopen: openDb skips everything at the latest version (11), data survives, helper is a no-op", () => {
 		const dir = tempDir();
 		dirs.push(dir);
 		const path = join(dir, "hub.db");
@@ -221,8 +230,8 @@ describe("workspace migrations (008_workspace_approvals + 009_accepted_evidence_
 		const schema = schemaSql(ws.db);
 		ws.db.close();
 
-		const db = openDb(path); // db.ts migrate(): every registered file is ≤ 10 → nothing runs
-		expect(userVersion(db)).toBe(10);
+		const db = openDb(path); // db.ts migrate(): every registered file is ≤ 11 → nothing runs
+		expect(userVersion(db)).toBe(11);
 		expect(ensureWorkspaceSchema(db)).toBe(false);
 		expect(schemaSql(db)).toBe(schema);
 		expect(count(db, "SELECT count(*) AS n FROM workspace_tasks")).toBe(1);
@@ -251,9 +260,9 @@ describe("workspace migrations (008_workspace_approvals + 009_accepted_evidence_
 		expect(schemaSql(viaMigrate)).toBe(schemaSql(viaHelper));
 		// the real openDb applies the registered 008 itself: same schema, helper is a no-op
 		const viaOpenDb = openDb(":memory:");
-		expect(userVersion(viaOpenDb)).toBe(10);
+		expect(userVersion(viaOpenDb)).toBe(11); // + the hub-level 011 (support_jobs)
 		expect(ensureWorkspaceSchema(viaOpenDb)).toBe(false);
-		expect(schemaSql(viaOpenDb)).toBe(schemaSql(viaHelper));
+		expect(workspaceSchemaSql(viaOpenDb)).toBe(schemaSql(viaHelper));
 		viaHelper.close();
 		viaMigrate.close();
 		viaOpenDb.close();

@@ -5,8 +5,9 @@ summaries, review → TODOs, PR draft text, context packages — that fast model
 lightweight OpenAI, local models) can take on later **without** entering the managed
 implementation → verification → Codex review → Gate 2 pipeline.
 
-Code: `apps/hub/src/support-jobs/`. This is the pure core only: **no model call, no DB, no HTTP
-route, no UI, no Git mutation.** Wiring a real executor, persistence and an API are later steps.
+Code: `apps/hub/src/support-jobs/` is the pure core: **no model call, no DB, no HTTP route, no UI, no
+Git mutation** (its isolation test enforces it). Persistence and the read-only API live beside it in
+`apps/hub/src/support-lane-api/` (see "Persistence and API"); a real executor is a later step.
 
 ## Contract
 
@@ -74,3 +75,30 @@ Pure and synchronous — no timers, no I/O, no polling loop; the caller starts t
 - Optional `max_per_repo` (int 1..16): caps RUNNING + launched jobs per repo (case-insensitive
   `repoKey`); the skipped slot goes to the next eligible job.
 - Input is never mutated; snapshots over 10 000 jobs throw.
+
+## Persistence and API
+
+`apps/hub/src/support-lane-api/` — still no executor, no model call, no Git, no managed task, no proposal and no
+Gate authority.
+
+- **Migration 011** (`packages/schema/migrations/011_support_jobs.sql`, hub-level; the workspace helper stays at
+  version 10): one `support_jobs` row per job, columns mirroring `SupportJob` plus `created_by`,
+  `idempotency_key`, `request_hash`, `updated_at`, `rev`. Triggers: a new row is QUEUED at rev 1; rows are never
+  deleted; a terminal job never changes; every update bumps `rev` by exactly 1; request columns are immutable;
+  status moves only along the state machine; a profile is set once, while QUEUED; cancellation is never withdrawn.
+- **Store** (`store.ts`): `create` (one immediate transaction: identity `sj-<uuid>`, `created_seq` = max + 1,
+  idempotent per `(created_by, idempotency_key)` over a canonical hash of the request — replay or
+  `idempotency_conflict`), `get`, `list` (newest first, keyset on `created_seq`, filters repository / status,
+  ≤ 100 per page), `cancel` and `transition` (one state-machine step under a `rev` compare-and-swap). Every row read
+  is re-validated with `parseSupportJob`; a row that does not validate is an integrity error, never a job.
+  `transition` (start / complete / fail / profile) is store-level only — no route exposes it.
+- **Routes** (`router.ts`), inside `/api/workspace` after the workspace guard (session; GET needs
+  `workspace:read`; every other method the exact Origin, CSRF and `workspace:decide`), before the workspace
+  router; every response is schema-validated and `no-store`:
+
+  | Route | Answer |
+  | --- | --- |
+  | `GET /support-jobs?repo_id&status&limit&cursor` | `SupportJobPage` (`total`, `has_more`, `next_cursor` bound to its scope — any other scope → 400) |
+  | `GET /support-jobs/:id` | `SupportJobView` (`job`, `rev`, `updated_at`) or 404 |
+  | `POST /support-jobs {idempotency_key, job}` | 201 created / 200 replay / 409 `idempotency_conflict`; 422 `repo_not_allowed` outside the managed allowlist |
+  | `POST /support-jobs/:id/cancel {expected_rev}` | cancellation intent; 409 `stale_binding` / `invalid_state` |
