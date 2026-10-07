@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { WorkerProfileList } from "@agent-city/schema";
 import { z } from "zod";
 
 const expandHome = (p: string) =>
@@ -120,6 +121,12 @@ export const ManagedConfig = z.strictObject({
 		})
 		.default({ enabled: false }),
 	limits: Limits.default(Limits.parse({})),
+	/**
+	 * Descriptive worker profiles (role / capability / model), see packages/schema worker-profiles.ts.
+	 * Optional with NO default: a config without it parses exactly as before (no key is added).
+	 * Nothing here builds an adapter or enables live execution — `live` alone decides that.
+	 */
+	worker_profiles: WorkerProfileList.optional(),
 });
 export type ManagedConfig = z.infer<typeof ManagedConfig>;
 
@@ -177,8 +184,17 @@ export const sha256Hex = (data: string | Uint8Array): string =>
  * entry (path, base ref, verification commands), every provider/capability setting, limits, git and
  * the output roots. Part of the approval binding: changing any of it after approval voids the
  * approval — for queued AND resumed stages. Other repos' entries are excluded on purpose.
+ *
+ * Worker profiles are part of it only when at least one ENABLED profile is configured: a disabled
+ * profile can never be resolved or selected (the registry fails closed on it), so it cannot change
+ * what an approved run may do — adding, editing or keeping one voids nothing. An absent or empty
+ * list, or one with only disabled profiles, hashes exactly like a config from before profiles
+ * existed, so existing approvals stay valid. Enabled profiles are hashed sorted by profile_id (ids
+ * are unique): reordering the file voids nothing, while any change to an enabled profile — and
+ * enabling or disabling one — does.
  */
 export function policyHash(cfg: ManagedConfig, repoId: string): string {
+	const profiles = (cfg.worker_profiles ?? []).filter((p) => p.enabled);
 	return sha256Hex(
 		canonicalJson({
 			repo: findRepo(cfg, repoId),
@@ -187,6 +203,13 @@ export function policyHash(cfg: ManagedConfig, repoId: string): string {
 			limits: cfg.limits,
 			workspace_root: cfg.workspace_root,
 			artifacts_root: cfg.artifacts_root,
+			...(profiles.length > 0
+				? {
+						worker_profiles: [...profiles].sort((a, b) =>
+							a.profile_id < b.profile_id ? -1 : 1,
+						),
+					}
+				: {}),
 		}),
 	);
 }

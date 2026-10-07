@@ -42,6 +42,82 @@ live:
   #   auth_status_pattern: null  # regex matching ONLY the ChatGPT-login output of `codex login status`;
   #                              # null = every live review is blocked (Codex has no JSON status)
 
+# Optional worker profiles: workers described by durable role + capability, not by one model.
+# DESCRIPTIVE ONLY — a profile never launches a model, never enables live execution (only `live`
+# above does) and holds no executable, credential or push/PR/deploy authority (unknown keys are
+# rejected). Omit the section entirely (or use []) and nothing changes, approvals included.
+#   role:             clerk | implementer | reviewer | decision
+#   capability_tier:  fast < standard < senior < principal; `specialist` is off that scale and is
+#                     matched only when asked for explicitly
+#   mutability:       read_only | worktree   (reviewer/decision: read_only; implementer: worktree)
+#   model:            required for claude/openai/codex/local (no default model); null for jev/fake
+#   latency_class:    low | medium | high       cost_class: none | low | medium | high
+#   enabled (default true), max_concurrency 1..16 (default 1), label (optional, display only)
+# Approval binding: ENABLED profiles are part of the policy hash, so changing, enabling or disabling one
+# voids approvals made under the old set; a disabled profile is never used and is not bound.
+# worker_profiles:
+#   - profile_id: fast-clerk
+#     provider: claude
+#     role: clerk
+#     capability_tier: fast
+#     model: haiku
+#     mutability: read_only
+#     latency_class: low
+#     cost_class: low
+#     max_concurrency: 4
+#     label: Fast clerk
+#   - profile_id: standard-engineer
+#     provider: claude
+#     role: implementer
+#     capability_tier: standard
+#     model: sonnet
+#     mutability: worktree
+#     latency_class: medium
+#     cost_class: medium
+#     max_concurrency: 2
+#   - profile_id: principal-engineer
+#     provider: claude
+#     role: implementer
+#     capability_tier: principal
+#     model: opus
+#     mutability: worktree
+#     latency_class: high
+#     cost_class: high
+#   - profile_id: openai-engineer
+#     provider: openai
+#     role: implementer
+#     capability_tier: standard
+#     model: your-openai-coding-model
+#     mutability: worktree
+#     latency_class: medium
+#     cost_class: medium
+#     enabled: false
+#   - profile_id: independent-reviewer
+#     provider: codex
+#     role: reviewer
+#     capability_tier: senior
+#     model: your-codex-review-model
+#     mutability: read_only
+#     latency_class: medium
+#     cost_class: medium
+#   - profile_id: decision-engine
+#     provider: jev
+#     role: decision
+#     capability_tier: specialist
+#     model: null
+#     mutability: read_only
+#     latency_class: low
+#     cost_class: none
+#   - profile_id: local-worker
+#     provider: local
+#     role: clerk
+#     capability_tier: fast
+#     model: your-local-model
+#     mutability: read_only
+#     latency_class: medium
+#     cost_class: none
+#     enabled: false
+
 # Optional limits (defaults shown).
 # limits:
 #   max_log_bytes: 262144
