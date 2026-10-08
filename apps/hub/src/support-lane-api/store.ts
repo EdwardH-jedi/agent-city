@@ -8,6 +8,7 @@ import {
 	hashCanonical,
 	hashesEqual,
 } from "@agent-city/schema/workspace-m1/hash";
+import { z } from "zod";
 import {
 	createSupportJob,
 	parseSupportJob,
@@ -106,10 +107,42 @@ const requestHash = (j: SupportJob): string =>
 		disabled: j.disabled,
 	});
 
+/**
+ * A stored flag column (`disabled`, `cancel_requested`): exactly 0 or 1. Anything else is corruption and throws —
+ * never coerced to a legitimate boolean, so damage cannot silently erase cancellation intent (SUPPORT-P2-01).
+ */
+export function decodeStoredFlag(value: unknown): boolean {
+	if (value === 0) return false;
+	if (value === 1) return true;
+	throw new TypeError("stored flag is not 0 or 1");
+}
+
+/**
+ * The column CHECK's `length()` bound, with SQLite's semantics: it counts characters (not UTF-16 units) BEFORE the first
+ * NUL — so a value holding a NUL can never be a well-formed one, whatever its JavaScript length.
+ */
+const chars = (min: number, max: number) =>
+	z.string().refine((s) => {
+		if (s.includes("\u0000")) return false;
+		const n = [...s].length;
+		return n >= min && n <= max;
+	});
+
+/**
+ * The row's lookup and CAS columns: `created_by` / `idempotency_key` held to their migration-011 column contract, `rev`
+ * / `updated_at` to the contract the API serves them under.
+ */
+const StoredMeta = z.strictObject({
+	created_by: chars(1, 200),
+	idempotency_key: chars(8, 128),
+	rev: z.int().min(1).max(Number.MAX_SAFE_INTEGER),
+	updated_at: z.iso.datetime(),
+});
+
 function toRecord(row: Row): SupportJobRecord {
-	let job: SupportJob | null = null;
+	let record: SupportJobRecord | null = null;
 	try {
-		job = parseSupportJob({
+		const job = parseSupportJob({
 			id: row.id,
 			repo_id: row.repo_id,
 			kind: row.kind,
@@ -120,17 +153,31 @@ function toRecord(row: Row): SupportJobRecord {
 			priority: row.priority,
 			created_seq: row.created_seq,
 			created_at: row.created_at,
-			disabled: row.disabled === 1,
-			cancel_requested: row.cancel_requested === 1,
+			disabled: decodeStoredFlag(row.disabled),
+			cancel_requested: decodeStoredFlag(row.cancel_requested),
 			profile_id: row.profile_id,
 			result: row.result === null ? null : JSON.parse(row.result),
 			failure: row.failure === null ? null : JSON.parse(row.failure),
 		});
+		const meta = StoredMeta.safeParse({
+			created_by: row.created_by,
+			idempotency_key: row.idempotency_key,
+			rev: row.rev,
+			updated_at: row.updated_at,
+		});
+		// the stored hash must be the hash of the request this row decodes to: a malformed hash, or any request column
+		// that drifted from it (e.g. a repo_id), is an inconsistent row — never served, replayed or written
+		if (job && meta.success && hashesEqual(row.request_hash, requestHash(job)))
+			record = {
+				job,
+				rev: meta.data.rev,
+				updated_at: meta.data.updated_at,
+			};
 	} catch {
-		job = null;
+		record = null;
 	}
-	if (!job) throw new SupportStoreIntegrityError(row.id);
-	return { job, rev: row.rev, updated_at: row.updated_at };
+	if (!record) throw new SupportStoreIntegrityError(row.id);
+	return record;
 }
 
 export interface SupportJobStore {
@@ -156,7 +203,23 @@ export interface SupportJobStore {
 	): SupportUpdateOutcome;
 }
 
-export function createSupportJobStore(db: Database): SupportJobStore {
+export interface SupportStoreOptions {
+	/**
+	 * Repository scope — the caller's CURRENT trusted allowlist (SUPPORT-P2-02). A job in any other repository is not
+	 * found for get / cancel / transition (checked on the stored repo before the row is decoded or its rev compared)
+	 * and absent from list (filtered in SQL, so totals and paging agree). It is never deleted: allowing the repository
+	 * again shows it again. Omitted / null = unrestricted (store-internal use; the API always passes its config).
+	 */
+	repos?: readonly string[] | null;
+}
+
+export function createSupportJobStore(
+	db: Database,
+	options: SupportStoreOptions = {},
+): SupportJobStore {
+	const scope = options.repos ? new Set(options.repos) : null;
+	const scopeJson = scope ? JSON.stringify([...scope]) : null;
+	const inScope = (repo_id: string) => scope === null || scope.has(repo_id);
 	const byId = db.query<Row, [string]>(
 		"SELECT * FROM support_jobs WHERE id = ?",
 	);
@@ -177,16 +240,18 @@ export function createSupportJobStore(db: Database): SupportJobStore {
 		   updated_at = ?, rev = rev + 1
 		 WHERE id = ? AND rev = ?`,
 	);
-	const FILTER = "(?1 IS NULL OR repo_id = ?1) AND (?2 IS NULL OR status = ?2)";
-	const countQ = db.query<{ n: number }, [string | null, string | null]>(
-		`SELECT count(*) AS n FROM support_jobs WHERE ${FILTER}`,
-	);
+	const FILTER = `(?1 IS NULL OR repo_id = ?1) AND (?2 IS NULL OR status = ?2)
+		AND (?3 IS NULL OR repo_id IN (SELECT value FROM json_each(?3)))`;
+	const countQ = db.query<
+		{ n: number },
+		[string | null, string | null, string | null]
+	>(`SELECT count(*) AS n FROM support_jobs WHERE ${FILTER}`);
 	const pageQ = db.query<
 		Row,
-		[string | null, string | null, number | null, number]
+		[string | null, string | null, string | null, number | null, number]
 	>(
-		`SELECT * FROM support_jobs WHERE ${FILTER} AND (?3 IS NULL OR created_seq < ?3)
-		 ORDER BY created_seq DESC LIMIT ?4`,
+		`SELECT * FROM support_jobs WHERE ${FILTER} AND (?4 IS NULL OR created_seq < ?4)
+		 ORDER BY created_seq DESC LIMIT ?5`,
 	);
 
 	const write = (
@@ -198,7 +263,9 @@ export function createSupportJobStore(db: Database): SupportJobStore {
 		db
 			.transaction((): SupportUpdateOutcome => {
 				const row = byId.get(id);
-				if (!row) return { ok: false, error: "not_found" };
+				// out of scope answers exactly like a missing id — before the rev compare (no 409 confirms it)
+				if (!row || !inScope(row.repo_id))
+					return { ok: false, error: "not_found" };
 				const current = toRecord(row);
 				if (current.rev !== expected_rev)
 					return { ok: false, error: "stale_binding" };
@@ -244,12 +311,25 @@ export function createSupportJobStore(db: Database): SupportJobStore {
 					if (!made.ok)
 						return { ok: false, error: "invalid_request", issues: made.issues };
 					const job = made.job;
+					// a scoped store never creates — or replays — a job outside its scope
+					if (!inScope(job.repo_id))
+						return {
+							ok: false,
+							error: "invalid_request",
+							issues: ["repo_id: outside the repository scope"],
+						};
 					const hash = requestHash(job);
 					const prior = byKey.get(created_by, idempotency_key);
-					if (prior)
-						return hashesEqual(prior.request_hash, hash)
-							? { ok: true, created: false, record: toRecord(prior) }
-							: { ok: false, error: "idempotency_conflict" };
+					if (prior) {
+						// decoded first: a damaged prior row is an integrity error, never a conflict or a replay
+						// (toRecord also proves the row decodes to the request its stored hash names)
+						const replay = toRecord(prior);
+						if (!hashesEqual(prior.request_hash, hash))
+							return { ok: false, error: "idempotency_conflict" };
+						if (!inScope(replay.job.repo_id))
+							throw new SupportStoreIntegrityError(prior.id);
+						return { ok: true, created: false, record: replay };
+					}
 					insert.run(
 						job.id,
 						job.created_seq,
@@ -278,14 +358,20 @@ export function createSupportJobStore(db: Database): SupportJobStore {
 		get(id) {
 			if (!SupportJobId.safeParse(id).success) return null;
 			const row = byId.get(id);
-			return row ? toRecord(row) : null;
+			return row && inScope(row.repo_id) ? toRecord(row) : null;
 		},
 
 		list({ repo_id, status, limit, before_seq }) {
 			return db
 				.transaction((): SupportListPage => {
-					const total = countQ.get(repo_id, status)?.n ?? 0;
-					const rows = pageQ.all(repo_id, status, before_seq, limit + 1);
+					const total = countQ.get(repo_id, status, scopeJson)?.n ?? 0;
+					const rows = pageQ.all(
+						repo_id,
+						status,
+						scopeJson,
+						before_seq,
+						limit + 1,
+					);
 					return {
 						records: rows.slice(0, limit).map(toRecord),
 						total,

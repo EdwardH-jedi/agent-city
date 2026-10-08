@@ -2,6 +2,7 @@
 // Support-lane persistence (migration 011, store) and the read-only support API behind the workspace guard (real
 // startHub composition). The API records and shows informational jobs only: nothing here may start one, create a
 // managed task / workspace task / approval request, launch a provider or touch Git.
+import type { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,7 +21,11 @@ import {
 	failSupportJob,
 	startSupportJob,
 } from "../support-jobs/state.ts";
-import { createSupportJobStore, SupportStoreIntegrityError } from "./store.ts";
+import {
+	createSupportJobStore,
+	decodeStoredFlag,
+	SupportStoreIntegrityError,
+} from "./store.ts";
 
 assertIsolation();
 afterAll(() => teardown());
@@ -603,5 +608,586 @@ describe("support API — behind the workspace guard, read-only, no authority", 
 		])
 			expect((await op.post(path, {})).status).toBe(404);
 		expect(H.providerSpawns()).toBe(0);
+	}, 60_000);
+});
+
+// ── SUPPORT-P2-01: a persisted flag is exactly 0 or 1; anything else is corruption, never a legitimate boolean ──
+
+/** Out-of-band damage the CHECK constraints would refuse; the triggers stay installed. */
+function corrupt(db: Database, sql: string, args: (string | number)[]) {
+	db.run("PRAGMA ignore_check_constraints = ON");
+	try {
+		db.run(sql, args);
+	} finally {
+		db.run("PRAGMA ignore_check_constraints = OFF");
+	}
+}
+const rawRow = (db: Database, id: string) =>
+	db
+		.query(
+			"SELECT status, disabled, cancel_requested, result, rev FROM support_jobs WHERE id = ?",
+		)
+		.get(id) as Record<string, unknown> | null;
+const SETTLE = (id: string) =>
+	({
+		artifact_id: `${id}.artifact`,
+		artifact_kind: "REPO_STATUS",
+		text_chars: 0,
+	}) as const;
+function withFileDb(fn: (path: string) => void | Promise<void>) {
+	const dir = mkdtempSync(join(tmpdir(), "agentcity-support-"));
+	const done = () => rmSync(dir, { recursive: true, force: true });
+	try {
+		const out = fn(join(dir, "hub.db"));
+		if (out instanceof Promise) return out.finally(done);
+		done();
+	} catch (err) {
+		done();
+		throw err;
+	}
+}
+function mkJob(
+	store: ReturnType<typeof createSupportJobStore>,
+	key: string,
+	s: number,
+	over: Record<string, unknown> = {},
+): string {
+	const r = store.create({
+		created_by: "op",
+		idempotency_key: key,
+		request: req(over),
+		now: at(s),
+	});
+	if (!r.ok) throw new Error("create");
+	return r.record.job.id;
+}
+const EVERYTHING = { repo_id: null, status: null, limit: 10, before_seq: null };
+
+describe("SUPPORT-P2-01 — a stored flag is 0 or 1; anything else fails closed", () => {
+	test("the shared decoder accepts only the canonical 0 / 1", () => {
+		expect(decodeStoredFlag(0)).toBe(false);
+		expect(decodeStoredFlag(1)).toBe(true);
+		for (const v of [
+			2,
+			-1,
+			0.5,
+			Number.NaN,
+			"0",
+			"1",
+			"true",
+			true,
+			false,
+			null,
+			undefined,
+			0n,
+			1n,
+			{},
+			[],
+		])
+			expect(() => decodeStoredFlag(v)).toThrow();
+	});
+
+	test("cancel_requested = 2 after a restart: get, list, cancel and every transition refuse; nothing settles COMPLETED", () =>
+		withFileDb((path) => {
+			const db1 = openDb(path);
+			const s1 = createSupportJobStore(db1);
+			const intact = mkJob(s1, "key-p201-ok00", 0);
+			const running = mkJob(s1, "key-p201-run0", 1);
+			expect(s1.transition(running, 1, startSupportJob, at(2)).ok).toBe(true);
+			expect(s1.cancel(running, 2, at(3)).ok).toBe(true); // rev 3, intent recorded
+			corrupt(
+				db1,
+				"UPDATE support_jobs SET cancel_requested = 2, rev = rev + 1 WHERE id = ?",
+				[running],
+			);
+			db1.close();
+			const db2 = openDb(path);
+			const s2 = createSupportJobStore(db2);
+			expect(() => s2.get(running)).toThrow(SupportStoreIntegrityError);
+			expect(() => s2.list(EVERYTHING)).toThrow(SupportStoreIntegrityError);
+			expect(() =>
+				s2.list({ ...EVERYTHING, repo_id: REPO, status: "RUNNING" }),
+			).toThrow(SupportStoreIntegrityError);
+			for (const step of [
+				(j: any) => completeSupportJob(j, SETTLE(j.id)),
+				(j: any) =>
+					failSupportJob(j, { classification: "EXECUTOR_ERROR", detail: "" }),
+				startSupportJob,
+			])
+				expect(() => s2.transition(running, 4, step, at(4))).toThrow(
+					SupportStoreIntegrityError,
+				);
+			expect(() => s2.cancel(running, 4, at(4))).toThrow(
+				SupportStoreIntegrityError,
+			);
+			// never rewritten as a legitimate job, never settled COMPLETED, the intent is not erased
+			expect(rawRow(db2, running)).toEqual({
+				status: "RUNNING",
+				disabled: 0,
+				cancel_requested: 2,
+				result: null,
+				rev: 4,
+			});
+			// an intact job beside it is still served
+			expect(s2.get(intact)?.job.status).toBe("QUEUED");
+			db2.close();
+		}));
+
+	test("disabled = 2 after a restart: get, list and every transition refuse; the row is untouched", () =>
+		withFileDb((path) => {
+			const db1 = openDb(path);
+			const s1 = createSupportJobStore(db1);
+			const source = mkJob(s1, "key-p201-src0", 0);
+			corrupt(
+				db1,
+				`INSERT INTO support_jobs SELECT 'sj-corrupt-disabled', 99, created_by, 'key-p201-dis0', request_hash,
+				   repo_id, kind, capability, inputs, brief, priority, 'QUEUED', 2, 0, NULL, NULL, NULL, created_at,
+				   updated_at, 1 FROM support_jobs WHERE id = ?`,
+				[source],
+			);
+			db1.close();
+			const db2 = openDb(path);
+			const s2 = createSupportJobStore(db2);
+			const id = "sj-corrupt-disabled";
+			expect(() => s2.get(id)).toThrow(SupportStoreIntegrityError);
+			expect(() => s2.list(EVERYTHING)).toThrow(SupportStoreIntegrityError);
+			for (const step of [
+				startSupportJob,
+				(j: any) => assignSupportProfile(j, "fast-clerk"),
+			])
+				expect(() => s2.transition(id, 1, step, at(1))).toThrow(
+					SupportStoreIntegrityError,
+				);
+			expect(() => s2.cancel(id, 1, at(1))).toThrow(SupportStoreIntegrityError);
+			expect(rawRow(db2, id)).toEqual({
+				status: "QUEUED",
+				disabled: 2,
+				cancel_requested: 0,
+				result: null,
+				rev: 1,
+			});
+			expect(s2.get(source)?.job.disabled).toBe(false);
+			db2.close();
+		}));
+
+	test("canonical 0 / 1 round-trip exactly; a cancelled job and a recorded cancel intent survive close / reopen and settle CANCELLED", () =>
+		withFileDb((path) => {
+			const db1 = openDb(path);
+			const s1 = createSupportJobStore(db1);
+			const off = mkJob(s1, "key-p201-off0", 0, { disabled: false });
+			const on = mkJob(s1, "key-p201-on00", 1, { disabled: true });
+			const cancelled = mkJob(s1, "key-p201-can0", 2);
+			const intent = mkJob(s1, "key-p201-int0", 3);
+			expect(s1.cancel(cancelled, 1, at(4)).ok).toBe(true);
+			expect(s1.transition(intent, 1, startSupportJob, at(5)).ok).toBe(true);
+			expect(s1.cancel(intent, 2, at(6)).ok).toBe(true);
+			db1.close();
+			const db2 = openDb(path);
+			const s2 = createSupportJobStore(db2);
+			expect(s2.get(off)?.job.disabled).toBe(false);
+			expect(s2.get(on)?.job.disabled).toBe(true);
+			expect(rawRow(db2, on)?.disabled).toBe(1);
+			expect(s2.get(cancelled)?.job).toMatchObject({
+				status: "CANCELLED",
+				cancel_requested: false,
+			});
+			expect(s2.get(intent)).toMatchObject({
+				rev: 3,
+				job: { status: "RUNNING", cancel_requested: true },
+			});
+			expect(rawRow(db2, intent)?.cancel_requested).toBe(1);
+			// the surviving intent wins over a completed output: the job ends CANCELLED, never COMPLETED
+			const settled = s2.transition(
+				intent,
+				3,
+				(j) => completeSupportJob(j, SETTLE(j.id)),
+				at(7),
+			);
+			expect(settled.ok && settled.record.job.status).toBe("CANCELLED");
+			expect(rawRow(db2, intent)).toMatchObject({
+				status: "CANCELLED",
+				result: null,
+			});
+			db2.close();
+		}));
+
+	test("HTTP after a restart: GET, list and cancel of a corrupted row answer the fixed 500; nothing is written", async () => {
+		const H = realHub();
+		const op = await H.signIn();
+		const made = await op.post("/support-jobs", {
+			idempotency_key: "p201-http-0001",
+			job: req({ repo_id: H.fx.repoId }),
+		});
+		expect(made.status).toBe(201);
+		const id = made.body.job.id as string;
+		const store = createSupportJobStore(H.db);
+		expect(store.transition(id, 1, startSupportJob, at(1)).ok).toBe(true);
+		expect(
+			(await op.post(`/support-jobs/${id}/cancel`, { expected_rev: 2 })).body
+				.job.cancel_requested,
+		).toBe(true);
+		corrupt(
+			H.db,
+			"UPDATE support_jobs SET cancel_requested = 2, rev = rev + 1 WHERE id = ?",
+			[id],
+		);
+		await H.stop();
+		const H2 = realHub({ reuse: H.fx });
+		const op2 = await H2.signIn();
+		const fixed = { error: "internal error" };
+		for (const r of [
+			await op2.get(`/support-jobs/${id}`),
+			await op2.get("/support-jobs"),
+			await op2.get("/support-jobs?status=RUNNING"),
+			await op2.post(`/support-jobs/${id}/cancel`, { expected_rev: 4 }),
+		]) {
+			expect(r.status).toBe(500);
+			expect(r.body).toEqual(fixed);
+		}
+		expect(rawRow(H2.db, id)).toEqual({
+			status: "RUNNING",
+			disabled: 0,
+			cancel_requested: 2,
+			result: null,
+			rev: 4,
+		});
+		await H2.stop();
+	}, 60_000);
+});
+
+// ── SUPPORT-P2-02: the CURRENT allowlist governs every support route, not the one a job was created under ──
+
+describe("SUPPORT-P2-02 — the current allowlist governs every support route", () => {
+	test("store scope: a job outside it is not found for get / cancel / transition (before the rev check) and absent from list", () => {
+		const OTHER = "local/other-fixture";
+		const db = openDb(":memory:");
+		const all = createSupportJobStore(db);
+		const a = mkJob(all, "key-p202-a000", 0);
+		const b = mkJob(all, "key-p202-b000", 1, { repo_id: OTHER });
+		const scoped = createSupportJobStore(db, { repos: [OTHER] });
+		expect(scoped.get(a)).toBeNull();
+		for (const rev of [1, 99])
+			expect(scoped.cancel(a, rev, at(2))).toEqual({
+				ok: false,
+				error: "not_found",
+			});
+		expect(scoped.transition(a, 1, startSupportJob, at(2))).toEqual({
+			ok: false,
+			error: "not_found",
+		});
+		const page = scoped.list(EVERYTHING);
+		expect(page.records.map((r) => r.job.id)).toEqual([b]);
+		expect(page.total).toBe(1);
+		expect(page.has_more).toBe(false);
+		expect(scoped.list({ ...EVERYTHING, repo_id: REPO }).total).toBe(0);
+		expect(scoped.get(b)?.job.repo_id).toBe(OTHER);
+		// an out-of-scope row is never decoded: damaged, it stays hidden (not served, not 500)
+		corrupt(
+			db,
+			"UPDATE support_jobs SET cancel_requested = 2, rev = rev + 1 WHERE id = ?",
+			[a],
+		);
+		expect(scoped.get(a)).toBeNull();
+		expect(scoped.list(EVERYTHING).total).toBe(1);
+		expect(scoped.cancel(a, 2, at(3))).toEqual({
+			ok: false,
+			error: "not_found",
+		});
+		// an empty scope hides everything; nothing was deleted
+		const none = createSupportJobStore(db, { repos: [] });
+		expect(none.get(b)).toBeNull();
+		expect(none.list(EVERYTHING).total).toBe(0);
+		expect(
+			(db.query("SELECT count(*) AS n FROM support_jobs").get() as any).n,
+		).toBe(2);
+		db.close();
+	});
+
+	test("repository removed (restart): create 422, GET / cancel 404 like an unknown id, absent from the global list, filtered list 422; other repositories unaffected; re-allowing restores read-only visibility", async () => {
+		const OTHER = "local/retained-fixture";
+		const H = realHub({
+			fixture: { extraRepos: [{ id: OTHER, label: "retained" }] },
+		});
+		const op = await H.signIn();
+		const mk = async (key: string, repo: string) => {
+			const r = await op.post("/support-jobs", {
+				idempotency_key: key,
+				job: req({ repo_id: repo }),
+			});
+			expect(r.status).toBe(201);
+			return r.body.job.id as string;
+		};
+		const gone = await mk("p202-gone-0001", H.fx.repoId);
+		const kept = await mk("p202-kept-0001", OTHER);
+		const AUTHORITY = [
+			"managed_tasks",
+			"workspace_tasks",
+			"managed_approval_requests",
+			"managed_runs",
+		];
+		const authority = (db: Database) =>
+			AUTHORITY.map(
+				(t) =>
+					(db.query(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n,
+			);
+		const before = authority(H.db);
+		await H.stop();
+		const without = (repo: string) => ({
+			...H.fx,
+			config: {
+				...H.fx.config,
+				repos: H.fx.config.repos.filter((r) => r.id !== repo),
+			},
+		});
+		const ids = (r: any) => r.body.items.map((x: any) => x.job.id);
+
+		const H2 = realHub({ reuse: without(H.fx.repoId) });
+		const op2 = await H2.signIn();
+		// A: create (and replay of the original key) for the removed repository
+		for (const key of ["p202-gone-0002", "p202-gone-0001"]) {
+			const r = await op2.post("/support-jobs", {
+				idempotency_key: key,
+				job: req({ repo_id: H.fx.repoId }),
+			});
+			expect(r.status).toBe(422);
+			expect(r.body.error).toBe("repo_not_allowed");
+		}
+		// B: GET answers exactly like an id that never existed
+		const unknown = "sj-00000000-0000-4000-8000-000000000000";
+		const missing = await op2.get(`/support-jobs/${unknown}`);
+		const hidden = await op2.get(`/support-jobs/${gone}`);
+		expect(missing.status).toBe(404);
+		expect(hidden.status).toBe(404);
+		expect(hidden.body).toEqual(missing.body);
+		// C: the global list (with or without a status filter) does not expose it
+		const list = await op2.get("/support-jobs");
+		expect(ids(list)).toEqual([kept]);
+		expect(list.body.page).toMatchObject({
+			total: 1,
+			returned: 1,
+			complete: true,
+		});
+		expect(ids(await op2.get("/support-jobs?status=QUEUED"))).toEqual([kept]);
+		// D: filtered list for the removed repository
+		const filtered = await op2.get(
+			`/support-jobs?repo_id=${encodeURIComponent(H.fx.repoId)}`,
+		);
+		expect(filtered.status).toBe(422);
+		expect(filtered.body.error).toBe("repo_not_allowed");
+		// E: cancel — current or stale revision — answers like an unknown id (no 409 confirms it exists)
+		const cancelMissing = await op2.post(`/support-jobs/${unknown}/cancel`, {
+			expected_rev: 1,
+		});
+		for (const rev of [1, 7]) {
+			const r = await op2.post(`/support-jobs/${gone}/cancel`, {
+				expected_rev: rev,
+			});
+			expect(r.status).toBe(404);
+			expect(r.body).toEqual(cancelMissing.body);
+		}
+		// F: there is no other mutation route
+		for (const action of ["start", "run", "complete", "fail"])
+			expect(
+				(await op2.post(`/support-jobs/${gone}/${action}`, {})).status,
+			).toBe(404);
+		// G: the job is still durably stored, unchanged
+		expect(rawRow(H2.db, gone)).toMatchObject({ status: "QUEUED", rev: 1 });
+		// other allowed repositories keep working
+		expect((await op2.get(`/support-jobs/${kept}`)).status).toBe(200);
+		const keptCancel = await op2.post(`/support-jobs/${kept}/cancel`, {
+			expected_rev: 1,
+		});
+		expect(keptCancel.status).toBe(200);
+		expect(keptCancel.body).toMatchObject({
+			rev: 2,
+			job: { status: "CANCELLED" },
+		});
+		await H2.stop();
+
+		// switching the allowlist the other way hides the other repository's jobs instead (no leak either way)
+		const H3 = realHub({ reuse: without(OTHER) });
+		const op3 = await H3.signIn();
+		expect((await op3.get(`/support-jobs/${kept}`)).status).toBe(404);
+		expect(
+			(await op3.post(`/support-jobs/${kept}/cancel`, { expected_rev: 2 }))
+				.status,
+		).toBe(404);
+		expect(ids(await op3.get("/support-jobs"))).toEqual([gone]);
+		expect(
+			(await op3.get(`/support-jobs?repo_id=${encodeURIComponent(OTHER)}`))
+				.status,
+		).toBe(422);
+		await H3.stop();
+
+		// H: re-allowing (the original config) restores read-only visibility, deterministically; nothing executed
+		for (let boot = 0; boot < 2; boot++) {
+			const H4 = realHub({ reuse: H.fx });
+			const op4 = await H4.signIn();
+			expect((await op4.get(`/support-jobs/${gone}`)).body).toMatchObject({
+				rev: 1,
+				job: { status: "QUEUED", repo_id: H.fx.repoId },
+			});
+			expect(ids(await op4.get("/support-jobs"))).toEqual([kept, gone]);
+			expect(authority(H4.db)).toEqual(before);
+			expect(H4.providerSpawns()).toBe(0);
+			await H4.stop();
+		}
+	}, 60_000);
+});
+
+// ── stored lookup columns and the request hash must agree with the decoded row (independent review, attempt 1) ──
+
+/** Rewrite one immutable column around the update trigger (restored right after), CHECKs ignored. */
+function tamper(db: Database, id: string, column: string, value: string) {
+	const trigger = (
+		db
+			.query(
+				"SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'support_jobs_update_rules'",
+			)
+			.get() as { sql: string }
+	).sql;
+	db.run("DROP TRIGGER support_jobs_update_rules");
+	try {
+		corrupt(db, `UPDATE support_jobs SET ${column} = ? WHERE id = ?`, [
+			value,
+			id,
+		]);
+	} finally {
+		db.run(trigger);
+	}
+}
+const fullRow = (db: Database, id: string) =>
+	db.query("SELECT * FROM support_jobs WHERE id = ?").get(id);
+
+describe("stored metadata — a malformed or inconsistent row fails closed on every path", () => {
+	test("store: a malformed request_hash / created_by / idempotency_key, or a request column that drifted from the hash, is an integrity error", () => {
+		const cases: [string, string][] = [
+			["request_hash", "x"],
+			["request_hash", "A".repeat(64)],
+			["created_by", ""],
+			["created_by", "o".repeat(201)],
+			// SQLite length() stops at the first NUL: SQL length 0 / 7, JS length 1 / 14 (independent review, attempt 2)
+			["created_by", "\u0000"],
+			["idempotency_key", "1234567\u0000suffix"],
+			["idempotency_key", "short"],
+			["repo_id", "local/other-fixture"],
+			["priority", "7"],
+		];
+		for (const [column, value] of cases) {
+			const { db, store } = fresh();
+			const id = mkJob(store, "key-meta-0000", 0);
+			const intact = mkJob(store, "key-meta-0001", 1);
+			tamper(db, id, column, value);
+			const before = fullRow(db, id);
+			expect(() => store.get(id)).toThrow(SupportStoreIntegrityError);
+			expect(() => store.list(EVERYTHING)).toThrow(SupportStoreIntegrityError);
+			expect(() => store.cancel(id, 1, at(2))).toThrow(
+				SupportStoreIntegrityError,
+			);
+			expect(() => store.transition(id, 1, startSupportJob, at(2))).toThrow(
+				SupportStoreIntegrityError,
+			);
+			expect(fullRow(db, id)).toEqual(before);
+			expect(store.get(intact)?.job.status).toBe("QUEUED");
+			db.close();
+		}
+	});
+
+	test("store: an idempotent replay never returns a row whose request drifted from its hash, nor one outside the scope", () => {
+		const OTHER = "local/other-fixture";
+		const { db, store } = fresh();
+		const id = mkJob(store, "key-meta-0002", 0);
+		tamper(db, id, "repo_id", OTHER);
+		const replay = () =>
+			store.create({
+				created_by: "op",
+				idempotency_key: "key-meta-0002",
+				request: req(),
+				now: at(1),
+			});
+		expect(replay).toThrow(SupportStoreIntegrityError);
+		// a malformed prior hash is an integrity error too — not an idempotency conflict
+		const hashed = mkJob(store, "key-meta-0004", 2);
+		tamper(db, hashed, "request_hash", "x");
+		expect(() =>
+			store.create({
+				created_by: "op",
+				idempotency_key: "key-meta-0004",
+				request: req(),
+				now: at(3),
+			}),
+		).toThrow(SupportStoreIntegrityError);
+		// a scoped store refuses a request outside its scope before it looks at any prior row
+		const scoped = createSupportJobStore(db, { repos: [OTHER] });
+		const out = scoped.create({
+			created_by: "op",
+			idempotency_key: "key-meta-0003",
+			request: req(),
+			now: at(1),
+		});
+		expect(out.ok).toBe(false);
+		expect(
+			(db.query("SELECT count(*) AS n FROM support_jobs").get() as any).n,
+		).toBe(2);
+		db.close();
+	});
+
+	test("HTTP after a restart: a malformed hash answers the fixed 500 on GET / list / cancel and nothing is written; a repo_id drifted to a removed repository stays hidden and its replay is the fixed 500, never the job", async () => {
+		const A = "local/still-allowed-fixture";
+		const B = "local/to-remove-fixture";
+		const H = realHub({
+			fixture: {
+				extraRepos: [
+					{ id: A, label: "allowed" },
+					{ id: B, label: "removed" },
+				],
+			},
+		});
+		const op = await H.signIn();
+		const hashBody = { idempotency_key: "meta-hash-0001", job: req() };
+		const driftBody = {
+			idempotency_key: "meta-drift-0001",
+			job: req({ repo_id: A }),
+		};
+		const hashed = (await op.post("/support-jobs", hashBody)).body.job
+			.id as string;
+		const drifted = (await op.post("/support-jobs", driftBody)).body.job
+			.id as string;
+		tamper(H.db, hashed, "request_hash", "x");
+		tamper(H.db, drifted, "repo_id", B);
+		const before = [fullRow(H.db, hashed), fullRow(H.db, drifted)];
+		await H.stop();
+		const H2 = realHub({
+			reuse: {
+				...H.fx,
+				config: {
+					...H.fx.config,
+					repos: H.fx.config.repos.filter((r) => r.id !== B),
+				},
+			},
+		});
+		const op2 = await H2.signIn();
+		const fixed = { error: "internal error" };
+		for (const r of [
+			await op2.get(`/support-jobs/${hashed}`),
+			await op2.get("/support-jobs"),
+			await op2.post(`/support-jobs/${hashed}/cancel`, { expected_rev: 1 }),
+			await op2.post("/support-jobs", hashBody),
+			await op2.post("/support-jobs", driftBody),
+		]) {
+			expect(r.status).toBe(500);
+			expect(r.body).toEqual(fixed);
+		}
+		expect((await op2.get(`/support-jobs/${drifted}`)).status).toBe(404);
+		expect(
+			(await op2.post(`/support-jobs/${drifted}/cancel`, { expected_rev: 1 }))
+				.status,
+		).toBe(404);
+		expect(
+			(await op2.get(`/support-jobs?repo_id=${encodeURIComponent(B)}`)).status,
+		).toBe(422);
+		expect([fullRow(H2.db, hashed), fullRow(H2.db, drifted)]).toEqual(before);
+		expect(H2.providerSpawns()).toBe(0);
+		await H2.stop();
 	}, 60_000);
 });

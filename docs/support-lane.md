@@ -90,8 +90,17 @@ Gate authority.
   idempotent per `(created_by, idempotency_key)` over a canonical hash of the request — replay or
   `idempotency_conflict`), `get`, `list` (newest first, keyset on `created_seq`, filters repository / status,
   ≤ 100 per page), `cancel` and `transition` (one state-machine step under a `rev` compare-and-swap). Every row read
-  is re-validated with `parseSupportJob`; a row that does not validate is an integrity error, never a job.
+  is re-validated with `parseSupportJob`; a row that does not validate is an integrity error, never a job. The flag
+  columns (`disabled`, `cancel_requested`) decode only from 0 / 1 (`decodeStoredFlag`) — any other stored value is
+  an integrity error, so damage can neither serve a job nor let a transition settle it. The lookup columns are held
+  to their column contract (SQLite `length()` semantics — a value holding a NUL is never well-formed), and the stored `request_hash` must equal the hash of the request the row decodes to — a
+  malformed hash or a request column that drifted from it is an integrity error on every path, including an
+  idempotent replay (which decodes the prior row before comparing).
   `transition` (start / complete / fail / profile) is store-level only — no route exposes it.
+- **Repository scope**: every route uses the CURRENT managed allowlist (a boot-time config snapshot), not the one a
+  job was created under. Outside it: create and a repo-filtered list → 422 `repo_not_allowed`; `GET` / cancel of a
+  job → 404 like an unknown id (checked before the `rev` compare); the unfiltered list leaves the job out. Rows are
+  never deleted — allowing the repository again shows them again (read-only).
 - **Routes** (`router.ts`), inside `/api/workspace` after the workspace guard (session; GET needs
   `workspace:read`; every other method the exact Origin, CSRF and `workspace:decide`), before the workspace
   router; every response is schema-validated and `no-store`:

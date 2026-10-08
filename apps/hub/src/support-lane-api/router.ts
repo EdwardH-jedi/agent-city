@@ -4,6 +4,12 @@
 // read-only informational jobs; none starts one, assigns a worker, touches Git, a managed task, a proposal or either
 // Gate. Every response is validated with its schema before it is sent and carries `cache-control: no-store`.
 //
+// Repository scope is the CURRENT trusted config (SUPPORT-P2-02) on every route, not the allowlist a job was created
+// under: create and a repo-filtered list for a repository outside it answer 422 `repo_not_allowed`; GET / cancel of a
+// job in such a repository answer 404 `not_found` exactly like an unknown id (no existence leak, checked before the
+// rev compare); the unfiltered list leaves such jobs out. The rows stay stored (allowing the repository again shows
+// them again — read-only; no route runs a job).
+//
 //   GET  /support-jobs?repo_id&status&limit&cursor → SupportJobPage (newest first, keyset-paged, ≤ 100)
 //   GET  /support-jobs/:id                         → SupportJobView
 //   POST /support-jobs        {idempotency_key, job} → SupportJobView, 201 | 200 replay | 409 idempotency_conflict
@@ -20,7 +26,7 @@ import {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
-import type { ManagedConfig } from "../managed/config.ts";
+import { findRepo, type ManagedConfig } from "../managed/config.ts";
 import { parseGuarded } from "../support-jobs/guards.ts";
 import {
 	SupportJob,
@@ -158,10 +164,13 @@ const view = (r: SupportJobRecord): SupportJobView => ({
 });
 
 export function createSupportJobRouter(deps: SupportRouterDeps): Hono {
-	const store = createSupportJobStore(deps.db);
+	// scoped to the current config: get / cancel / list never reach a job outside it
+	const store = createSupportJobStore(deps.db, {
+		repos: deps.config.repos.map((repo) => repo.id),
+	});
+	const allowed = (repo_id: string) => findRepo(deps.config, repo_id) !== null;
 	const now = () => (deps.clock ? deps.clock.now() : new Date());
 	const maxBody = deps.max_body_bytes ?? 64 * 1024;
-	const allowed = new Set(deps.config.repos.map((r) => r.id));
 	const r = new Hono();
 
 	const safely =
@@ -203,7 +212,7 @@ export function createSupportJobRouter(deps: SupportRouterDeps): Hono {
 			const q = ListQuery.safeParse(raw);
 			if (!q.success) return error("invalid_request");
 			const repo = q.data.repo_id ?? null;
-			if (repo !== null && !allowed.has(repo)) return error("repo_not_allowed");
+			if (repo !== null && !allowed(repo)) return error("repo_not_allowed");
 			const scope = {
 				v: 1 as const,
 				feed: "support" as const,
@@ -263,7 +272,7 @@ export function createSupportJobRouter(deps: SupportRouterDeps): Hono {
 			// the request's normalized repository must be on the trusted allowlist (as for workspace tasks)
 			const request = parseGuarded(SupportJobRequest, parsed.data.job);
 			if (!request.ok) return error("invalid_request", request.issues);
-			if (!allowed.has(request.data.repo_id)) return error("repo_not_allowed");
+			if (!allowed(request.data.repo_id)) return error("repo_not_allowed");
 			const out = store.create({
 				created_by: v.principal.operator_id,
 				idempotency_key: parsed.data.idempotency_key,
