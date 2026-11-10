@@ -16,6 +16,7 @@
 		"format": "biome format --write .",
 		"sync:github": "bun apps/hub/src/github/sync.ts",
 		"db:reset": "bun apps/hub/src/db-reset.ts",
+		"db:backup": "bun apps/hub/src/db-backup.ts",
 		"districts:draft": "bun apps/hub/src/github/districts-draft.ts",
 		"collector:codex": "bun --no-env-file apps/collector/src/codex-tail.ts",
 		"collector:hooks": "bun --no-env-file apps/collector/src/install-hooks.ts",

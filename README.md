@@ -183,6 +183,7 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `typecheck`                   | `tsc --noEmit` for schema, hub, collector and web.                               |
 | `sync:github`                 | One GitHub sync + summary (repos, private/archived/fork, CI, local mapping, rate). |
 | `db:reset`                    | Stop the hub first. Moves `DB_PATH` (+ `-wal`/`-shm`) to `<db>.bak.<UTC stamp>` and creates an empty, migrated DB. `--db <path>` overrides. |
+| `db:backup`                   | Hub may keep running. Consistent dated copy of `DB_PATH` into `<data dir>/backups/`; `--keep N` prunes. See [Backing up the database](#backing-up-the-database). |
 | `districts:draft`             | Writes `config/districts.draft.yaml` (all repos by district; gitignored).        |
 | `collector:hooks`             | Print-only merge of the Claude hook into `~/.claude/settings.json`.              |
 | `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s).                     |
@@ -269,6 +270,27 @@ re-pointed to the GitHub row at ingest and after every sync.
 Districts: edit `config/districts.yaml` (`district: [owner/name | name, …]`, case-insensitive; unlisted
 → `uncategorized`). `bun run districts:draft` gives a starting point.
 
+## Backing up the database
+
+```sh
+bun run db:backup              # → data/backups/agentcity-YYYYMMDD-HHMMSS.db (UTC)
+bun run db:backup --keep 14    # same, then delete all but the 14 newest backups of this DB
+```
+
+- Safe while the hub runs: the copy is a SQLite `VACUUM INTO` snapshot (committed rows only), not a
+  file copy. It is written as `….tmp`, checked (`integrity_check`, same schema version) and only then
+  given its final name; an existing backup is never overwritten. Run it before every upgrade.
+- The DB is `--db <path>` | `DB_PATH` | `./data/agentcity.db`; backups go to `backups/` next to it
+  (created `0700`, files `0600`). `--dir <name>` picks another subdirectory of that data dir; a
+  directory (or symlink) that resolves outside the data dir is refused.
+- `--keep N` (1–365) only counts and deletes files named exactly `<db name>-YYYYMMDD-HHMMSS.db`;
+  anything else in the folder (notes, other `.db` files, a leftover `.tmp`) is left alone. A prune
+  failure is reported but does not fail the backup.
+- **Restore:** stop the hub, copy a backup over the DB file (remove a stale `-wal` / `-shm` next to
+  it first), start the hub.
+- A backup holds the same data as the DB, so protect the data dir like the DB itself. It sits on the
+  same disk — not a substitute for off-machine copies.
+
 ## Collectors on forge / spine
 
 Each machine runs its own collectors from its own checkout of this repo; only the hub is shared.
@@ -301,7 +323,7 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   reporting (see Roadmap).
 - Before binding to a LAN/Tailscale address instead of a tunnel: add a configurable Host allowlist
   (today only loopback + `HUB_HOST` pass), put TLS in front, and require auth on `/api` and `/ws`.
-- Back up `data/agentcity.db` (SQLite `.backup`) nightly.
+- Back up the DB nightly with `bun run db:backup --keep N` (and copy `data/backups/` off the machine).
 
 ## Security model
 

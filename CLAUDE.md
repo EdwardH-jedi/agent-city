@@ -56,6 +56,7 @@ bun run format           # biome format --write .
 bun run sync:github      # GitHub → repos (+ CI, local checkouts); prints a summary
 bun run districts:draft  # config/districts.draft.yaml (gitignored; never overwrites districts.yaml)
 bun run db:reset         # hub stopped: DB (+ -wal/-shm) → <db>.bak.<UTC stamp>, fresh migrated DB
+bun run db:backup        # hub may run: consistent copy → <data dir>/backups/<db>-YYYYMMDD-HHMMSS.db; --keep N prunes
 bun run collector:hooks  # print-only merge of the Claude hook into ~/.claude/settings.json
 bun run collector:codex  # resident Codex log tailer
 bun run collector:heartbeat # resident machine heartbeat → hub (cockpit / forge / spine online · stale · offline)
