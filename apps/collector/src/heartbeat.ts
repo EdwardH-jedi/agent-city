@@ -10,6 +10,7 @@ import {
 	HEARTBEAT_INTERVAL_S,
 	type Heartbeat,
 	MachineRole,
+	redact,
 	safeText,
 } from "@agent-city/schema";
 import { type CollectorConfig, loadConfig } from "./config.ts";
@@ -24,6 +25,18 @@ export function heartbeatConfigError(cfg: CollectorConfig): string | null {
 	}
 	if (!cfg.ingestToken) return "INGEST_TOKEN is not set (see .env.example)";
 	return null;
+}
+
+/**
+ * What the startup log may say about HUB_URL: the origin only (no user:password, no path), passed
+ * through redact() because even a host name can be token-shaped.
+ */
+export function hubLabel(hubUrl: string): string {
+	try {
+		return redact(new URL(hubUrl).origin);
+	} catch {
+		return "(HUB_URL is not a valid URL)";
+	}
 }
 
 export interface SenderOptions {
@@ -132,16 +145,8 @@ if (import.meta.main) {
 	for (const sig of ["SIGINT", "SIGTERM"] as const) {
 		process.on(sig, () => stop.abort());
 	}
-	// Origin only: HUB_URL could carry credentials or a path, and the log must stay free of both.
-	const hub = (() => {
-		try {
-			return new URL(cfg.hubUrl).origin;
-		} catch {
-			return "(HUB_URL is not a valid URL)";
-		}
-	})();
 	console.log(
-		`heartbeat: machine=${cfg.machine} hub=${hub} every ${HEARTBEAT_INTERVAL_S}s`,
+		`heartbeat: machine=${cfg.machine} hub=${hubLabel(cfg.hubUrl)} every ${HEARTBEAT_INTERVAL_S}s`,
 	);
 	let last: boolean | null = null;
 	await runHeartbeatLoop({
@@ -152,7 +157,7 @@ if (import.meta.main) {
 		onResult: (ok) => {
 			if (ok !== last) {
 				console.log(
-					`heartbeat: ${ok ? "hub accepted the beat" : "hub unreachable or refused; dropping beats until it recovers"}`,
+					`heartbeat: ${ok ? "hub reachable" : "hub unreachable or refused; dropping beats until it recovers"}`,
 				);
 				last = ok;
 			}

@@ -4,6 +4,7 @@ import type { CollectorConfig } from "./config.ts";
 import {
 	createSender,
 	heartbeatConfigError,
+	hubLabel,
 	runHeartbeatLoop,
 } from "./heartbeat.ts";
 
@@ -33,6 +34,23 @@ describe("heartbeatConfigError", () => {
 		const msg = heartbeatConfigError(cfg({ machine: "laptop" }));
 		expect(msg).toContain("AGENTCITY_MACHINE");
 		expect(msg).not.toContain("test-ingest-token");
+	});
+});
+
+describe("hubLabel", () => {
+	test("prints the origin only: no user:password, no path, no query", () => {
+		const label = hubLabel(
+			"http://user:pw@127.0.0.1:4317/secret/path?token=abc",
+		);
+		expect(label).toBe("http://127.0.0.1:4317");
+	});
+	test("a token-shaped host name is redacted", () => {
+		const secret = `sk-ant-${"a".repeat(40)}`;
+		expect(hubLabel(`https://${secret}.example`)).not.toContain(secret);
+	});
+	test("an invalid URL gives a fixed message, never the input", () => {
+		const fake = `sk-ant-${"b".repeat(20)}`; // built at runtime: fixtures never hold key-shaped literals
+		expect(hubLabel(`not a url ${fake}`)).toBe("(HUB_URL is not a valid URL)");
 	});
 });
 
