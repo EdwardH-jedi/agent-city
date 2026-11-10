@@ -123,6 +123,32 @@ documentation parity. These checks do not by themselves prove a live
 multi-machine deployment or provider session compatibility. `main` currently
 has no GitHub Actions workflow; run the checks locally for the change under review.
 
+## Running the tests on Windows
+
+The Claude hook launcher (`apps/collector/bin/claude-hook`) is a POSIX `sh` script, so the
+collector tests that drive it, or that need `mkfifo`, cannot run on Windows. They use
+`posixOnly` (`test.skipIf(process.platform === "win32")`, in `apps/collector/src/posix-only.ts`)
+and show up as **skipped** on Windows, with the reason in a `// POSIX-only:` comment above each.
+On macOS / Linux they run as before.
+
+| Test file | Test | Reason | Status |
+| --- | --- | --- | --- |
+| `apps/collector/src/claude-hook.test.ts` | bin/claude-hook → hub receives a whitelisted event with the bearer token | spawns the `#!/bin/sh` launcher | skipped on Windows |
+| `apps/collector/src/claude-hook.test.ts` | hub unreachable → event lands in the spool, exit 0 | spawns the `#!/bin/sh` launcher | skipped on Windows |
+| `apps/collector/src/audit.test.ts` | FIFO .git/config, symlinked .git, oversized HEAD → no block, no git info from them | `mkfifo` + unprivileged directory symlink (the oversized-HEAD check is skipped with it) | skipped on Windows |
+| `apps/collector/src/audit.test.ts` | launcher kills a stalled hook: fifo-config and 900K command exit 0 under 700ms | `sh` launcher (`sleep` + `kill -9`) and `mkfifo` | skipped on Windows |
+| `apps/collector/src/audit.test.ts` | even a synchronously stuck process is killed by the launcher (<700ms) | `sh` launcher + fake `#!/bin/sh` bun made executable by mode bits | skipped on Windows |
+| `apps/collector/src/audit.test.ts` | stdin held open + hub hanging: exit 0 under 700ms and the event is spooled | `sh` launcher's SIGKILL deadline | skipped on Windows |
+| `apps/collector/src/claude-hook.test.ts` | (file-level `HOOK` / `BIN` paths) | built as `${import.meta.dir}/…`; now `node:path` `join` | fixed (unconfirmed) |
+| `apps/collector/src/audit.test.ts` | (file-level `BIN` path) | built as `${import.meta.dir}/…`; now `node:path` `join` | fixed (unconfirmed) |
+
+This list was derived by reading the code on macOS; the Windows run has not been repeated. The
+earlier Windows run reported 8 collector failures. The 6 skips above are certain from the code.
+The 2 path-separator failures could not be pinned down by reading: the only hard-coded `/` path
+builds in the collector tests are the `HOOK` / `BIN` constants (fixed above), and the `gitInfo`
+worktree test passes when its path steps are replayed with `path.win32`. Re-run `bun test` on
+Windows to confirm.
+
 ## Environment
 
 **Tokens go into `.env` by hand.** `.env` is gitignored; never commit it and don't paste tokens into
