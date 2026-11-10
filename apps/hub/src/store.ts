@@ -7,6 +7,7 @@ import {
 	endsAgent,
 	type Heartbeat,
 	type IngestEvent,
+	type MachineLiveness,
 	MachineRole,
 	type MachineView,
 	machineStatus,
@@ -15,6 +16,10 @@ import {
 	nextStatus,
 	normalizeRepoId,
 	type Repo,
+	type RunEventView,
+	type RunsPayload,
+	type RunView,
+	runStateAt,
 	type Session,
 	type SessionStatus,
 	STALE_AFTER_MS,
@@ -539,4 +544,232 @@ export function listMachines(db: Database, now: Date): MachineView[] {
 	return MachineRole.options.map((role) =>
 		toMachineView(role, byId.get(role), now),
 	);
+}
+
+// ── Office run projection ─────────────────────────────────────────────────────────────────
+// Stored exactly as reported (never re-interpreted). The only thing City adds is its own receive time
+// and, from that and the machine heartbeat, whether the snapshot has gone stale (runStateAt).
+
+interface RunRow {
+	machine_id: MachineRole;
+	run_id: string;
+	project: string | null;
+	workflow_id: string;
+	phase: string;
+	status: string;
+	reason: string | null;
+	alert: string | null;
+	last_progress_at: string | null;
+	idle_seconds: number | null;
+	completed: string;
+	tokens_today: number | null;
+	usage_unknown: number;
+	evidence_verified: number;
+	last_event_sequence: number | null;
+	ledger_revision: number;
+	observed_at: string;
+	received_at: string;
+}
+
+const toRunView = (
+	r: RunRow,
+	machine: MachineLiveness,
+	now: Date,
+): RunView => ({
+	machine_id: r.machine_id,
+	run_id: r.run_id,
+	project: r.project,
+	workflow_id: r.workflow_id,
+	phase: r.phase,
+	status: r.status,
+	reason: r.reason,
+	alert: r.alert,
+	last_progress_at: r.last_progress_at,
+	idle_seconds: r.idle_seconds,
+	completed: JSON.parse(r.completed) as string[],
+	tokens_today: r.tokens_today,
+	usage_unknown: r.usage_unknown === 1,
+	evidence_verified: r.evidence_verified === 1,
+	last_event_sequence: r.last_event_sequence,
+	ledger_revision: r.ledger_revision,
+	reported_at: r.received_at,
+	...runStateAt(
+		{
+			status: r.status,
+			reason: r.reason,
+			alert: r.alert,
+			evidence_verified: r.evidence_verified === 1,
+		},
+		r.received_at,
+		machine,
+		now,
+	),
+});
+
+export interface RunsResult {
+	/** Runs whose stored state was replaced by this report. */
+	applied: number;
+	/** Runs skipped because the report was older than what is stored. */
+	ignored: number;
+	/** Views of the applied runs, to broadcast after the commit. */
+	views: RunView[];
+}
+
+/**
+ * Store one run report. Order: a higher `ledger_revision` wins, then a higher `last_event_sequence`;
+ * on a tie the report with the same-or-newer `observed_at` wins (an idle alert appears without any
+ * new ledger event). An older report changes nothing, not even the receive time. Events are
+ * unique by (machine, run, sequence), so a resend is harmless.
+ */
+export function upsertRuns(
+	db: Database,
+	payload: RunsPayload,
+	now: Date,
+): RunsResult {
+	const at = now.toISOString();
+	const apply = db.transaction(() => {
+		db.query(
+			`INSERT INTO machines (id, hostname, role) VALUES ($id, NULL, $id)
+			 ON CONFLICT(id) DO NOTHING`,
+		).run({ id: payload.machine_id });
+		const keys: string[] = [];
+		let ignored = 0;
+		for (const run of payload.runs) {
+			const seq = run.last_event_sequence ?? -1;
+			const prev = db
+				.query<
+					{
+						ledger_revision: number;
+						last_event_sequence: number | null;
+						observed_at: string;
+					},
+					{ m: string; r: string }
+				>(
+					"SELECT ledger_revision, last_event_sequence, observed_at FROM runs WHERE machine_id = $m AND run_id = $r",
+				)
+				.get({ m: payload.machine_id, r: run.run_id });
+			if (prev) {
+				const order =
+					payload.ledger_revision !== prev.ledger_revision
+						? payload.ledger_revision - prev.ledger_revision
+						: seq - (prev.last_event_sequence ?? -1);
+				const older =
+					order < 0 ||
+					(order === 0 &&
+						Date.parse(payload.observed_at) < Date.parse(prev.observed_at));
+				if (older) {
+					ignored++;
+					continue;
+				}
+			}
+			db.query(
+				`INSERT INTO runs (machine_id, run_id, project, workflow_id, phase, status, reason, alert,
+				   last_progress_at, idle_seconds, completed, tokens_today, usage_unknown, evidence_verified,
+				   last_event_sequence, ledger_revision, observed_at, received_at)
+				 VALUES ($machine_id, $run_id, $project, $workflow_id, $phase, $status, $reason, $alert,
+				   $last_progress_at, $idle_seconds, $completed, $tokens_today, $usage_unknown, $evidence_verified,
+				   $last_event_sequence, $ledger_revision, $observed_at, $received_at)
+				 ON CONFLICT(machine_id, run_id) DO UPDATE SET
+				   project = excluded.project, workflow_id = excluded.workflow_id, phase = excluded.phase,
+				   status = excluded.status, reason = excluded.reason, alert = excluded.alert,
+				   last_progress_at = excluded.last_progress_at, idle_seconds = excluded.idle_seconds,
+				   completed = excluded.completed, tokens_today = excluded.tokens_today,
+				   usage_unknown = excluded.usage_unknown, evidence_verified = excluded.evidence_verified,
+				   last_event_sequence = excluded.last_event_sequence, ledger_revision = excluded.ledger_revision,
+				   observed_at = excluded.observed_at, received_at = excluded.received_at`,
+			).run({
+				machine_id: payload.machine_id,
+				run_id: run.run_id,
+				project: run.project,
+				workflow_id: run.workflow_id,
+				phase: run.phase,
+				status: run.status,
+				reason: run.reason,
+				alert: run.alert,
+				last_progress_at: run.last_progress_at,
+				idle_seconds: run.idle_seconds,
+				completed: JSON.stringify(run.completed),
+				tokens_today: run.tokens_today,
+				usage_unknown: run.usage_unknown ? 1 : 0,
+				evidence_verified: run.evidence_verified ? 1 : 0,
+				last_event_sequence: run.last_event_sequence,
+				ledger_revision: payload.ledger_revision,
+				observed_at: payload.observed_at,
+				received_at: at,
+			});
+			for (const e of run.events) {
+				db.query(
+					`INSERT OR IGNORE INTO run_events (machine_id, run_id, sequence, transition, occurred_at, task_id,
+					   attempt, outcome, reason, review_verdict, commit_sha, base_commit, diff_digest, tree_digest,
+					   test_run_key, model, from_model, to_model)
+					 VALUES ($machine_id, $run_id, $sequence, $transition, $occurred_at, $task_id,
+					   $attempt, $outcome, $reason, $review_verdict, $commit_sha, $base_commit, $diff_digest, $tree_digest,
+					   $test_run_key, $model, $from_model, $to_model)`,
+				).run({
+					machine_id: payload.machine_id,
+					run_id: run.run_id,
+					sequence: e.sequence,
+					transition: e.transition,
+					occurred_at: e.occurred_at ?? null,
+					task_id: e.task_id ?? null,
+					attempt: e.attempt ?? null,
+					outcome: e.outcome ?? null,
+					reason: e.reason ?? null,
+					review_verdict: e.review_verdict ?? null,
+					commit_sha: e.commit ?? null,
+					base_commit: e.base_commit ?? null,
+					diff_digest: e.diff_digest ?? null,
+					tree_digest: e.tree_digest ?? null,
+					test_run_key: e.test_run_key ?? null,
+					model: e.model ?? null,
+					from_model: e.from_model ?? null,
+					to_model: e.to_model ?? null,
+				});
+			}
+			keys.push(run.run_id);
+		}
+		return { keys, ignored };
+	});
+	const { keys, ignored } = apply();
+	const machine = listMachines(db, now).find(
+		(m) => m.id === payload.machine_id,
+	);
+	const views = keys.flatMap((id) => {
+		const row = db
+			.query<RunRow, { m: string; r: string }>(
+				"SELECT * FROM runs WHERE machine_id = $m AND run_id = $r",
+			)
+			.get({ m: payload.machine_id, r: id });
+		return row ? [toRunView(row, machine?.status ?? "unobserved", now)] : [];
+	});
+	return { applied: keys.length, ignored, views };
+}
+
+/** Newest report first. The status shown depends on the hub clock and the machine's heartbeat. */
+export function listRuns(db: Database, now: Date, limit = 200): RunView[] {
+	const machines = new Map(listMachines(db, now).map((m) => [m.id, m.status]));
+	return db
+		.query<RunRow, { limit: number }>(
+			"SELECT * FROM runs ORDER BY received_at DESC, run_id LIMIT $limit",
+		)
+		.all({ limit })
+		.map((r) => toRunView(r, machines.get(r.machine_id) ?? "unobserved", now));
+}
+
+/** Recent events of one run, newest first. */
+export function listRunEvents(
+	db: Database,
+	machine: string,
+	runId: string,
+	limit = 200,
+): RunEventView[] {
+	return db
+		.query<
+			Omit<RunEventView, "commit"> & { commit_sha: string | null },
+			{ m: string; r: string; limit: number }
+		>(
+			"SELECT * FROM run_events WHERE machine_id = $m AND run_id = $r ORDER BY sequence DESC LIMIT $limit",
+		)
+		.all({ m: machine, r: runId, limit })
+		.map(({ commit_sha, ...rest }) => ({ ...rest, commit: commit_sha }));
 }

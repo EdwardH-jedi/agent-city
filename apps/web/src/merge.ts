@@ -3,6 +3,8 @@ import {
 	type Event,
 	type MachineView,
 	machineStatus,
+	type RunView,
+	runStateAt,
 	type Session,
 	type SessionStatus,
 } from "@agent-city/schema";
@@ -48,6 +50,7 @@ export type HubMessage =
 	| { kind: "session"; data: Session }
 	| { kind: "repo"; data: unknown }
 	| { kind: "machine"; data: MachineView }
+	| { kind: "run"; data: RunView }
 	| { kind: "invalidate"; scope: Scope[] };
 
 /** Parse one /ws frame; unknown or malformed frames → null. */
@@ -68,7 +71,8 @@ export function parseHubMessage(raw: string): HubMessage | null {
 		m?.kind === "event" ||
 		m?.kind === "session" ||
 		m?.kind === "repo" ||
-		m?.kind === "machine"
+		m?.kind === "machine" ||
+		m?.kind === "run"
 	)
 		return m as HubMessage;
 	return null;
@@ -108,6 +112,56 @@ export function machinesAt(
 	return machines.map((m) => ({
 		...m,
 		status: machineStatus(m.heartbeat_at, at),
+	}));
+}
+
+const runKey = (r: Pick<RunView, "machine_id" | "run_id">) =>
+	`${r.machine_id}/${r.run_id}`;
+
+/** Position of a report in the cockpit's ledger, then the hub receive time as the final tie-break. */
+const newerRun = (a: RunView, b: RunView): boolean =>
+	a.ledger_revision !== b.ledger_revision
+		? a.ledger_revision > b.ledger_revision
+		: (a.last_event_sequence ?? -1) !== (b.last_event_sequence ?? -1)
+			? (a.last_event_sequence ?? -1) > (b.last_event_sequence ?? -1)
+			: a.reported_at >= b.reported_at;
+
+/**
+ * Upsert reported runs by (machine, run). The same order the hub uses: a snapshot that raced a live
+ * message, or a replay of an older report, never replaces a newer one.
+ */
+export function mergeRuns(
+	current: readonly RunView[],
+	incoming: readonly RunView[],
+): RunView[] {
+	const byKey = new Map(current.map((r) => [runKey(r), r]));
+	for (const r of incoming) {
+		const prev = byKey.get(runKey(r));
+		if (!prev || newerRun(r, prev)) byKey.set(runKey(r), r);
+	}
+	return [...byKey.values()];
+}
+
+/**
+ * Re-derive each run's display from this screen's clock and the cockpit's current machine state, so a
+ * report that stops arriving turns `snapshot_stale` ("last report: running (N min ago)") with no
+ * message, and a run on an offline cockpit never looks alive.
+ */
+export function runsAt(
+	runs: readonly RunView[],
+	machines: readonly MachineView[],
+	now: number,
+): RunView[] {
+	const at = new Date(now);
+	const status = new Map(machines.map((m) => [m.id, m.status]));
+	return runs.map((r) => ({
+		...r,
+		...runStateAt(
+			r,
+			r.reported_at,
+			status.get(r.machine_id) ?? "unobserved",
+			at,
+		),
 	}));
 }
 

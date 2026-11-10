@@ -117,6 +117,7 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `HUB_ALLOWED_ORIGINS`      | hub            | Extra exact browser origins for CORS and `/ws`. Loopback origins are always allowed.     |
 | `DB_PATH`                  | hub            | SQLite file (default `./data/agentcity.db`, gitignored).                                 |
 | `INGEST_TOKEN`             | hub, collector | Shared secret for `POST /ingest`. Unset on the hub → ingest disabled (503).              |
+| `OFFICE_PROJECTION_TOKEN`  | hub            | Separate secret for `POST /ingest/runs`, held only by the cockpit. Unset or equal to `INGEST_TOKEN` → disabled (503). |
 | `HUB_URL`                  | collector, web | Where collectors POST and the Vite proxy points.                                         |
 | `AGENTCITY_MACHINE`        | collector, hub | `cockpit` \| `forge` \| `spine`.                                                         |
 | `AGENTCITY_HOME`           | collector      | Spool / offsets / debug log dir (default `~/.agentcity`).                                |
@@ -191,6 +192,32 @@ boot is taken as a restart (a sender needs the ingest token either way); while `
 strip keeps ageing its last snapshot toward `offline` even if the hub still receives beats; after
 `db:reset` reload the page, because a fresh `unobserved` row never overwrites a machine already seen.
 
+**Runs (Agent Office → City, read-only).** The cockpit's Agent Office exporter pushes a picture of its
+runs to `POST /ingest/runs` every 30 s; the *Runs* and *Needs owner* sections show them, each with
+"`<machine>` report · N s ago". City **stores and shows what it was told**; it never approves, launches
+or retries anything (there is no such route or control, and a test fails if one appears). Office's
+values are kept verbatim; the only thing City adds is the receive time and `snapshot_stale`:
+
+| Shown                   | When (decided by Office unless noted)                                            |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `running`               | `RUNNING`, no alert                                                              |
+| `no progress suspected` | alert `STALE_OR_IDLE` — an alert, **not** a failure                              |
+| `needs reconcile`       | alert `FAILED_PROCESS_RECONCILE` or `MISSION_RECONCILIATION_REQUIRED`            |
+| `waiting for owner`     | `READY` with `AWAITING_PLAN_APPROVAL`, `AWAITING_OWNER_INTEGRATION`, `DRAFT_REQUIRES_OWNER_COMMIT` or `PLAN_APPROVED` |
+| `hold` + reason         | `HOLD`                                                                           |
+| `passed` / `partial`    | `PASS` / `PARTIAL`                                                               |
+| `unverified`            | evidence not verified — wins over everything                                     |
+| `unknown`               | a combination not in this table (never guessed)                                  |
+| `snapshot stale` (City) | no report for 90 s (three missed sends) **or** the cockpit machine is `offline`; shown as "last report: running (N min ago)". A finished run stays as reported. |
+
+`POST /ingest/runs` takes `Bearer $OFFICE_PROJECTION_TOKEN` (not the collector `INGEST_TOKEN`: that one
+is refused with 401), a strict snake_case JSON body of at most 256 KiB, and only from `machine_id:
+"cockpit"` (any other machine → 403). Every string is a short code from a closed character set, so a
+goal text, an absolute path, a session key or a token-shaped value has no field and is a 400 (the body
+is never echoed). Reports are ordered by `(ledger_revision, last_event_sequence)`, then by `observed_at`
+on a tie; an older report is ignored and a resend is harmless. Not implemented yet: `commit_on_remote`
+(joining a passed run to the GitHub sync).
+
 **Ids.** Sessions are `claude:<session_id>` / `codex:<session_id>`; the main agent shares the session
 id; a subagent is `<session id>/sub:<tool_use_id>` (one function set in `packages/schema/src/ids.ts`,
 used by both collectors and the hub — the hub also upgrades events spooled by an older collector).
@@ -242,6 +269,10 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   (DNS-rebinding guard). `/ws` also rejects foreign `Origin`s; CORS echoes allowlisted origins only.
 - `/ingest` needs `Bearer $INGEST_TOKEN` (constant-time compare). `/api` and `/ws` are read-only and
   unauthenticated — fine on loopback, not for a network bind.
+- `/ingest/runs` needs a **different** token, `Bearer $OFFICE_PROJECTION_TOKEN`, held only by the
+  cockpit, and accepts only `machine_id: "cockpit"`. A forge or spine collector (which has
+  `INGEST_TOKEN`) therefore cannot post a forged `passed`. City cannot verify Office's signatures, so
+  every run is shown as *reported* with its age.
 - `/ingest` takes at most 500 events per request (`MAX_INGEST_BATCH`; more → 413) inside a 5 MiB
   body; collectors send in chunks of exactly that size.
 - Collectors redact before spooling/sending: prompt text is never stored (length only); `tool_input`

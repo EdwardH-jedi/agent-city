@@ -15,6 +15,11 @@ export {
 	HEARTBEAT_OFFLINE_FROM_MS,
 	HEARTBEAT_ONLINE_BELOW_MS,
 	MAX_INGEST_BATCH,
+	RUN_COMPLETED_MAX,
+	RUN_EVENTS_MAX_PER_RUN,
+	RUN_SNAPSHOT_STALE_MS,
+	RUNS_MAX_BODY_BYTES,
+	RUNS_MAX_PER_PAYLOAD,
 } from "./limits.ts";
 export {
 	COMMAND_MAX,
@@ -49,6 +54,9 @@ export {
 	endsAgent,
 	machineStatus,
 	nextStatus,
+	type RunState,
+	reportedRunState,
+	runStateAt,
 	STALE_AFTER_MS,
 	SUBAGENT_TOOLS,
 } from "./status.ts";

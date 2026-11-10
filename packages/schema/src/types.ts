@@ -6,7 +6,11 @@ import {
 	HEARTBEAT_INTERVAL_MAX_S,
 	HEARTBEAT_INTERVAL_MIN_S,
 	MAX_INGEST_BATCH,
+	RUN_COMPLETED_MAX,
+	RUN_EVENTS_MAX_PER_RUN,
+	RUNS_MAX_PER_PAYLOAD,
 } from "./limits.ts";
+import { redact } from "./redact.ts";
 
 const Ts = z.iso.datetime({ offset: true });
 
@@ -70,6 +74,139 @@ export const MachineView = z.object({
 	status: MachineLiveness,
 });
 export type MachineView = z.infer<typeof MachineView>;
+
+// ── Office run projection (POST /ingest/runs, GET /api/runs) ───────────────────────────────
+// The cockpit pushes a read-only picture of its runs. Every string is a short code from a closed
+// character class (no path separator, no quote, nothing token-shaped), so a goal text, an absolute
+// path or a secret has no field to ride in. Field names are snake_case (City convention).
+
+/** A code Office produced (reason, alert, model…). redact() must leave it unchanged. */
+const code = (max = 64) =>
+	z
+		.string()
+		.regex(new RegExp(`^[A-Za-z0-9_.:-]{1,${max}}$`))
+		.refine((v) => redact(v) === v, "secret-shaped");
+const hex = z.string().regex(/^[0-9a-f]{7,64}$/);
+/** Pipeline phase names contain a space ("Independent Review"). */
+const phase = z.string().regex(/^[A-Za-z][A-Za-z ]{0,31}$/);
+/** `owner/name` only: a leading slash or a second slash (an absolute path) does not match. */
+const project = z
+	.string()
+	.regex(/^[A-Za-z0-9_.-]{1,64}\/[A-Za-z0-9_.-]{1,100}$/)
+	.refine((v) => redact(v) === v, "secret-shaped");
+
+export const RunEventInput = z.strictObject({
+	sequence: z.number().int().nonnegative(),
+	transition: code(48),
+	occurred_at: Ts.nullish(),
+	task_id: code(32).nullish(),
+	attempt: z.number().int().min(0).max(1000).nullish(),
+	outcome: code().nullish(),
+	reason: code().nullish(),
+	review_verdict: code().nullish(),
+	commit: hex.nullish(),
+	base_commit: hex.nullish(),
+	diff_digest: hex.nullish(),
+	tree_digest: hex.nullish(),
+	test_run_key: code(40).nullish(),
+	model: code().nullish(),
+	from_model: code().nullish(),
+	to_model: code().nullish(),
+});
+export type RunEventInput = z.infer<typeof RunEventInput>;
+
+export const RunInput = z.strictObject({
+	run_id: code(128),
+	project: project.nullable(),
+	workflow_id: code(128),
+	phase,
+	status: code(),
+	reason: code().nullable(),
+	alert: code().nullable(),
+	last_progress_at: Ts.nullable(),
+	idle_seconds: z.number().int().nonnegative().nullable(),
+	completed: z.array(code(32)).max(RUN_COMPLETED_MAX),
+	tokens_today: z.number().int().nonnegative().nullable(),
+	usage_unknown: z.boolean(),
+	evidence_verified: z.boolean(),
+	last_event_sequence: z.number().int().nonnegative().nullable(),
+	events: z.array(RunEventInput).max(RUN_EVENTS_MAX_PER_RUN),
+});
+export type RunInput = z.infer<typeof RunInput>;
+
+export const RunsPayload = z.strictObject({
+	schema: z.literal(1),
+	source: z.literal("agent-office"),
+	machine_id: MachineRole,
+	/** Sender clock, display only; staleness is measured on the hub's receive time. */
+	observed_at: Ts,
+	ledger_revision: z.number().int().nonnegative(),
+	runs: z.array(RunInput).max(RUNS_MAX_PER_PAYLOAD),
+});
+export type RunsPayload = z.infer<typeof RunsPayload>;
+
+/** What the screen shows for a run. Office decides all but `snapshot_stale`; City only adds that. */
+export const RunDisplay = z.enum([
+	"running",
+	"no_progress_suspected",
+	"needs_reconcile",
+	"waiting_owner",
+	"hold",
+	"passed",
+	"partial",
+	"unverified",
+	"unknown",
+	"snapshot_stale",
+]);
+export type RunDisplay = z.infer<typeof RunDisplay>;
+
+/** GET /api/runs row: the reported fields plus what City itself knows (receive time, staleness). */
+export const RunView = z.object({
+	machine_id: MachineRole,
+	run_id: z.string(),
+	project: z.string().nullable(),
+	workflow_id: z.string(),
+	phase: z.string(),
+	status: z.string(),
+	reason: z.string().nullable(),
+	alert: z.string().nullable(),
+	last_progress_at: Ts.nullable(),
+	idle_seconds: z.number().int().nullable(),
+	completed: z.array(z.string()),
+	tokens_today: z.number().int().nullable(),
+	usage_unknown: z.boolean(),
+	evidence_verified: z.boolean(),
+	last_event_sequence: z.number().int().nullable(),
+	ledger_revision: z.number().int(),
+	/** Hub receive time of the latest accepted report ("cockpit report · N s ago"). */
+	reported_at: Ts,
+	/** What to show now; `snapshot_stale` when the report is old or the machine is offline. */
+	display: RunDisplay,
+	/** What the last report said, before any staleness override. */
+	last_display: RunDisplay,
+	needs_owner: z.boolean(),
+});
+export type RunView = z.infer<typeof RunView>;
+
+export const RunEventView = z.object({
+	sequence: z.number().int(),
+	transition: z.string(),
+	occurred_at: z.string().nullable(),
+	task_id: z.string().nullable(),
+	attempt: z.number().int().nullable(),
+	outcome: z.string().nullable(),
+	reason: z.string().nullable(),
+	review_verdict: z.string().nullable(),
+	commit: z.string().nullable(),
+	base_commit: z.string().nullable(),
+	diff_digest: z.string().nullable(),
+	tree_digest: z.string().nullable(),
+	test_run_key: z.string().nullable(),
+	model: z.string().nullable(),
+	from_model: z.string().nullable(),
+	to_model: z.string().nullable(),
+});
+export type RunEventView = z.infer<typeof RunEventView>;
 
 export const Machine = z.object({
 	id: z.string().min(1),

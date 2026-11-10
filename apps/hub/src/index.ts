@@ -5,6 +5,7 @@ import { openDb } from "./db.ts";
 import { runConfiguredSync } from "./github/sync.ts";
 import { createApi } from "./routes/api.ts";
 import { createIngest } from "./routes/ingest.ts";
+import { createRunsIngest } from "./routes/runs.ts";
 import { createBroadcaster, type Publish, websocket } from "./routes/ws.ts";
 import {
 	checkWsRequest,
@@ -22,6 +23,11 @@ export interface AppDeps {
 	publish: Publish;
 	/** Clock for heartbeat receive time and machine liveness; tests inject one. */
 	now?: () => Date;
+	/**
+	 * OFFICE_PROJECTION_TOKEN for POST /ingest/runs (the cockpit's run reports). Unset → 503. It must
+	 * differ from `ingestToken`; if both are the same value the run route stays disabled.
+	 */
+	officeToken?: string;
 	/** Host/Origin allowlists; defaults to a 127.0.0.1-bound hub. */
 	security?: SecurityConfig;
 }
@@ -30,6 +36,11 @@ export function createApp(deps: AppDeps): Hono {
 	const app = new Hono();
 	const security = deps.security ?? { hubHost: "127.0.0.1" };
 	const spoolDrops = new Map<string, number>();
+	// The collector token must never also open the run route: forge/spine collectors could forge run state.
+	const officeToken =
+		deps.officeToken && deps.officeToken !== deps.ingestToken
+			? deps.officeToken
+			: undefined;
 
 	// First: reject foreign Host headers (DNS rebinding) on every route, /healthz included.
 	app.use("*", hostGuard(security));
@@ -40,12 +51,22 @@ export function createApp(deps: AppDeps): Hono {
 			ok: true,
 			machine: process.env.AGENTCITY_MACHINE ?? null,
 			ingest: deps.ingestToken ? "enabled" : "disabled",
+			run_projection: officeToken ? "enabled" : "disabled",
 			// events each machine's collector spool discarded (size / age / rejected caps), cumulative
 			spool_dropped: Object.fromEntries(spoolDrops),
 			time: new Date().toISOString(),
 		}),
 	);
 	app.route("/ingest", createIngest({ ...deps, spoolDrops }));
+	app.route(
+		"/ingest/runs",
+		createRunsIngest({
+			db: deps.db,
+			officeToken,
+			publish: deps.publish,
+			now: deps.now,
+		}),
+	);
 	app.route("/api", createApi(deps.db, deps.now));
 
 	app.onError((err, c) => {
@@ -59,6 +80,8 @@ export function createApp(deps: AppDeps): Hono {
 export interface HubOptions {
 	db: Database;
 	ingestToken: string | undefined;
+	/** OFFICE_PROJECTION_TOKEN (see AppDeps.officeToken). */
+	officeToken?: string;
 	hostname: string;
 	port: number;
 	staleSweepMs?: number;
@@ -76,6 +99,7 @@ export function startHub(opts: HubOptions) {
 	const app = createApp({
 		db: opts.db,
 		ingestToken: opts.ingestToken,
+		officeToken: opts.officeToken,
 		publish: broadcaster.publish,
 		security,
 	});
@@ -165,6 +189,7 @@ if (import.meta.main) {
 	const port = Number(process.env.HUB_PORT || 4317);
 	const dbPath = process.env.DB_PATH || "./data/agentcity.db";
 	const ingestToken = process.env.INGEST_TOKEN || undefined;
+	const officeToken = process.env.OFFICE_PROJECTION_TOKEN || undefined;
 	const syncMin = Number(process.env.GITHUB_SYNC_INTERVAL_MIN || 0);
 	const extraOrigins = (process.env.HUB_ALLOWED_ORIGINS ?? "")
 		.split(",")
@@ -175,6 +200,7 @@ if (import.meta.main) {
 	const { server, publish } = startHub({
 		db,
 		ingestToken,
+		officeToken,
 		hostname,
 		port,
 		extraOrigins,
@@ -184,6 +210,15 @@ if (import.meta.main) {
 	);
 	if (!ingestToken) {
 		console.warn("[hub] INGEST_TOKEN is not set — /ingest is disabled (503)");
+	}
+	if (!officeToken) {
+		console.warn(
+			"[hub] OFFICE_PROJECTION_TOKEN is not set — /ingest/runs is disabled (503)",
+		);
+	} else if (officeToken === ingestToken) {
+		console.warn(
+			"[hub] OFFICE_PROJECTION_TOKEN equals INGEST_TOKEN — /ingest/runs stays disabled (use a different value)",
+		);
 	}
 	if (syncMin > 0) {
 		scheduleGithubSync(db, publish, syncMin);

@@ -6,6 +6,7 @@ import type {
 	MachineView,
 	Provider,
 	Repo,
+	RunView,
 	Session,
 } from "@agent-city/schema";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -13,6 +14,7 @@ import {
 	EVENT_LIMIT,
 	mergeEvents,
 	mergeMachines,
+	mergeRuns,
 	mergeSessions,
 	parseHubMessage,
 } from "./merge.ts";
@@ -60,6 +62,7 @@ export function useHub(filter: EventFilter) {
 	const [sessions, setSessions] = useState<Session[]>([]);
 	const [events, setEvents] = useState<Event[]>([]);
 	const [machines, setMachines] = useState<MachineView[]>([]);
+	const [runs, setRuns] = useState<RunView[]>([]);
 	const [conn, setConn] = useState<Conn>("connecting");
 	const [error, setError] = useState<string | null>(null);
 	const filterRef = useRef(filter);
@@ -83,14 +86,16 @@ export function useHub(filter: EventFilter) {
 
 	const loadSnapshot = useCallback(async () => {
 		try {
-			const [r, s, m] = await Promise.all([
+			const [r, s, m, ru] = await Promise.all([
 				getJson<{ districts: Districts }>("/api/repos"),
 				getJson<{ sessions: Session[] }>("/api/sessions"),
 				getJson<{ machines: MachineView[] }>("/api/machines"),
+				getJson<{ runs: RunView[] }>("/api/runs"),
 				loadEvents(filterRef.current),
 			]);
 			setDistricts(r.districts);
 			setMachines((cur) => mergeMachines(cur, m.machines));
+			setRuns((cur) => mergeRuns(cur, ru.runs));
 			setSessions((cur) => mergeSessions(cur, s.sessions));
 			setError(null);
 		} catch (err) {
@@ -141,6 +146,8 @@ export function useHub(filter: EventFilter) {
 					setDistricts((cur) => upsertRepo(cur, msg.data as RepoView));
 				} else if (msg.kind === "machine") {
 					setMachines((cur) => mergeMachines(cur, [msg.data]));
+				} else if (msg.kind === "run") {
+					setRuns((cur) => mergeRuns(cur, [msg.data]));
 				}
 			};
 			ws.onclose = () => {
@@ -160,5 +167,5 @@ export function useHub(filter: EventFilter) {
 		};
 	}, [loadSnapshot, loadSessions, loadEvents]);
 
-	return { districts, sessions, events, machines, conn, error };
+	return { districts, sessions, events, machines, runs, conn, error };
 }

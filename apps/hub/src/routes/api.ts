@@ -1,11 +1,13 @@
 import type { Database } from "bun:sqlite";
-import { Provider, SessionStatus } from "@agent-city/schema";
+import { MachineRole, Provider, SessionStatus } from "@agent-city/schema";
 import { Hono } from "hono";
 import {
 	listAgents,
 	listEvents,
 	listMachines,
 	listReposByDistrict,
+	listRunEvents,
+	listRuns,
 	listSessions,
 } from "../store.ts";
 
@@ -21,6 +23,29 @@ export function createApi(
 
 	// Always the three machines (cockpit, forge, spine); one never heard from is `unobserved`.
 	api.get("/machines", (c) => c.json({ machines: listMachines(db, now()) }));
+
+	// Runs the cockpit reported (read-only). `display` is `snapshot_stale` once a report is 90 s old or
+	// the machine is offline; there is no route here that approves, launches or retries anything.
+	api.get("/runs", (c) => c.json({ runs: listRuns(db, now()) }));
+
+	// ?limit=200 — a run's recent events, newest first.
+	api.get("/runs/:machine/:id/events", (c) => {
+		const machine = MachineRole.safeParse(c.req.param("machine"));
+		if (!machine.success) return c.json({ error: "unknown machine" }, 400);
+		const limitRaw = c.req.query("limit");
+		const limit = limitRaw === undefined ? 200 : Number(limitRaw);
+		if (!Number.isInteger(limit) || limit < 1) {
+			return c.json({ error: "limit must be a positive integer" }, 400);
+		}
+		return c.json({
+			events: listRunEvents(
+				db,
+				machine.data,
+				c.req.param("id"),
+				Math.min(limit, 1000),
+			),
+		});
+	});
 
 	api.get("/repos", (c) => c.json({ districts: listReposByDistrict(db) }));
 

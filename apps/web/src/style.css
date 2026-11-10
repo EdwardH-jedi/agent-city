@@ -204,6 +204,41 @@ tr.has-live td {
 	color: var(--muted);
 }
 
+/* Runs the cockpit reported: text only, colour from the state */
+.runs-area {
+	display: grid;
+	gap: 8px;
+	padding: 6px 16px;
+}
+.runs h2,
+.needs-owner h2 {
+	font-size: 13px;
+	margin: 0 0 4px;
+}
+.muted {
+	color: var(--muted);
+	margin: 0;
+}
+.run-report {
+	color: var(--muted);
+}
+.run-running .run-state,
+.run-passed .run-state {
+	color: var(--ok);
+}
+.run-waiting_owner .run-state,
+.run-hold .run-state,
+.run-needs_reconcile .run-state,
+.run-unverified .run-state {
+	color: var(--waiting-fg);
+}
+.run-no_progress_suspected .run-state,
+.run-snapshot_stale .run-state,
+.run-partial .run-state,
+.run-unknown .run-state {
+	color: var(--bad);
+}
+
 .status {
 	font-weight: 600;
 }
