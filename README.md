@@ -273,23 +273,45 @@ Districts: edit `config/districts.yaml` (`district: [owner/name | name, …]`, c
 ## Backing up the database
 
 ```sh
-bun run db:backup              # → data/backups/agentcity-YYYYMMDD-HHMMSS.db (UTC)
+bun run db:backup              # → data/backups/agentcity.db-YYYYMMDD-HHMMSS.db (UTC)
 bun run db:backup --keep 14    # same, then delete all but the 14 newest backups of this DB
 ```
 
 - Safe while the hub runs: the copy is a SQLite `VACUUM INTO` snapshot (committed rows only), not a
-  file copy. It is written as `….tmp`, checked (`integrity_check`, same schema version) and only then
-  given its final name; an existing backup is never overwritten. Run it before every upgrade.
+  file copy. It is written inside a private `0700` staging dir that the run creates in `backups/`,
+  checked (`integrity_check`, same schema version) and only then hard-linked to its final name; an
+  existing backup is never overwritten and the staging dir is removed afterwards. Run it before
+  every upgrade.
+- The source is never opened read/write. If the hub is stopped and the DB's `-shm` is gone, the DB
+  and its `-wal` are copied into the staging dir and the snapshot is taken from that copy, so the DB
+  and its `-wal` / `-shm` are left byte-for-byte as they were.
 - The DB is `--db <path>` | `DB_PATH` | `./data/agentcity.db`; backups go to `backups/` next to it
-  (created `0700`, files `0600`). `--dir <name>` picks another subdirectory of that data dir; a
-  directory (or symlink) that resolves outside the data dir is refused.
-- `--keep N` (1–365) only counts and deletes files named exactly `<db name>-YYYYMMDD-HHMMSS.db`;
-  anything else in the folder (notes, other `.db` files, a leftover `.tmp`) is left alone. A prune
-  failure is reported but does not fail the backup.
-- **Restore:** stop the hub, copy a backup over the DB file (remove a stale `-wal` / `-shm` next to
-  it first), start the hub.
+  (`0700`, files `0600`; an existing `backups/` you own is tightened to `0700`, one owned by another
+  user is refused). `--dir <name>` picks another subdirectory of that data dir; a directory (or
+  symlink) that resolves outside the data dir is refused. A DB path whose file name has leading or
+  trailing whitespace or a control character is refused.
+- Backup names keep the full DB file name: `<db file name>-YYYYMMDD-HHMMSS.db`
+  (`agentcity.db-20261111-010203.db`, `agentcity.sqlite-…`). Output never prints the raw DB name
+  if it looks like a secret (it goes through `redact`).
+- `--keep N` (1–365) only counts and deletes regular files named exactly
+  `<db file name>-YYYYMMDD-HHMMSS.db` — never a symlink, never the live DB itself, never the file
+  just written. Anything else in the folder (notes, other `.db` files, backups of another DB name,
+  older `agentcity-YYYYMMDD-HHMMSS.db` names, a leftover `.tmp`) is left alone. A prune failure is
+  reported but does not fail the backup.
+- **Restore:**
+  1. Stop **every** process that opens the DB: the hub **and** `sync:github` or any other tooling
+     that reads or writes `DB_PATH`.
+  2. Keep the current DB: rename `agentcity.db` and its `-wal` / `-shm` (if present) to
+     `agentcity.db.old-<timestamp>`, `agentcity.db-wal.old-<timestamp>`, … — rename, don't delete.
+  3. Copy the backup to a staged name in the data dir (e.g. `agentcity.db.restoring`), then rename
+     it to `agentcity.db`.
+  4. Start the hub and check it (`/healthz`, the UI shows the expected sessions).
 - A backup holds the same data as the DB, so protect the data dir like the DB itself. It sits on the
   same disk — not a substitute for off-machine copies.
+- Limits: the data dir (and `backups/`) must be writable only by its owner. A local user who can
+  replace the backups dir or the staging dir during a run can redirect it; the script does not
+  defend against that. Publishing uses a hard link, so `backups/` must be on a filesystem that
+  supports hard links (it is inside the data dir, so the same filesystem as the DB).
 
 ## Collectors on forge / spine
 

@@ -1,7 +1,9 @@
 // db:backup only ever runs against temp paths here — never ./data/agentcity.db.
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
+	chmodSync,
 	copyFileSync,
 	existsSync,
 	mkdirSync,
@@ -17,7 +19,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "./db.ts";
-import { backupDb, backupName, backupPattern, parseArgs } from "./db-backup.ts";
+import {
+	backupDb,
+	backupName,
+	backupPattern,
+	parseArgs,
+	verifyCopy,
+} from "./db-backup.ts";
 import { listSessions } from "./store.ts";
 
 const NOW = new Date("2026-11-11T01:02:03.999Z");
@@ -44,29 +52,46 @@ function seeded() {
 }
 
 const backups = (dir: string) => readdirSync(dir).sort();
+const sha = (p: string) =>
+	createHash("sha256").update(readFileSync(p)).digest("hex");
+const mode = (p: string) => statSync(p).mode & 0o777;
+const SCRIPT = join(import.meta.dir, "db-backup.ts");
+/** Run the CLI in `cwd` (no repo .env there); stdout + stderr together. */
+function cli(cwd: string, ...args: string[]) {
+	const p = Bun.spawnSync(["bun", SCRIPT, ...args], {
+		cwd,
+		env: { PATH: process.env.PATH ?? "" },
+	});
+	return { code: p.exitCode, out: p.stdout.toString() + p.stderr.toString() };
+}
 
 describe("db:backup", () => {
 	test("injectable clock gives deterministic UTC names", () => {
 		expect(backupName("/x/agentcity.db", NOW)).toBe(
-			"agentcity-20261111-010203.db",
+			"agentcity.db-20261111-010203.db",
 		);
 		expect(backupName("hub.sqlite", at("2026-01-02T03:04:05Z"))).toBe(
-			"hub-20260102-030405.db",
+			"hub.sqlite-20260102-030405.db",
 		);
 		const re = backupPattern("agentcity.db");
-		expect(re.test("agentcity-20261111-010203.db")).toBe(true);
-		expect(re.test("agentcity-20261111-010203.db.tmp")).toBe(false);
-		expect(re.test("xagentcity-20261111-010203.db")).toBe(false);
+		expect(re.test("agentcity.db-20261111-010203.db")).toBe(true);
+		expect(re.test("agentcity.db-20261111-010203.db.tmp")).toBe(false);
+		expect(re.test("xagentcity.db-20261111-010203.db")).toBe(false);
+		expect(re.test("agentcityXdb-20261111-010203.db")).toBe(false);
+		expect(re.test("agentcity-20261111-010203.db")).toBe(false); // old naming: never pruned
+		expect(
+			backupPattern("agentcity.sqlite").test("agentcity.db-20261111-010203.db"),
+		).toBe(false);
 	});
 
 	test("round-trips a DB with rows while the hub holds it open; restore copy opens in the store", () => {
 		const { dataDir, dbPath, hub } = seeded();
 		const r = backupDb({ dbPath, now: NOW });
-		expect(r.file).toBe("backups/agentcity-20261111-010203.db");
+		expect(r.file).toBe("backups/agentcity.db-20261111-010203.db");
 		expect(r.pruned).toEqual([]);
 		const bdir = join(dataDir, "backups");
 		expect(statSync(bdir).mode & 0o777).toBe(0o700);
-		expect(backups(bdir)).toEqual(["agentcity-20261111-010203.db"]); // no .tmp, no sidecars
+		expect(backups(bdir)).toEqual(["agentcity.db-20261111-010203.db"]); // no staging dir, no sidecars
 		const file = join(dataDir, r.file);
 		expect(statSync(file).mode & 0o777).toBe(0o600);
 
@@ -152,14 +177,14 @@ describe("db:backup", () => {
 		hub.close();
 		const bdir = join(dataDir, "backups");
 		mkdirSync(bdir);
-		const dest = join(bdir, "agentcity-20261111-010203.db");
+		const dest = join(bdir, "agentcity.db-20261111-010203.db");
 		writeFileSync(dest, "EARLIER");
 		expect(() => backupDb({ dbPath, now: NOW })).toThrow(/already exists/);
 		expect(readFileSync(dest, "utf8")).toBe("EARLIER");
-		expect(backups(bdir)).toEqual(["agentcity-20261111-010203.db"]);
+		expect(backups(bdir)).toEqual(["agentcity.db-20261111-010203.db"]);
 	});
 
-	test("--keep 2 prunes the oldest; decoys and leftover .tmp untouched and uncounted", () => {
+	test("--keep 2 prunes the oldest; decoys, old-style names and leftover .tmp untouched and uncounted", () => {
 		const { dataDir, dbPath, hub } = seeded();
 		const bdir = join(dataDir, "backups");
 		for (const t of [
@@ -170,21 +195,23 @@ describe("db:backup", () => {
 			backupDb({ dbPath, now: at(t) });
 		writeFileSync(join(bdir, "notes.txt"), "keep me");
 		writeFileSync(join(bdir, "other-20200101-000000.db"), "x");
-		writeFileSync(join(bdir, "agentcity-manual.db"), "x");
-		writeFileSync(join(bdir, "agentcity-20200101-000000.db.tmp"), "half");
+		writeFileSync(join(bdir, "agentcity.db-manual.db"), "x");
+		writeFileSync(join(bdir, "agentcity.db-20200101-000000.db.tmp"), "half");
+		writeFileSync(join(bdir, "agentcity-20200101-000000.db"), "old naming");
 
 		const r = backupDb({ dbPath, keep: 2, now: at("2026-11-11T00:00:00Z") });
 		hub.close();
 		expect(r.pruned).toEqual([
-			"agentcity-20261108-000000.db",
-			"agentcity-20261109-000000.db",
+			"agentcity.db-20261108-000000.db",
+			"agentcity.db-20261109-000000.db",
 		]);
 		expect(r.pruneErrors).toEqual([]);
 		expect(backups(bdir)).toEqual([
-			"agentcity-20200101-000000.db.tmp",
-			"agentcity-20261110-000000.db",
-			"agentcity-20261111-000000.db",
-			"agentcity-manual.db",
+			"agentcity-20200101-000000.db",
+			"agentcity.db-20200101-000000.db.tmp",
+			"agentcity.db-20261110-000000.db",
+			"agentcity.db-20261111-000000.db",
+			"agentcity.db-manual.db",
 			"notes.txt",
 			"other-20200101-000000.db",
 		]);
@@ -195,9 +222,9 @@ describe("db:backup", () => {
 		backupDb({ dbPath, now: at("2026-11-10T00:00:00Z") });
 		const r = backupDb({ dbPath, keep: 1, now: at("2026-11-01T00:00:00Z") });
 		hub.close();
-		expect(r.pruned).toEqual(["agentcity-20261110-000000.db"]);
+		expect(r.pruned).toEqual(["agentcity.db-20261110-000000.db"]);
 		expect(backups(join(dataDir, "backups"))).toEqual([
-			"agentcity-20261101-000000.db",
+			"agentcity.db-20261101-000000.db",
 		]);
 	});
 
@@ -236,7 +263,7 @@ describe("db:backup", () => {
 		const ok = run("--keep", "3");
 		expect(ok.code).toBe(0);
 		expect(ok.out).toMatch(
-			/^\[db:backup\] wrote backups\/agentcity-\d{8}-\d{6}\.db \(\d+ bytes\); kept 3, pruned 0\n$/,
+			/^\[db:backup\] wrote backups\/agentcity\.db-\d{8}-\d{6}\.db \(\d+ bytes\); kept 3, pruned 0\n$/,
 		);
 		const bad = run("--dir", "../x");
 		expect(bad.code).not.toBe(0);
@@ -252,5 +279,163 @@ describe("db:backup", () => {
 		])
 			expect(out).not.toContain(dataDir);
 		expect(existsSync(join(dataDir, "nope.db"))).toBe(false);
+	});
+
+	test("never deletes a pre-existing .tmp; stages privately, tightens an existing backups/ to 0700", () => {
+		const { dataDir, dbPath, hub } = seeded();
+		const bdir = join(dataDir, "backups");
+		mkdirSync(bdir);
+		chmodSync(bdir, 0o755);
+		const theirs = join(bdir, "agentcity.db-20261111-010203.db.tmp");
+		writeFileSync(theirs, "not ours");
+		const seen: number[] = [];
+		const r = backupDb({
+			dbPath,
+			now: NOW,
+			verify: (p, v) => {
+				seen.push(mode(p), mode(join(p, "..")));
+				verifyCopy(p, v);
+			},
+		});
+		hub.close();
+		expect(seen).toEqual([0o600, 0o700]); // staged copy and its dir, mid-run
+		expect(mode(bdir)).toBe(0o700);
+		expect(readFileSync(theirs, "utf8")).toBe("not ours");
+		expect(backups(bdir)).toEqual([
+			"agentcity.db-20261111-010203.db",
+			"agentcity.db-20261111-010203.db.tmp",
+		]); // staging dir removed
+		expect(mode(join(dataDir, r.file))).toBe(0o600);
+	});
+
+	test("--keep never touches backups of a differently named source", () => {
+		const { dataDir, dbPath, hub } = seeded();
+		for (const t of ["2026-11-08T00:00:00Z", "2026-11-09T00:00:00Z"])
+			backupDb({ dbPath, now: at(t) });
+		hub.close();
+		const other = openDb(join(dataDir, "agentcity.sqlite"));
+		const r = backupDb({
+			dbPath: join(dataDir, "agentcity.sqlite"),
+			keep: 1,
+			now: NOW,
+		});
+		other.close();
+		expect(r.pruned).toEqual([]);
+		expect(backups(join(dataDir, "backups"))).toEqual([
+			"agentcity.db-20261108-000000.db",
+			"agentcity.db-20261109-000000.db",
+			"agentcity.sqlite-20261111-010203.db",
+		]);
+	});
+
+	test("--keep never deletes the live DB when DB_PATH is a symlink to a matching file in backups/", () => {
+		const dataDir = tmp();
+		const bdir = join(dataDir, "backups");
+		mkdirSync(bdir, { mode: 0o700 });
+		const live = join(bdir, "agentcity.db-20261101-000000.db");
+		const db = openDb(live);
+		db.run("INSERT INTO machines (id) VALUES ('cockpit')");
+		const dbPath = join(dataDir, "agentcity.db");
+		symlinkSync(live, dbPath);
+		const r = backupDb({ dbPath, keep: 1, now: NOW });
+		db.close();
+		expect(r.pruned).toEqual([]);
+		expect(existsSync(live)).toBe(true);
+		const check = new Database(live, { readonly: true });
+		expect(count(check, "machines")).toBe(1);
+		check.close();
+	});
+
+	test("refuses a DB name with surrounding whitespace or control characters; nothing written", () => {
+		const { dataDir, dbPath, hub } = seeded();
+		hub.close();
+		copyFileSync(dbPath, join(dataDir, "agentcity.db ")); // Bun would open agentcity.db
+		for (const name of [
+			"agentcity.db ",
+			" agentcity.db",
+			"agentcity.db\t",
+			"agentcity.db\n",
+			`agent${String.fromCharCode(1)}city.db`,
+		])
+			expect(() => backupDb({ dbPath: join(dataDir, name), now: NOW })).toThrow(
+				/whitespace or a control character/,
+			);
+		symlinkSync(join(dataDir, "agentcity.db "), join(dataDir, "clean.db"));
+		expect(() =>
+			backupDb({ dbPath: join(dataDir, "clean.db"), now: NOW }),
+		).toThrow(/whitespace or a control character/);
+		const bad = cli(dataDir, "--db", join(dataDir, "agentcity.db "));
+		expect(bad.code).not.toBe(0);
+		expect(existsSync(join(dataDir, "backups"))).toBe(false);
+	});
+
+	test("a token-shaped DB name never appears in output or error messages", () => {
+		const dataDir = tmp();
+		const tok = `ghp_${"Z".repeat(36)}`; // built at runtime
+		const dbPath = join(dataDir, `${tok}.db`);
+		openDb(dbPath).close();
+		const ok = cli(dataDir, "--db", dbPath, "--keep", "2");
+		expect(ok.code).toBe(0);
+		expect(ok.out).toMatch(/^\[db:backup\] wrote backups\/\[REDACTED\]/);
+		const missing = cli(dataDir, "--db", join(dataDir, `${tok}-gone.db`));
+		expect(missing.code).not.toBe(0);
+		expect(missing.out).toContain("<db>");
+		backupDb({ dbPath, now: NOW });
+		let msg = "";
+		try {
+			backupDb({ dbPath, now: NOW });
+		} catch (err) {
+			msg = (err as Error).message;
+		}
+		expect(msg).toMatch(/already exists/);
+		for (const out of [ok.out, missing.out, msg]) {
+			expect(out).not.toContain(tok);
+			expect(out).not.toContain(dataDir);
+		}
+	});
+
+	test("stopped hub, WAL DB with -wal but no -shm: source and sidecars stay byte-identical", () => {
+		const { dbPath, hub } = seeded();
+		hub.run("PRAGMA wal_autocheckpoint = 0");
+		hub.run("INSERT INTO machines (id) VALUES ('spine')"); // only in the WAL
+		const dataDir = tmp(); // a stopped-hub copy: .db + -wal, no -shm
+		const src = join(dataDir, "agentcity.db");
+		copyFileSync(dbPath, src);
+		copyFileSync(`${dbPath}-wal`, `${src}-wal`);
+		hub.close();
+		expect(statSync(`${src}-wal`).size).toBeGreaterThan(0);
+		const before = [sha(src), sha(`${src}-wal`)];
+		const r = backupDb({ dbPath: src, now: NOW });
+		expect([sha(src), sha(`${src}-wal`)]).toEqual(before);
+		expect(existsSync(`${src}-shm`)).toBe(false);
+		expect(backups(dataDir)).toEqual([
+			"agentcity.db",
+			"agentcity.db-wal",
+			"backups",
+		]);
+		expect(backups(join(dataDir, "backups"))).toEqual([
+			"agentcity.db-20261111-010203.db",
+		]);
+		const copy = new Database(join(dataDir, r.file), { readonly: true });
+		expect(count(copy, "machines")).toBe(3); // WAL rows recovered from the private copy
+		copy.close();
+	});
+
+	test("verify failure: copy removed, nothing published, error raised", () => {
+		const { dataDir, dbPath, hub } = seeded();
+		hub.close();
+		expect(() =>
+			backupDb({
+				dbPath,
+				now: NOW,
+				verify: (p, v) => {
+					const c = new Database(p);
+					c.run("PRAGMA user_version = 999"); // a copy that no longer matches the source
+					c.close();
+					verifyCopy(p, v);
+				},
+			}),
+		).toThrow(/user_version 999 != source/);
+		expect(backups(join(dataDir, "backups"))).toEqual([]);
 	});
 });
