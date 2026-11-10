@@ -1,11 +1,18 @@
 // Hub data for the 2D view: REST snapshot + /ws live updates, with reconnect.
 // On every (re)connect the snapshot is re-fetched, so anything missed while disconnected is filled
 // in; live messages are merged by id so a message racing the snapshot is never lost or doubled.
-import type { Event, Provider, Repo, Session } from "@agent-city/schema";
+import type {
+	Event,
+	MachineView,
+	Provider,
+	Repo,
+	Session,
+} from "@agent-city/schema";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	EVENT_LIMIT,
 	mergeEvents,
+	mergeMachines,
 	mergeSessions,
 	parseHubMessage,
 } from "./merge.ts";
@@ -52,6 +59,7 @@ export function useHub(filter: EventFilter) {
 	const [districts, setDistricts] = useState<Districts>({});
 	const [sessions, setSessions] = useState<Session[]>([]);
 	const [events, setEvents] = useState<Event[]>([]);
+	const [machines, setMachines] = useState<MachineView[]>([]);
 	const [conn, setConn] = useState<Conn>("connecting");
 	const [error, setError] = useState<string | null>(null);
 	const filterRef = useRef(filter);
@@ -75,12 +83,14 @@ export function useHub(filter: EventFilter) {
 
 	const loadSnapshot = useCallback(async () => {
 		try {
-			const [r, s] = await Promise.all([
+			const [r, s, m] = await Promise.all([
 				getJson<{ districts: Districts }>("/api/repos"),
 				getJson<{ sessions: Session[] }>("/api/sessions"),
+				getJson<{ machines: MachineView[] }>("/api/machines"),
 				loadEvents(filterRef.current),
 			]);
 			setDistricts(r.districts);
+			setMachines((cur) => mergeMachines(cur, m.machines));
 			setSessions((cur) => mergeSessions(cur, s.sessions));
 			setError(null);
 		} catch (err) {
@@ -129,6 +139,8 @@ export function useHub(filter: EventFilter) {
 					setSessions((cur) => mergeSessions(cur, [msg.data as Session]));
 				} else if (msg.kind === "repo") {
 					setDistricts((cur) => upsertRepo(cur, msg.data as RepoView));
+				} else if (msg.kind === "machine") {
+					setMachines((cur) => mergeMachines(cur, [msg.data]));
 				}
 			};
 			ws.onclose = () => {
@@ -148,5 +160,5 @@ export function useHub(filter: EventFilter) {
 		};
 	}, [loadSnapshot, loadSessions, loadEvents]);
 
-	return { districts, sessions, events, conn, error };
+	return { districts, sessions, events, machines, conn, error };
 }

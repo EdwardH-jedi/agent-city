@@ -79,6 +79,7 @@ bun run collector:hooks      # prints a merged ~/.claude/settings.json + diff �
 #   cp ~/.claude/settings.json ~/.claude/settings.json.bak.$(date +%s)
 #   cp ~/.agentcity/claude-settings.merged.json ~/.claude/settings.json
 bun run collector:codex      # resident Codex tailer (keep it running in a terminal)
+bun run collector:heartbeat  # resident machine heartbeat, every 30 s (keep it running in a terminal)
 ```
 
 Hooks load when a Claude Code session starts — open a new session after applying.
@@ -161,7 +162,34 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `districts:draft`             | Writes `config/districts.draft.yaml` (all repos by district; gitignored).        |
 | `collector:hooks`             | Print-only merge of the Claude hook into `~/.claude/settings.json`.              |
 | `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s).                     |
+| `collector:heartbeat`         | Resident machine heartbeat: one beat every 30 s to `POST /ingest/heartbeat`.     |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
+
+**Machine heartbeat.** `collector:heartbeat` (run on each machine with `AGENTCITY_MACHINE` =
+`cockpit` / `forge` / `spine`) sends a beat every 30 s; `GET /api/machines` and the *Machines* strip
+show each machine's last beat and state. This is a **machine** fact, not whether any AI work
+succeeded. Only the hub's receive time counts (the sender's clock is ignored).
+
+| State        | Meaning                                              |
+| ------------ | ---------------------------------------------------- |
+| `online`     | last beat received less than 90 s ago                |
+| `stale`      | 90 s or more, but less than 10 min                   |
+| `offline`    | 10 min or more (a closed laptop is normally this)    |
+| `unobserved` | nothing ever received (e.g. forge before it is set up) |
+
+`POST /ingest/heartbeat` uses the same `INGEST_TOKEN` bearer as `/ingest` (no token configured → 503,
+wrong → 401), takes a strict JSON body of at most 4 KiB (`schema`, `machine_id`, `hostname?`,
+`boot_id`, `seq`, `sent_at`, `interval_s`; any other key → 400, a machine other than
+cockpit/forge/spine → 400) and answers `{accepted}`. A repeat or out-of-order beat of the same
+`boot_id` is ignored (`accepted:false`); a new `boot_id` counts as a restart. Failed sends are
+dropped, not queued. The sender needs no new variable (`HUB_URL`, `INGEST_TOKEN`, `AGENTCITY_MACHINE`).
+
+Known limits of the heartbeat (by design, not bugs): the screen re-derives each state with the
+*viewer's* clock against the hub's receive time, so a viewer clock off by several minutes shows the
+wrong state; only the latest `boot_id` per machine is remembered, so a replayed beat of an older
+boot is taken as a restart (a sender needs the ingest token either way); while `/ws` is down the
+strip keeps ageing its last snapshot toward `offline` even if the hub still receives beats; after
+`db:reset` reload the page, because a fresh `unobserved` row never overwrites a machine already seen.
 
 **Ids.** Sessions are `claude:<session_id>` / `codex:<session_id>`; the main agent shares the session
 id; a subagent is `<session id>/sub:<tool_use_id>` (one function set in `packages/schema/src/ids.ts`,

@@ -2,12 +2,13 @@
 // Data validation only — the 3D city comes in Phase 1.
 import type {
 	Event,
+	MachineView,
 	Provider,
 	Session,
 	SessionStatus,
 } from "@agent-city/schema";
 import { useEffect, useMemo, useState } from "react";
-import { liveCountByRepo } from "./merge.ts";
+import { liveCountByRepo, machinesAt } from "./merge.ts";
 import {
 	type Conn,
 	EVENT_LIMIT,
@@ -43,7 +44,7 @@ export function App() {
 		repo: null,
 		provider: null,
 	});
-	const { districts, sessions, events, conn, error } = useHub(filter);
+	const { districts, sessions, events, machines, conn, error } = useHub(filter);
 	const now = useNow(5_000);
 
 	// live session counts per repo, computed from the session list so they update in real time
@@ -65,6 +66,7 @@ export function App() {
 				<ConnBadge conn={conn} />
 				{error && <span className="err">{error}</span>}
 			</header>
+			<Machines machines={machinesAt(machines, now)} now={now} />
 			<div className="grid">
 				<Repos districts={districts} liveByRepo={liveByRepo} />
 				<Sessions sessions={sessions} now={now} />
@@ -76,6 +78,27 @@ export function App() {
 					now={now}
 				/>
 			</div>
+		</div>
+	);
+}
+
+// Machine liveness: cockpit / forge / spine and the hub's last heartbeat from each. A machine fact,
+// not whether any AI work succeeded. `machines` already carries the status re-derived from `now`.
+function Machines({ machines, now }: { machines: MachineView[]; now: number }) {
+	if (machines.length === 0) return null;
+	return (
+		<div className="machines">
+			{machines.map((m) => (
+				<div key={m.id} className={`machine machine-${m.status}`}>
+					<span className="machine-name">{m.id}</span>
+					<span className="machine-status">● {m.status}</span>
+					<span className="machine-beat">
+						{m.heartbeat_at
+							? `last beat ${ago(m.heartbeat_at, now)}`
+							: "no beat yet"}
+					</span>
+				</div>
+			))}
 		</div>
 	);
 }

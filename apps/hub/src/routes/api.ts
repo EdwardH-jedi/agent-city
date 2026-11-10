@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import {
 	listAgents,
 	listEvents,
+	listMachines,
 	listReposByDistrict,
 	listSessions,
 } from "../store.ts";
@@ -12,8 +13,14 @@ const EVENTS_DEFAULT_LIMIT = 200;
 const EVENTS_MAX_LIMIT = 1000;
 
 // Read-only JSON API for the web view. Loopback-only like the rest of the hub (no auth).
-export function createApi(db: Database): Hono {
+export function createApi(
+	db: Database,
+	now: () => Date = () => new Date(),
+): Hono {
 	const api = new Hono();
+
+	// Always the three machines (cockpit, forge, spine); one never heard from is `unobserved`.
+	api.get("/machines", (c) => c.json({ machines: listMachines(db, now()) }));
 
 	api.get("/repos", (c) => c.json({ districts: listReposByDistrict(db) }));
 

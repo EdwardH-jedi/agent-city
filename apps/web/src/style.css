@@ -169,6 +169,41 @@ tr.has-live td {
 	color: var(--bad);
 }
 
+/* Machines strip: one chip per machine, state colour from the heartbeat age */
+.machines {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 6px 16px;
+}
+.machine {
+	display: flex;
+	gap: 8px;
+	align-items: baseline;
+	padding: 2px 10px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	font-size: 12px;
+}
+.machine-name {
+	font-weight: 600;
+}
+.machine-beat {
+	color: var(--muted);
+}
+.machine-online .machine-status {
+	color: var(--ok);
+}
+.machine-stale .machine-status {
+	color: var(--waiting-fg);
+}
+.machine-offline .machine-status {
+	color: var(--bad);
+}
+.machine-unobserved .machine-status {
+	color: var(--muted);
+}
+
 .status {
 	font-weight: 600;
 }

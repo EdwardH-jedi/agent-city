@@ -2,3 +2,16 @@
 
 /** Most events in one POST /ingest (F15). Collectors send in chunks of exactly this size. */
 export const MAX_INGEST_BATCH = 500;
+
+// Machine heartbeat (POST /ingest/heartbeat). First-implementation values, kept as constants so they
+// can be tuned in one place. Liveness is measured on the hub's receive clock only.
+/** A heartbeat body is ~200 bytes; anything above this is refused with 413. */
+export const HEARTBEAT_MAX_BODY_BYTES = 4 * 1024;
+/** Default sender period. A failed send is dropped, never queued. */
+export const HEARTBEAT_INTERVAL_S = 30;
+export const HEARTBEAT_INTERVAL_MIN_S = 5;
+export const HEARTBEAT_INTERVAL_MAX_S = 300;
+/** Age below this → online (three missed 30 s beats is the first doubt). */
+export const HEARTBEAT_ONLINE_BELOW_MS = 90_000;
+/** Age at or above this → offline; in between → stale. */
+export const HEARTBEAT_OFFLINE_FROM_MS = 600_000;

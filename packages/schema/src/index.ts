@@ -7,7 +7,15 @@ export {
 	sessionId,
 	subagentId,
 } from "./ids.ts";
-export { MAX_INGEST_BATCH } from "./limits.ts";
+export {
+	HEARTBEAT_INTERVAL_MAX_S,
+	HEARTBEAT_INTERVAL_MIN_S,
+	HEARTBEAT_INTERVAL_S,
+	HEARTBEAT_MAX_BODY_BYTES,
+	HEARTBEAT_OFFLINE_FROM_MS,
+	HEARTBEAT_ONLINE_BELOW_MS,
+	MAX_INGEST_BATCH,
+} from "./limits.ts";
 export {
 	COMMAND_MAX,
 	clip,
@@ -39,6 +47,7 @@ export {
 export {
 	applyStale,
 	endsAgent,
+	machineStatus,
 	nextStatus,
 	STALE_AFTER_MS,
 	SUBAGENT_TOOLS,
