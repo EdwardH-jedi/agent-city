@@ -312,6 +312,12 @@ bun run db:backup --keep 14    # same, then delete all but the 14 newest backups
   replace the backups dir or the staging dir during a run can redirect it; the script does not
   defend against that. Publishing uses a hard link, so `backups/` must be on a filesystem that
   supports hard links (it is inside the data dir, so the same filesystem as the DB).
+- Known limits (not bugs): when the hub is stopped and the DB has no `-shm`, the DB and its `-wal`
+  are copied one after the other without a lock, so **keep the hub (and `sync:github`) stopped until
+  the backup has finished** — a process that starts and checkpoints between the two copies could make
+  a committed row missing from the snapshot, and the integrity check cannot see that. Redaction of a
+  DB name that is token-shaped is best-effort (a token glued to a letter may print). Inherited
+  filesystem ACLs (macOS) are not inspected; only the Unix mode bits are set.
 
 ## Collectors on forge / spine
 
