@@ -1,5 +1,6 @@
 // Pure merge rules for the live view (unit-tested in merge.test.ts). No React, no DOM.
 import {
+	compareInstants,
 	type Event,
 	type MachineView,
 	machineStatus,
@@ -118,13 +119,17 @@ export function machinesAt(
 const runKey = (r: Pick<RunView, "machine_id" | "run_id">) =>
 	`${r.machine_id}/${r.run_id}`;
 
-/** Position of a report in the cockpit's ledger, then the hub receive time as the final tie-break. */
+/**
+ * Position of a report in the cockpit's ledger, then a strictly newer `observed_at` (compared exactly,
+ * as the hub does). Equal → keep what we have: a delayed HTTP snapshot can't overwrite a live update
+ * by arriving later. The hub receive time is never the tie-break.
+ */
 const newerRun = (a: RunView, b: RunView): boolean =>
 	a.ledger_revision !== b.ledger_revision
 		? a.ledger_revision > b.ledger_revision
 		: (a.last_event_sequence ?? -1) !== (b.last_event_sequence ?? -1)
 			? (a.last_event_sequence ?? -1) > (b.last_event_sequence ?? -1)
-			: a.reported_at >= b.reported_at;
+			: compareInstants(a.observed_at, b.observed_at) > 0;
 
 /**
  * Upsert reported runs by (machine, run). The same order the hub uses: a snapshot that raced a live

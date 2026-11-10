@@ -7,6 +7,7 @@ export {
 	sessionId,
 	subagentId,
 } from "./ids.ts";
+export { compareInstants } from "./instant.ts";
 export {
 	HEARTBEAT_INTERVAL_MAX_S,
 	HEARTBEAT_INTERVAL_MIN_S,

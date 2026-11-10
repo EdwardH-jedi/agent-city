@@ -80,20 +80,77 @@ export type MachineView = z.infer<typeof MachineView>;
 // character class (no path separator, no quote, nothing token-shaped), so a goal text, an absolute
 // path or a secret has no field to ride in. Field names are snake_case (City convention).
 
-/** A code Office produced (reason, alert, model…). redact() must leave it unchanged. */
+// Every check below is an allowlist shape plus two secret checks, and every message is a fixed phrase:
+// a rejected value is never echoed back.
+//   - redact(v) === v: no self-identifying token (sk-, ghp_, AKIA, JWT, "Bearer x"…) inside it;
+//   - not opaque: no long unbroken alphanumeric run that looks random. redact() only knows prefixed
+//     tokens, so a bare random key (base64 / hex / mixed-case) is refused by its shape instead.
+// Office's own codes are words joined by `_ . : -` (CODEX_REVIEW_RUNNING, task.started,
+// station0-notes-2, run-0123456789abcdef), whose runs stay short.
+
+/** Longest alphanumeric run allowed when it mixes digits or cases (a 16-hex key suffix is fine). */
+const OPAQUE_MIXED_RUN = 20;
+/** Longest alphanumeric run allowed at all. */
+const OPAQUE_ANY_RUN = 32;
+
+/** A long unbroken run of letters/digits that looks like a random key rather than a word. */
+function looksOpaque(v: string): boolean {
+	for (const run of v.split(/[^A-Za-z0-9]+/)) {
+		if (run.length >= OPAQUE_ANY_RUN) return true;
+		if (
+			run.length >= OPAQUE_MIXED_RUN &&
+			(/\d/.test(run) || (/[a-z]/.test(run) && /[A-Z]/.test(run)))
+		)
+			return true;
+	}
+	return false;
+}
+
+const notSecret = <T extends z.ZodString>(s: T) =>
+	s
+		.refine((v) => redact(v) === v, "secret-shaped")
+		.refine((v) => !looksOpaque(v), "opaque-token-shaped");
+
+/**
+ * An id or code Office produced (run/workflow/task id, transition, model, event outcome…). Starts with
+ * a letter or digit (no `.env`, `~`, `-flag`), has no path separator or space, no `..`, and is not a
+ * drive letter (`C:`).
+ */
 const code = (max = 64) =>
+	notSecret(
+		z
+			.string()
+			.regex(new RegExp(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,${max - 1}}$`))
+			.refine((v) => !v.includes(".."), "path-shaped")
+			.refine((v) => !/^[A-Za-z]:/.test(v), "path-shaped"),
+	);
+/** A run-level status / reason / alert: Office's UPPER_SNAKE vocabulary (README state table). */
+const upperCode = notSecret(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/));
+const hex = z.string().regex(/^[0-9a-f]{7,64}$/);
+/**
+ * Pipeline phase: one or two capitalised words ("QA", "Plan", "Independent Review"), one space at
+ * most, so there is no room for a sentence. An auth scheme word ("Bearer …") or anything token-shaped
+ * is refused.
+ */
+const PHASE_WORD = "(?:[A-Z][a-z]{1,15}|[A-Z]{2,6})";
+const AUTH_WORD = /\b(?:bearer|basic|token|digest|authorization)\b/i;
+const phase = notSecret(
 	z
 		.string()
-		.regex(new RegExp(`^[A-Za-z0-9_.:-]{1,${max}}$`))
-		.refine((v) => redact(v) === v, "secret-shaped");
-const hex = z.string().regex(/^[0-9a-f]{7,64}$/);
-/** Pipeline phase names contain a space ("Independent Review"). */
-const phase = z.string().regex(/^[A-Za-z][A-Za-z ]{0,31}$/);
-/** `owner/name` only: a leading slash or a second slash (an absolute path) does not match. */
-const project = z
-	.string()
-	.regex(/^[A-Za-z0-9_.-]{1,64}\/[A-Za-z0-9_.-]{1,100}$/)
-	.refine((v) => redact(v) === v, "secret-shaped");
+		.max(32)
+		.regex(new RegExp(`^${PHASE_WORD}(?: ${PHASE_WORD})?$`))
+		.refine((v) => !AUTH_WORD.test(v), "secret-shaped"),
+);
+/**
+ * `owner/name` only (GitHub shape): exactly one slash, each part starting with a letter or digit, so
+ * an absolute or relative path (`/Users/…`, `~/x`, `.ssh/id_rsa`, `a/b/c`) does not match.
+ */
+const project = notSecret(
+	z
+		.string()
+		.regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/)
+		.refine((v) => !v.includes(".."), "path-shaped"),
+);
 
 export const RunEventInput = z.strictObject({
 	sequence: z.number().int().nonnegative(),
@@ -120,9 +177,9 @@ export const RunInput = z.strictObject({
 	project: project.nullable(),
 	workflow_id: code(128),
 	phase,
-	status: code(),
-	reason: code().nullable(),
-	alert: code().nullable(),
+	status: upperCode,
+	reason: upperCode.nullable(),
+	alert: upperCode.nullable(),
 	last_progress_at: Ts.nullable(),
 	idle_seconds: z.number().int().nonnegative().nullable(),
 	completed: z.array(code(32)).max(RUN_COMPLETED_MAX),
@@ -178,6 +235,8 @@ export const RunView = z.object({
 	evidence_verified: z.boolean(),
 	last_event_sequence: z.number().int().nullable(),
 	ledger_revision: z.number().int(),
+	/** Sender clock of the stored report; orders reports at the same ledger position (never staleness). */
+	observed_at: Ts,
 	/** Hub receive time of the latest accepted report ("cockpit report · N s ago"). */
 	reported_at: Ts,
 	/** What to show now; `snapshot_stale` when the report is old or the machine is offline. */

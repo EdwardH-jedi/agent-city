@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import {
 	type Agent,
 	applyStale,
+	compareInstants,
 	type Event,
 	endsAgent,
 	type Heartbeat,
@@ -592,6 +593,7 @@ const toRunView = (
 	evidence_verified: r.evidence_verified === 1,
 	last_event_sequence: r.last_event_sequence,
 	ledger_revision: r.ledger_revision,
+	observed_at: r.observed_at,
 	reported_at: r.received_at,
 	...runStateAt(
 		{
@@ -617,9 +619,9 @@ export interface RunsResult {
 
 /**
  * Store one run report. Order: a higher `ledger_revision` wins, then a higher `last_event_sequence`;
- * on a tie the report with the same-or-newer `observed_at` wins (an idle alert appears without any
- * new ledger event). An older report changes nothing, not even the receive time. Events are
- * unique by (machine, run, sequence), so a resend is harmless.
+ * at the same position only a strictly newer `observed_at` wins (an idle alert appears without any
+ * new ledger event), compared exactly (sub-millisecond, offsets applied). An older or equal report
+ * changes nothing, not even the receive time. Events are unique by (machine, run, sequence).
  */
 export function upsertRuns(
 	db: Database,
@@ -653,11 +655,14 @@ export function upsertRuns(
 					payload.ledger_revision !== prev.ledger_revision
 						? payload.ledger_revision - prev.ledger_revision
 						: seq - (prev.last_event_sequence ?? -1);
-				const older =
+				// Same position: only a strictly newer observed_at applies. An equal one (a replay, or a
+				// different body claiming the same instant) is ignored and does not refresh received_at, so a
+				// replay cannot turn a stale run back into a fresh one.
+				const notNewer =
 					order < 0 ||
 					(order === 0 &&
-						Date.parse(payload.observed_at) < Date.parse(prev.observed_at));
-				if (older) {
+						compareInstants(payload.observed_at, prev.observed_at) <= 0);
+				if (notNewer) {
 					ignored++;
 					continue;
 				}

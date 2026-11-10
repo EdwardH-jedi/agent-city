@@ -22,6 +22,7 @@ const view = (over: Partial<RunView> = {}): RunView => ({
 	evidence_verified: true,
 	last_event_sequence: 7,
 	ledger_revision: 42,
+	observed_at: iso(0),
 	reported_at: iso(0),
 	display: "running",
 	last_display: "running",
@@ -61,12 +62,35 @@ describe("mergeRuns", () => {
 		expect(mergeRuns([live], [snapshot])[0]?.phase).toBe("Integration");
 	});
 
-	test("same revision: the higher last_event_sequence wins, then the later receive time", () => {
+	test("same revision: the higher last_event_sequence wins, then a strictly newer observed_at", () => {
 		const a = view({ last_event_sequence: 8, phase: "A" });
 		const b = view({ last_event_sequence: 7, phase: "B" });
 		expect(mergeRuns([a], [b])[0]?.phase).toBe("A");
-		const c = view({ reported_at: iso(5_000), phase: "C" });
+		const c = view({ observed_at: iso(5_000), phase: "C" });
 		expect(mergeRuns([view({ phase: "D" })], [c])[0]?.phase).toBe("C");
+		expect(mergeRuns([c], [view({ phase: "D" })])[0]?.phase).toBe("C");
+	});
+
+	test("equal position and observed_at keeps what we have, even when the incoming one was received later", () => {
+		const live = view({ phase: "Integration", reported_at: iso(0) });
+		const delayedSnapshot = view({ phase: "QA", reported_at: iso(9_000) });
+		expect(mergeRuns([live], [delayedSnapshot])[0]?.phase).toBe("Integration");
+		expect(mergeRuns([live], [view({ phase: "QA" })])[0]?.phase).toBe(
+			"Integration",
+		);
+	});
+
+	test("observed_at is compared below the millisecond", () => {
+		const newer = view({
+			observed_at: "2026-01-01T00:00:00.00051Z",
+			phase: "New",
+		});
+		const older = view({
+			observed_at: "2026-01-01T00:00:00.0005Z",
+			phase: "Old",
+		});
+		expect(mergeRuns([newer], [older])[0]?.phase).toBe("New");
+		expect(mergeRuns([older], [newer])[0]?.phase).toBe("New");
 	});
 
 	test("runs of different machines do not collide", () => {

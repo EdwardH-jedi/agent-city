@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	compareInstants,
 	RUN_SNAPSHOT_STALE_MS,
 	RunsPayload,
 	reportedRunState,
@@ -110,6 +111,152 @@ describe("RunsPayload", () => {
 		expect(ok(payload({ runs: [run({ reason: "has space" })] }))).toBe(false);
 		expect(ok(payload({ runs: [run({ phase: "QA; rm" })] }))).toBe(false);
 		expect(ok(payload({ runs: [run({ phase: "Report" })] }))).toBe(true);
+	});
+
+	test("phase: a few capitalised words only — no Bearer value, no prompt, no token", () => {
+		for (const good of [
+			"QA",
+			"Plan",
+			"Report",
+			"Integration",
+			"Independent Review",
+		])
+			expect(ok(payload({ runs: [run({ phase: good })] }))).toBe(true);
+		const bad = [
+			"Bearer Abcdefghij",
+			`Bearer ${"abcdefghij".repeat(2)}0123456789`, // built at runtime (check:secrets)
+			"Token Abcdefgh",
+			"delete all my files",
+			"Please Delete Every File",
+			"Delete Every File",
+			"Ignore previous instructions",
+			"QA\nrm",
+			"QA  Plan",
+			" QA",
+			"Abc1",
+			`sk-${"a".repeat(20)}`,
+			"/etc/passwd",
+			".ssh",
+		];
+		for (const v of bad)
+			expect(ok(payload({ runs: [run({ phase: v })] }))).toBe(false);
+	});
+
+	test("project: owner/name only — relative paths, dot/tilde/drive starts and tokens are refused", () => {
+		for (const good of [
+			"EdwardH-jedi/station0",
+			"local/agent-city",
+			"a/b.c_d-e",
+		])
+			expect(ok(payload({ runs: [run({ project: good })] }))).toBe(true);
+		const bad = [
+			".ssh/id_rsa",
+			"~/id_rsa",
+			"./x",
+			"../x",
+			"owner/.env",
+			"owner/a..b",
+			"C:/x",
+			"C:\\x",
+			"owner\\name",
+			"owner/name/extra",
+			"owner name/x",
+			`owner/ghp_${"a".repeat(30)}`,
+			`owner/${"aZ9".repeat(10)}`,
+		];
+		for (const v of bad)
+			expect(ok(payload({ runs: [run({ project: v })] }))).toBe(false);
+	});
+
+	test("reason / status / alert: UPPER_SNAKE codes; an opaque token without a known prefix is refused", () => {
+		const mixed = "aZ9".repeat(10); // random-looking, no vendor prefix: redact() alone keeps it
+		const hexKey = "deadbeef".repeat(5);
+		const upperKey = "ABCD1234".repeat(3);
+		for (const field of ["reason", "status", "alert"]) {
+			for (const v of [
+				mixed,
+				hexKey,
+				upperKey,
+				`AKIA${"A".repeat(16)}`,
+				"lowercase_reason",
+				"_LEADING",
+				"HAS SPACE",
+				".ENV",
+			])
+				expect(ok(payload({ runs: [run({ [field]: v })] }))).toBe(false);
+		}
+		expect(
+			ok(
+				payload({ runs: [run({ reason: "MISSION_RECONCILIATION_REQUIRED" })] }),
+			),
+		).toBe(true);
+	});
+
+	test("ids and event codes: no leading dot/tilde/dash, no `..`, no drive letter, nothing opaque", () => {
+		const ev = run().events[0];
+		const bad = [
+			".env",
+			"~x",
+			"-rf",
+			"a..b",
+			"C:x",
+			"aZ9".repeat(10),
+			"deadbeef".repeat(5),
+		];
+		for (const v of bad) {
+			expect(ok(payload({ runs: [run({ run_id: v })] }))).toBe(false);
+			expect(ok(payload({ runs: [run({ workflow_id: v })] }))).toBe(false);
+			expect(ok(payload({ runs: [run({ completed: [v] })] }))).toBe(false);
+			for (const key of [
+				"transition",
+				"task_id",
+				"outcome",
+				"reason",
+				"review_verdict",
+				"model",
+				"test_run_key",
+			])
+				expect(
+					ok(payload({ runs: [run({ events: [{ ...ev, [key]: v }] })] })),
+					`${key}`,
+				).toBe(false);
+		}
+		// real Office shapes stay valid
+		expect(
+			ok(
+				payload({
+					runs: [
+						run({
+							events: [
+								{
+									...ev,
+									model: "claude-sonnet-5-5",
+									outcome: "PASS",
+									review_verdict: "APPROVE",
+								},
+							],
+						}),
+					],
+				}),
+			),
+		).toBe(true);
+	});
+
+	test("an error names the field, never the rejected value", () => {
+		const secret = "aZ9".repeat(10);
+		const r = RunsPayload.safeParse(
+			payload({
+				runs: [
+					run({
+						phase: `Bearer ${secret}`,
+						project: `.ssh/${secret}`,
+						reason: secret,
+					}),
+				],
+			}),
+		);
+		expect(r.success).toBe(false);
+		expect(JSON.stringify(r.error?.issues)).not.toContain(secret);
 	});
 
 	test("source, schema and machine_id", () => {
@@ -290,6 +437,51 @@ describe("runStateAt — what City itself adds", () => {
 	test("an unparseable receive time is treated as stale, not fresh", () => {
 		expect(runStateAt(base, "garbage", "online", at(0)).display).toBe(
 			"snapshot_stale",
+		);
+	});
+});
+
+describe("compareInstants — exact order of observed_at", () => {
+	test("same instant at different precision or offset is equal", () => {
+		expect(
+			compareInstants("2026-01-01T00:00:00.1Z", "2026-01-01T00:00:00.100Z"),
+		).toBe(0);
+		expect(
+			compareInstants("2026-01-01T00:00:00Z", "2026-01-01T00:00:00.000Z"),
+		).toBe(0);
+		expect(
+			compareInstants(
+				"2026-01-01T10:00:00.5+10:00",
+				"2026-01-01T00:00:00.500Z",
+			),
+		).toBe(0);
+	});
+
+	test("two instants inside one millisecond keep their order (Date.parse would call them equal)", () => {
+		const older = "2026-01-01T00:00:00.0004Z";
+		const newer = "2026-01-01T00:00:00.00041Z";
+		expect(Date.parse(older)).toBe(Date.parse(newer));
+		expect(compareInstants(older, newer)).toBeLessThan(0);
+		expect(compareInstants(newer, older)).toBeGreaterThan(0);
+	});
+
+	test("offsets are applied before comparing", () => {
+		// 09:00+10:00 is 23:00Z the day before
+		expect(
+			compareInstants("2026-01-01T09:00:00+10:00", "2026-01-01T00:00:00Z"),
+		).toBeLessThan(0);
+		expect(
+			compareInstants(
+				"2026-01-01T00:00:01Z",
+				"2026-01-01T09:00:00.999999+09:00",
+			),
+		).toBeGreaterThan(0);
+	});
+
+	test("an invalid value is never newer than a valid one", () => {
+		expect(compareInstants("garbage", "2026-01-01T00:00:00Z")).toBeLessThan(0);
+		expect(compareInstants("2026-01-01T00:00:00Z", "garbage")).toBeGreaterThan(
+			0,
 		);
 	});
 });

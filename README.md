@@ -212,11 +212,24 @@ values are kept verbatim; the only thing City adds is the receive time and `snap
 
 `POST /ingest/runs` takes `Bearer $OFFICE_PROJECTION_TOKEN` (not the collector `INGEST_TOKEN`: that one
 is refused with 401), a strict snake_case JSON body of at most 256 KiB, and only from `machine_id:
-"cockpit"` (any other machine → 403). Every string is a short code from a closed character set, so a
-goal text, an absolute path, a session key or a token-shaped value has no field and is a 400 (the body
-is never echoed). Reports are ordered by `(ledger_revision, last_event_sequence)`, then by `observed_at`
-on a tie; an older report is ignored and a resend is harmless. Not implemented yet: `commit_on_remote`
-(joining a passed run to the GitHub sync).
+"cockpit"` (any other machine → 403). Every string is an allowlisted short code: `status` / `reason` /
+`alert` are UPPER_SNAKE, ids and event codes start with a letter or digit and hold no `/`, `\`, space,
+`..` or drive letter, `phase` is one or two capitalised words, `project` is `owner/name`; anything
+secret- or opaque-token-shaped (a known token prefix, `Bearer …`, a long random-looking run) is refused.
+So a goal text, a path, a session key or a token has no field and is a 400 (the value is never echoed).
+Reports are ordered by `(ledger_revision, last_event_sequence)`; at the same position only a strictly
+newer `observed_at` applies (compared exactly: below the millisecond, offsets applied). An older or
+equal report — a resend or a replay — is ignored and does not refresh the receive time.
+
+Known limits of the run projection (by design, not bugs):
+- Input is snake_case only; a camelCase key is an unknown key (400).
+- A value City cannot represent safely (a path, prose, a token-shaped or opaque string) is rejected,
+  and so is the whole report, rather than stored truncated or masked.
+- `commit_on_remote` (joining a passed run to the GitHub sync) is not implemented.
+- A holder of the Office token can assert PASS/evidence_verified; City mirrors the cockpit's report and does not verify signatures.
+- Hub clock moving backwards can make elapsed time briefly wrong.
+- A short capitalised phrase as `phase`, or a two-part name like `ssh/id_rsa` as `project`, has a
+  legitimate shape and cannot be told apart without Office's own lists.
 
 **Ids.** Sessions are `claude:<session_id>` / `codex:<session_id>`; the main agent shares the session
 id; a subagent is `<session id>/sub:<tool_use_id>` (one function set in `packages/schema/src/ids.ts`,

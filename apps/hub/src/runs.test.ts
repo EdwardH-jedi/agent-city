@@ -203,6 +203,24 @@ describe("POST /ingest/runs — what may be posted", () => {
 		expect(count(ctx, "runs")).toBe(0);
 	});
 
+	test("leak-shaped phase / project / reason are a 400 that does not echo the value", async () => {
+		const key = "aZ9".repeat(10); // random-looking, no vendor prefix
+		for (const over of [
+			{ phase: `Bearer ${key}` },
+			{ phase: "Delete Every File" },
+			{ project: ".ssh/id_rsa" },
+			{ project: `owner/${key}` },
+			{ reason: key },
+		]) {
+			const res = await post(ctx, payload({}, [run(over)]));
+			expect(res.status).toBe(400);
+			const text = await res.text();
+			for (const v of Object.values(over)) expect(text).not.toContain(v);
+			expect(text).not.toContain(key);
+		}
+		expect(count(ctx, "runs")).toBe(0);
+	});
+
 	test("invalid JSON → 400; a body over the cap → 413", async () => {
 		expect((await post(ctx, "{nope")).status).toBe(400);
 		const big = payload({ pad: "x".repeat(RUNS_MAX_BODY_BYTES + 1) });
@@ -298,6 +316,60 @@ describe("storage, order and idempotency", () => {
 		);
 		expect(await old.json()).toEqual({ applied: 0, ignored: 1 });
 		expect((await runs(ctx))[0]?.display).toBe("no_progress_suspected");
+	});
+
+	test("same position and the same observed_at: ignored even with different content; received_at is not refreshed", async () => {
+		await post(ctx, payload({ observed_at: iso(0) }));
+		ctx.at(120_000); // no report for 2 min → snapshot_stale
+		expect((await runs(ctx))[0]?.display).toBe("snapshot_stale");
+		const before = ctx.published.length;
+		const replay = await post(
+			ctx,
+			payload({ observed_at: iso(0) }, [run({ alert: "STALE_OR_IDLE" })]),
+		);
+		expect(await replay.json()).toEqual({ applied: 0, ignored: 1 });
+		const [r] = await runs(ctx);
+		expect(r?.reported_at).toBe(iso(0));
+		expect(r?.alert).toBeNull();
+		expect(r?.display).toBe("snapshot_stale");
+		expect(ctx.published.length).toBe(before);
+		// an identical resend is ignored the same way
+		const resend = await post(ctx, payload({ observed_at: iso(0) }));
+		expect(await resend.json()).toEqual({ applied: 0, ignored: 1 });
+		expect((await runs(ctx))[0]?.reported_at).toBe(iso(0));
+	});
+
+	test("observed_at is compared below the millisecond and across offsets", async () => {
+		const at = (frac: string, off = "Z") => `2026-01-01T00:00:00.${frac}${off}`;
+		await post(
+			ctx,
+			payload({ observed_at: at("000500") }, [run({ phase: "Report" })]),
+		);
+		ctx.at(1_000);
+		// 0.0004 s is older than 0.0005 s although Date.parse sees the same millisecond
+		const older = await post(
+			ctx,
+			payload({ observed_at: at("0004") }, [run({ phase: "Plan" })]),
+		);
+		expect(await older.json()).toEqual({ applied: 0, ignored: 1 });
+		expect((await runs(ctx))[0]?.phase).toBe("Report");
+		// the same instant written with another offset is equal → ignored
+		const same = await post(
+			ctx,
+			payload({ observed_at: "2026-01-01T10:00:00.0005+10:00" }, [
+				run({ phase: "Plan" }),
+			]),
+		);
+		expect(await same.json()).toEqual({ applied: 0, ignored: 1 });
+		const newer = await post(
+			ctx,
+			payload({ observed_at: at("00051") }, [run({ phase: "Integration" })]),
+		);
+		expect(await newer.json()).toEqual({ applied: 1, ignored: 0 });
+		const [r] = await runs(ctx);
+		expect(r?.phase).toBe("Integration");
+		expect(r?.observed_at).toBe(at("00051"));
+		expect(r?.reported_at).toBe(iso(1_000));
 	});
 
 	test("events are unique per (machine, run, sequence) and arrive in any order", async () => {
