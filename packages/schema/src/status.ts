@@ -65,6 +65,9 @@ export function reportedRunState(run: {
 		return "needs_reconcile";
 	}
 	if (run.alert === "STALE_OR_IDLE") return "no_progress_suspected";
+	// Office's watchdog puts a HOLD run's own reason into `alert` (alert = run.reason), so a HOLD is a
+	// hold whatever its alert says; only a non-HOLD run with an alert we do not know is `unknown`.
+	if (run.status === "HOLD") return "hold";
 	if (run.alert !== null) return "unknown";
 	switch (run.status) {
 		case "RUNNING":

@@ -180,6 +180,19 @@ describe("reportedRunState — the 02 §6 table, row by row", () => {
 		);
 		expect(s({ status: "HOLD", reason: "MODEL_CHAIN_EXHAUSTED" })).toBe("hold");
 	});
+	test("hold also when Office reports the hold reason as the alert (watchdog: alert = run.reason)", () => {
+		expect(
+			s({
+				status: "HOLD",
+				reason: "RUNNING_AGENTS_OR_OPEN_FILES",
+				alert: "RUNNING_AGENTS_OR_OPEN_FILES",
+			}),
+		).toBe("hold");
+		// but a non-HOLD run with an alert the table does not know stays unknown
+		expect(
+			s({ status: "RUNNING", alert: "RUNNING_AGENTS_OR_OPEN_FILES" }),
+		).toBe("unknown");
+	});
 	test("passed and partial", () => {
 		expect(s({ status: "PASS", reason: "WORKTREE_RETAINED" })).toBe("passed");
 		expect(s({ status: "PARTIAL", reason: "PRESERVED_ON_HOLD" })).toBe(

@@ -358,7 +358,7 @@ describe("state vocabulary over time", () => {
 		const hold = await step(ctx, 60_000, 2, {
 			status: "HOLD",
 			reason: "RUNNING_AGENTS_OR_OPEN_FILES",
-			alert: null,
+			alert: "RUNNING_AGENTS_OR_OPEN_FILES", // the real Office watchdog sets alert = reason on a HOLD
 		});
 		expect(hold?.display).toBe("hold");
 		expect(hold?.needs_owner).toBe(true);
