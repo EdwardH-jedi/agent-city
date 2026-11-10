@@ -1,11 +1,12 @@
 // Serves the built web UI (apps/web/dist) from the hub on its own port, so one process is enough.
 // Mounted inside createApp after every hub route, so hostGuard/corsGuard run first, exactly as for
 // /api. Only regular files whose real path stays inside the dist dir are served; GET/HEAD only;
-// no directory listing. Hub route prefixes (/api, /ingest, /ws, /healthz) never fall back to
-// index.html — their misses keep the hub's plain 404.
+// no directory listing; source maps are never served. Hub route prefixes (/api, /ingest, /ws,
+// /healthz) never fall back to index.html — their misses keep the hub's plain 404, also when the
+// prefix is disguised (`//api`, `/%2Fhealthz`, `/%2e/api`, `/api%2Fnope`, any case).
 import { realpathSync, statSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
-import { extname, join, relative, resolve, sep } from "node:path";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
 import type { Handler } from "hono";
 
 /** Repo root (apps/hub/src → ../../..), so the default dist does not depend on the cwd. */
@@ -14,6 +15,7 @@ export const DEFAULT_WEB_DIST = join(REPO_ROOT, "apps", "web", "dist");
 
 /** Hub route prefixes: a miss under these is a 404, never index.html. */
 export const RESERVED_PREFIXES = ["/api", "/ingest", "/ws", "/healthz"];
+const RESERVED_SEGMENTS = new Set(RESERVED_PREFIXES.map((p) => p.slice(1)));
 
 const CONTENT_TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -21,7 +23,6 @@ const CONTENT_TYPES: Record<string, string> = {
 	".mjs": "text/javascript; charset=utf-8",
 	".css": "text/css; charset=utf-8",
 	".json": "application/json; charset=utf-8",
-	".map": "application/json; charset=utf-8",
 	".webmanifest": "application/manifest+json",
 	".txt": "text/plain; charset=utf-8",
 	".svg": "image/svg+xml",
@@ -42,18 +43,35 @@ const CONTENT_TYPES: Record<string, string> = {
 export const contentTypeFor = (file: string) =>
 	CONTENT_TYPES[extname(file).toLowerCase()] ?? "application/octet-stream";
 
-const isUnder = (path: string, prefix: string) =>
-	path === prefix || path.startsWith(`${prefix}/`);
+/** First path segment after collapsing repeated slashes and skipping `.`/`..` segments. */
+const firstSegment = (path: string) =>
+	path.split(/[/\\]+/).find((s) => s !== "" && s !== "." && s !== "..") ?? "";
 
-export const isReservedPath = (pathname: string) => {
-	const lower = pathname.toLowerCase();
-	return RESERVED_PREFIXES.some((p) => isUnder(lower, p));
+/**
+ * True when the path is, or is below, a hub route prefix — checked on the raw path and on the
+ * path percent-decoded once (so `%2F` counts as `/` and `%2e` as `.`), after collapsing repeated
+ * slashes and dot segments, case-insensitively. Over-matching only ever yields a 404.
+ */
+export const isReservedPath = (rawPathname: string) => {
+	const candidates = [rawPathname];
+	try {
+		candidates.push(decodeURIComponent(rawPathname));
+	} catch {
+		// bad encoding: staticSegments refuses it anyway
+	}
+	return candidates.some((p) =>
+		RESERVED_SEGMENTS.has(firstSegment(p).toLowerCase()),
+	);
 };
+
+/** Source maps (`*.map`, `*.map.*`) are never served, even when present in dist. */
+export const isSourceMap = (name: string) => /\.map(\.|$)/i.test(name);
 
 /**
  * URL pathname (raw, still percent-encoded) → path segments inside dist, or null when the path
  * must be refused: bad percent-encoding, NUL, backslash, `.`/`..` or any dot-segment (dotfiles),
- * or a hub route prefix. Pure; the caller still checks the real path on disk.
+ * a hub route prefix (see isReservedPath) or a source map. Pure; the caller still checks the real
+ * path on disk.
  */
 export function staticSegments(rawPathname: string): string[] | null {
 	if (isReservedPath(rawPathname)) return null;
@@ -65,9 +83,9 @@ export function staticSegments(rawPathname: string): string[] | null {
 	}
 	if (!decoded.startsWith("/")) return null;
 	if (decoded.includes("\0") || decoded.includes("\\")) return null;
-	if (isReservedPath(decoded)) return null;
 	const segments = decoded.split("/").filter((s) => s !== "");
 	if (segments.some((s) => s.startsWith("."))) return null;
+	if (segments.some(isSourceMap)) return null;
 	return segments;
 }
 
@@ -85,8 +103,28 @@ async function fileInside(
 	}
 }
 
-const acceptsHtml = (accept: string | undefined) =>
-	accept !== undefined && /\btext\/html\b/i.test(accept);
+/**
+ * True only when the client lists `text/html` explicitly with q > 0. `text/html` is the most
+ * specific range, so `text/*` / `*\/*` (whatever their q) never override it. No Accept header, a
+ * bare `*\/*` or `*\/*;q=0` → false (no SPA fallback), as before; `text/html;q=0`, a malformed q,
+ * or any listed `text/html` at q=0 → refused.
+ */
+export function acceptsHtml(accept: string | undefined): boolean {
+	if (accept === undefined) return false;
+	let html: number | undefined;
+	for (const part of accept.split(",")) {
+		const [range = "", ...params] = part.split(";").map((x) => x.trim());
+		if (range.toLowerCase() !== "text/html") continue;
+		let weight = 1;
+		for (const param of params) {
+			const [k = "", v = ""] = param.split("=").map((x) => x.trim());
+			if (k.toLowerCase() !== "q") continue;
+			weight = /^(0(\.\d{0,3})?|1(\.0{0,3})?)$/.test(v) ? Number(v) : 0;
+		}
+		html = Math.min(html ?? 1, weight);
+	}
+	return html !== undefined && html > 0;
+}
 
 export interface WebDist {
 	/** Real path of a dist dir that holds index.html; null → static serving disabled. */
@@ -158,6 +196,8 @@ export function webStatic(distDir: string): Handler {
 		if (segments.length === 0) return index ? send(index, true) : c.notFound();
 
 		const file = await fileInside(root, join(root, ...segments));
+		// a symlink alias inside dist must not expose a source map either
+		if (file && isSourceMap(basename(file))) return c.notFound();
 		if (file) return send(file, file === index);
 
 		// SPA fallback: page-like paths only (no extension, not under /assets), for HTML clients.

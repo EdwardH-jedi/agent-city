@@ -19,7 +19,9 @@ import {
 	startHub,
 } from "./index.ts";
 import {
+	acceptsHtml,
 	DEFAULT_WEB_DIST,
+	isReservedPath,
 	REPO_ROOT,
 	resolveWebDist,
 	staticSegments,
@@ -30,6 +32,20 @@ const OUTSIDE_MARKER = "outside-dist-marker";
 const INDEX_HTML =
 	'<!doctype html><title>city</title><script type="module" src="/assets/index-abc123.js"></script>';
 const ASSET_JS = "console.log('city');";
+const SOURCE_MAP =
+	'{"version":3,"sources":["src/secret-source.ts"],"mappings":""}';
+/** Disguised hub route prefixes: each must 404 like the plain hub, never return index.html. */
+const DISGUISED_RESERVED = [
+	"//api/nope",
+	"/%2Fhealthz",
+	"/%2fhealthz/x",
+	"/%2e/api/x",
+	"/api%2Fnope",
+	"/./ingest/x",
+	"///ws/x",
+	"/%2F%2Fapi",
+	"/Api%2Fx",
+];
 
 let root: string;
 let dist: string;
@@ -44,6 +60,13 @@ beforeAll(() => {
 	writeFileSync(join(dist, "assets", "index-abc123.js"), ASSET_JS);
 	writeFileSync(join(dist, "assets", "index-abc123.css"), "body{}");
 	writeFileSync(join(dist, "robots.txt"), "User-agent: *");
+	writeFileSync(join(dist, "assets", "app.js.map"), SOURCE_MAP);
+	writeFileSync(join(dist, "assets", "app.js.map.json"), SOURCE_MAP);
+	writeFileSync(join(dist, "app.css.MAP"), SOURCE_MAP);
+	symlinkSync(
+		join(dist, "assets", "app.js.map"),
+		join(dist, "assets", "alias.js"),
+	);
 	writeFileSync(join(dist, ".secret"), OUTSIDE_MARKER);
 	symlinkSync(join(root, "package.json"), join(dist, "escape.json"));
 	symlinkSync(join(root, "package.json"), join(dist, "assets", "escape.js"));
@@ -138,6 +161,104 @@ describe("web UI from the hub: serving", () => {
 			const res = await get(app, path);
 			expect(res.status).toBe(404);
 			expect(await res.text()).not.toContain("<title>");
+		}
+	});
+
+	test("Accept q-values: text/html at q=0 is refused, q>0 still falls back", async () => {
+		const app = appWith(dist);
+		for (const accept of [
+			"application/json, text/html;q=0",
+			"text/html;q=0",
+			"text/html; q=0.000",
+			"TEXT/HTML;Q=0",
+			"text/html;level=1;q=0",
+			"text/html, text/html;q=0",
+			"text/html;q=bogus",
+			"*/*;q=0",
+			"*/*",
+			"text/*",
+		]) {
+			const res = await get(app, "/city", { accept });
+			expect(res.status).toBe(404);
+			expect(await res.text()).not.toContain("<title>");
+		}
+		for (const accept of [
+			"text/html",
+			"text/html;q=0.5",
+			"application/json;q=1, text/html;q=0.001",
+			"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+			"text/html, */*;q=0",
+		]) {
+			const res = await get(app, "/city", { accept });
+			expect(res.status).toBe(200);
+			expect(await res.text()).toBe(INDEX_HTML);
+		}
+		expect(acceptsHtml(undefined)).toBe(false);
+		expect(acceptsHtml("")).toBe(false);
+	});
+
+	test("source maps are never served, even when present in dist", async () => {
+		const app = appWith(dist);
+		for (const path of [
+			"/assets/app.js.map",
+			"/assets/app.js.MAP",
+			"/assets/app.js.map.json",
+			"/app.css.MAP",
+			"/assets/app.js%2Emap",
+			"/assets/alias.js",
+		]) {
+			for (const accept of ["*/*", "text/html", "application/json"]) {
+				const res = await get(app, path, { accept });
+				expect(res.status).toBe(404);
+				const body = await res.text();
+				expect(body).not.toContain("secret-source");
+				expect(body).not.toContain("<title>");
+			}
+		}
+		// ordinary assets next to them are still served
+		expect(
+			(await get(app, "/assets/index-abc123.js", { accept: "*/*" })).status,
+		).toBe(200);
+	});
+
+	test("disguised hub prefixes (//api, %2F, %2e, any case) 404 like the plain hub", async () => {
+		const app = appWith(dist);
+		const plain = appWith(null);
+		for (const path of DISGUISED_RESERVED) {
+			const res = await get(app, path, { accept: "text/html" });
+			const before = await get(plain, path, { accept: "text/html" });
+			expect(res.status).toBe(404);
+			expect(before.status).toBe(404);
+			const body = await res.text();
+			expect(body).toBe(await before.text());
+			expect(body).not.toContain("<title>");
+		}
+		// an ordinary page route still falls back
+		const city = await get(app, "/city", { accept: "text/html" });
+		expect(city.status).toBe(200);
+		expect(city.headers.get("content-type")).toBe("text/html; charset=utf-8");
+		expect(await city.text()).toBe(INDEX_HTML);
+	});
+
+	test("disguised hub prefixes on raw request lines never get index.html", async () => {
+		const hub = startHub({
+			db: openDb(":memory:"),
+			ingestToken: undefined,
+			hostname: "127.0.0.1",
+			port: 0,
+			webDist: dist,
+		});
+		try {
+			for (const target of DISGUISED_RESERVED) {
+				const raw = await rawGet(hub.server.port ?? 0, target, "text/html");
+				expect(raw).toStartWith("HTTP/1.1 404");
+				expect(raw).not.toContain("<title>");
+			}
+			const city = await rawGet(hub.server.port ?? 0, "/city", "text/html");
+			expect(city).toStartWith("HTTP/1.1 200");
+			expect(city).toContain("<title>city</title>");
+		} finally {
+			hub.stop();
 		}
 	});
 
@@ -238,8 +359,33 @@ describe("web UI from the hub: path safety", () => {
 			"/ingest",
 			"/ws",
 			"/healthz",
+			"//api/nope",
+			"/%2Fhealthz",
+			"/%2e/api/x",
+			"/api%2Fnope",
+			"/./ingest/x",
+			"/a/../api",
+			"/API/x",
+			"/assets/app.js.map",
+			"/assets/app.js.map.json",
+			"/x.MAP",
 		])
 			expect(staticSegments(p)).toBeNull();
+		for (const p of DISGUISED_RESERVED) expect(isReservedPath(p)).toBe(true);
+		for (const p of [
+			"/",
+			"/city",
+			"/apiary",
+			"/assets/api",
+			"/sub/ws",
+			"/%61piary",
+		])
+			expect(isReservedPath(p)).toBe(false);
+		expect(staticSegments("/mapper")).toEqual(["mapper"]);
+		expect(staticSegments("/assets/sitemap.xml")).toEqual([
+			"assets",
+			"sitemap.xml",
+		]);
 		expect(staticSegments("/")).toEqual([]);
 		expect(staticSegments("/assets/index-abc123.js")).toEqual([
 			"assets",
@@ -359,7 +505,11 @@ describe("bind address", () => {
 });
 
 /** Send a request line verbatim (no client-side URL normalisation) and return the raw response. */
-async function rawGet(port: number, target: string): Promise<string> {
+async function rawGet(
+	port: number,
+	target: string,
+	accept = "*/*",
+): Promise<string> {
 	let out = "";
 	const { promise, resolve } = Promise.withResolvers<string>();
 	const socket = await Bun.connect({
@@ -378,7 +528,7 @@ async function rawGet(port: number, target: string): Promise<string> {
 		},
 	});
 	socket.write(
-		`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAccept: */*\r\nConnection: close\r\n\r\n`,
+		`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAccept: ${accept}\r\nConnection: close\r\n\r\n`,
 	);
 	const timer = setTimeout(() => {
 		socket.end();

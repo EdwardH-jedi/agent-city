@@ -83,6 +83,15 @@ The hub serves `apps/web/dist` (override with `AGENTCITY_WEB_DIST`) on its own p
 `Host`/CORS checks as `/api`. Without a built `index.html` it logs one line and serves the API only,
 as before. This does not change the bind address (`127.0.0.1` by default) or any auth.
 
+Limits:
+
+- Source maps (`*.map`, `*.map.*`) are never served, even when the build emits them into dist.
+- Hub route prefixes (`/api`, `/ingest`, `/ws`, `/healthz`) never fall back to `index.html`, also
+  when disguised (`//api`, `/%2Fhealthz`, `/%2e/api`, `/api%2Fnope`, any case); their misses stay a
+  plain 404. Only clients that list `text/html` with q > 0 get the `index.html` fallback.
+- The dist dir must be writable only by the owner: the hub trusts its contents, and symlink aliases
+  inside dist are followed as long as they resolve inside dist.
+
 Collectors on cockpit:
 
 ```sh
