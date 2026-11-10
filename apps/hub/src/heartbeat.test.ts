@@ -104,6 +104,13 @@ describe("POST /ingest/heartbeat — auth, shape, size", () => {
 		expect(text).not.toContain("/Users/someone"); // the body is never echoed
 	});
 
+	test("the NAME of an unknown key is not reflected either", async () => {
+		const name = `sk-ant-${"z".repeat(30)}`;
+		const res = await postBeat(ctx, beat({ [name]: 1 }));
+		expect(res.status).toBe(400);
+		expect(await res.text()).not.toContain(name);
+	});
+
 	test("invalid JSON → 400; wrong field types → 400", async () => {
 		expect((await postBeat(ctx, "{not json")).status).toBe(400);
 		expect((await postBeat(ctx, beat({ seq: "1" }))).status).toBe(400);

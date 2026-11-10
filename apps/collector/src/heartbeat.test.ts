@@ -48,16 +48,28 @@ describe("createSender", () => {
 		expect(a.sent_at).toBe("2026-01-01T00:00:00.000Z");
 	});
 
+	test("a token-shaped hostname is redacted before it is sent", () => {
+		const secret = `ghp_${"a".repeat(36)}`;
+		const body = createSender(cfg({ hostname: secret })).build();
+		expect(JSON.stringify(body)).not.toContain(secret);
+	});
+
 	test("two senders (two process starts) get different boot_ids", () => {
 		const x = createSender(cfg()).build();
 		const y = createSender(cfg()).build();
 		expect(x.boot_id).not.toBe(y.boot_id);
 	});
 
-	test("hostname is cut to 64 chars and omitted when empty", () => {
-		expect(
-			createSender(cfg({ hostname: "h".repeat(100) })).build().hostname,
-		).toHaveLength(64);
+	test("a long hostname always still satisfies the hub schema; an empty one is omitted", () => {
+		for (const hostname of [
+			"h".repeat(100),
+			"host ".repeat(40),
+			`${"a".repeat(63)} b`,
+		]) {
+			const body = createSender(cfg({ hostname })).build();
+			expect(Heartbeat.safeParse(body).success).toBe(true);
+			expect((body.hostname ?? "").length).toBeLessThanOrEqual(64);
+		}
 		expect(
 			createSender(cfg({ hostname: "" })).build().hostname,
 		).toBeUndefined();
@@ -124,6 +136,50 @@ describe("runHeartbeatLoop", () => {
 		});
 		expect(seen).toEqual([false, false, true]);
 		expect(slept).toEqual([30_000, 30_000, 30_000]);
+	});
+
+	test("sends even when no onResult callback is given", async () => {
+		const stop = new AbortController();
+		let sent = 0;
+		await runHeartbeatLoop({
+			send: async () => {
+				sent++;
+				return true;
+			},
+			intervalMs: 1,
+			signal: stop.signal,
+			sleep: async () => {
+				if (sent === 2) stop.abort();
+			},
+		});
+		expect(sent).toBe(2);
+	});
+
+	test("the default sleep leaves no abort listener behind", async () => {
+		// Count add/remove on a signal across several completed waits.
+		const stop = new AbortController();
+		let live = 0;
+		const add = stop.signal.addEventListener.bind(stop.signal);
+		const remove = stop.signal.removeEventListener.bind(stop.signal);
+		stop.signal.addEventListener = ((...a: Parameters<typeof add>) => {
+			live++;
+			return add(...a);
+		}) as typeof add;
+		stop.signal.removeEventListener = ((...a: Parameters<typeof remove>) => {
+			live--;
+			return remove(...a);
+		}) as typeof remove;
+		let sent = 0;
+		await runHeartbeatLoop({
+			send: async () => {
+				if (++sent === 4) stop.abort();
+				return true;
+			},
+			intervalMs: 1,
+			signal: stop.signal,
+		});
+		expect(sent).toBe(4);
+		expect(live).toBeLessThanOrEqual(0);
 	});
 
 	test("an already-aborted signal sends nothing", async () => {

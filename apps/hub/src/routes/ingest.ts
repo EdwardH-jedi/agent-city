@@ -134,10 +134,14 @@ export function createIngest({
 			}
 			const parsed = Heartbeat.safeParse(raw);
 			if (!parsed.success) {
-				const issues = parsed.error.issues.slice(0, 20).map((i) => ({
-					path: i.path.join("."),
-					message: i.message,
-				}));
+				// An unrecognized key's own message names the key; never reflect caller-chosen text.
+				const issues = parsed.error.issues
+					.slice(0, 20)
+					.map((i) =>
+						i.code === "unrecognized_keys"
+							? { path: "", message: "unknown key" }
+							: { path: i.path.join("."), message: i.message },
+					);
 				return c.json({ error: "invalid payload", issues }, 400);
 			}
 			const result = recordHeartbeat(db, parsed.data, now());

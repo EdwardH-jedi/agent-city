@@ -184,6 +184,13 @@ cockpit/forge/spine → 400) and answers `{accepted}`. A repeat or out-of-order 
 `boot_id` is ignored (`accepted:false`); a new `boot_id` counts as a restart. Failed sends are
 dropped, not queued. The sender needs no new variable (`HUB_URL`, `INGEST_TOKEN`, `AGENTCITY_MACHINE`).
 
+Known limits of the heartbeat (by design, not bugs): the screen re-derives each state with the
+*viewer's* clock against the hub's receive time, so a viewer clock off by several minutes shows the
+wrong state; only the latest `boot_id` per machine is remembered, so a replayed beat of an older
+boot is taken as a restart (a sender needs the ingest token either way); while `/ws` is down the
+strip keeps ageing its last snapshot toward `offline` even if the hub still receives beats; after
+`db:reset` reload the page, because a fresh `unobserved` row never overwrites a machine already seen.
+
 **Ids.** Sessions are `claude:<session_id>` / `codex:<session_id>`; the main agent shares the session
 id; a subagent is `<session id>/sub:<tool_use_id>` (one function set in `packages/schema/src/ids.ts`,
 used by both collectors and the hub — the hub also upgrades events spooled by an older collector).

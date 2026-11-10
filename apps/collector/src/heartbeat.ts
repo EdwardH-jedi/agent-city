@@ -10,6 +10,7 @@ import {
 	HEARTBEAT_INTERVAL_S,
 	type Heartbeat,
 	MachineRole,
+	safeText,
 } from "@agent-city/schema";
 import { type CollectorConfig, loadConfig } from "./config.ts";
 
@@ -48,7 +49,12 @@ export function createSender(
 	const now = opts.now ?? (() => new Date());
 	const bootId = opts.bootId ?? randomUUID();
 	const intervalS = opts.intervalS ?? HEARTBEAT_INTERVAL_S;
-	const host = cfg.hostname.slice(0, HOSTNAME_MAX);
+	// Clip then redact like every other collector string before it leaves the machine (AGENTS.md rule 3).
+	// clip() may append "…" after cutting, so leave room for it: the result must always fit the schema's 64.
+	const host = (safeText(cfg.hostname, HOSTNAME_MAX - 1) ?? "").slice(
+		0,
+		HOSTNAME_MAX,
+	);
 	let seq = 0;
 
 	const build = (): Heartbeat => ({
@@ -85,15 +91,15 @@ export type Sleep = (ms: number, signal: AbortSignal) => Promise<void>;
 
 const defaultSleep: Sleep = (ms, signal) =>
 	new Promise((resolve) => {
-		const t = setTimeout(resolve, ms);
-		signal.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(t);
-				resolve();
-			},
-			{ once: true },
-		);
+		// Whichever ends the wait removes the other, so a resident process does not collect one abort
+		// listener per 30 s beat.
+		const done = () => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal.addEventListener("abort", done, { once: true });
 	});
 
 /** Beat, wait, repeat until aborted. `onResult` sees each outcome (used to log only changes). */
@@ -106,7 +112,9 @@ export async function runHeartbeatLoop(opts: {
 }): Promise<void> {
 	const sleep = opts.sleep ?? defaultSleep;
 	while (!opts.signal.aborted) {
-		opts.onResult?.(await opts.send());
+		// Await first: `onResult?.(await send())` would skip send() entirely when onResult is absent.
+		const ok = await opts.send();
+		opts.onResult?.(ok);
 		if (opts.signal.aborted) break;
 		await sleep(opts.intervalMs, opts.signal);
 	}
@@ -124,8 +132,16 @@ if (import.meta.main) {
 	for (const sig of ["SIGINT", "SIGTERM"] as const) {
 		process.on(sig, () => stop.abort());
 	}
+	// Origin only: HUB_URL could carry credentials or a path, and the log must stay free of both.
+	const hub = (() => {
+		try {
+			return new URL(cfg.hubUrl).origin;
+		} catch {
+			return "(HUB_URL is not a valid URL)";
+		}
+	})();
 	console.log(
-		`heartbeat: machine=${cfg.machine} hub=${cfg.hubUrl} every ${HEARTBEAT_INTERVAL_S}s`,
+		`heartbeat: machine=${cfg.machine} hub=${hub} every ${HEARTBEAT_INTERVAL_S}s`,
 	);
 	let last: boolean | null = null;
 	await runHeartbeatLoop({
