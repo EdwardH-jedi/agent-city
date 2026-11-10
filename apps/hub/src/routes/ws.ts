@@ -4,7 +4,12 @@
 // Server → client only.
 import type { WebSocketHandler } from "bun";
 
-export type BroadcastKind = "event" | "session" | "repo" | "invalidate";
+export type BroadcastKind =
+	| "event"
+	| "session"
+	| "repo"
+	| "machine"
+	| "invalidate";
 export type InvalidateScope = "sessions" | "events" | "repos";
 export type Publish = (kind: BroadcastKind, data: unknown) => void;
 

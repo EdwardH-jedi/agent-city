@@ -1,8 +1,31 @@
 // Session state machine. Pure functions — the hub applies nextStatus() on every ingested event and
 // applyStale() from its 1-minute timer.
-import type { SessionStatus } from "./types.ts";
+import {
+	HEARTBEAT_OFFLINE_FROM_MS,
+	HEARTBEAT_ONLINE_BELOW_MS,
+} from "./limits.ts";
+import type { MachineLiveness, SessionStatus } from "./types.ts";
 
 export const STALE_AFTER_MS = 15 * 60 * 1000;
+
+/**
+ * Machine liveness from the hub's receive time of the latest heartbeat. Pure: the screen calls it
+ * again with its own clock so a machine that stops beating turns stale/offline without any message.
+ * No receive time (or an unparseable one) → unobserved. A receive time slightly ahead of `now`
+ * (clock rounding) counts as just received.
+ */
+export function machineStatus(
+	heartbeatAt: string | null,
+	now: Date,
+): MachineLiveness {
+	if (heartbeatAt === null) return "unobserved";
+	const at = Date.parse(heartbeatAt);
+	if (Number.isNaN(at)) return "unobserved";
+	const age = now.getTime() - at;
+	if (age < HEARTBEAT_ONLINE_BELOW_MS) return "online";
+	if (age < HEARTBEAT_OFFLINE_FROM_MS) return "stale";
+	return "offline";
+}
 
 /**
  * Status a session moves to after an event of `type` (canonical Claude hook names; the Codex

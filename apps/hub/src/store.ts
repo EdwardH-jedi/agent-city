@@ -5,8 +5,11 @@ import {
 	applyStale,
 	type Event,
 	endsAgent,
+	type Heartbeat,
 	type IngestEvent,
 	MachineRole,
+	type MachineView,
+	machineStatus,
 	mainAgentId,
 	namespaceIds,
 	nextStatus,
@@ -15,6 +18,7 @@ import {
 	type Session,
 	type SessionStatus,
 	STALE_AFTER_MS,
+	safeText,
 	sanitizeEvent,
 } from "@agent-city/schema";
 
@@ -444,4 +448,95 @@ export function listAgents(db: Database, sessionId: string): Agent[] {
 			"SELECT * FROM agents WHERE session_id = $id ORDER BY kind, id",
 		)
 		.all({ id: sessionId });
+}
+
+interface MachineRow {
+	id: string;
+	hostname: string | null;
+	heartbeat_at: string | null;
+	heartbeat_boot: string | null;
+	heartbeat_seq: number | null;
+	heartbeat_interval_s: number | null;
+}
+
+const MACHINE_COLUMNS =
+	"id, hostname, heartbeat_at, heartbeat_boot, heartbeat_seq, heartbeat_interval_s";
+
+const toMachineView = (
+	role: MachineRole,
+	row: MachineRow | null | undefined,
+	now: Date,
+): MachineView => ({
+	id: role,
+	hostname: row?.hostname ?? null,
+	heartbeat_at: row?.heartbeat_at ?? null,
+	interval_s: row?.heartbeat_interval_s ?? null,
+	status: machineStatus(row?.heartbeat_at ?? null, now),
+});
+
+export interface HeartbeatResult {
+	/** false → a repeat or out-of-order beat of the same boot: nothing was changed. */
+	accepted: boolean;
+	machine: MachineView;
+}
+
+/**
+ * Record one heartbeat. The liveness clock is `now` (the hub's receive time); the sender's `sent_at`
+ * is never stored. Within one `boot_id` the sequence must increase, so a retransmitted or reordered
+ * beat is a harmless no-op; a new `boot_id` is a restart and is always accepted.
+ */
+export function recordHeartbeat(
+	db: Database,
+	hb: Heartbeat,
+	now: Date,
+): HeartbeatResult {
+	const hostname = safeText(hb.hostname, 64);
+	const apply = db.transaction(() => {
+		db.query(
+			`INSERT INTO machines (id, hostname, role) VALUES ($id, $hostname, $id)
+			 ON CONFLICT(id) DO NOTHING`,
+		).run({ id: hb.machine_id, hostname });
+		const read = () =>
+			db
+				.query<MachineRow, { id: string }>(
+					`SELECT ${MACHINE_COLUMNS} FROM machines WHERE id = $id`,
+				)
+				.get({ id: hb.machine_id });
+		const before = read();
+		const repeat =
+			before?.heartbeat_boot === hb.boot_id &&
+			before.heartbeat_seq !== null &&
+			hb.seq <= before.heartbeat_seq;
+		if (repeat) return { accepted: false, row: before };
+		db.query(
+			`UPDATE machines SET
+			   hostname = coalesce($hostname, hostname),
+			   heartbeat_at = $at,
+			   heartbeat_boot = $boot,
+			   heartbeat_seq = $seq,
+			   heartbeat_interval_s = $interval
+			 WHERE id = $id`,
+		).run({
+			id: hb.machine_id,
+			hostname,
+			at: now.toISOString(),
+			boot: hb.boot_id,
+			seq: hb.seq,
+			interval: hb.interval_s,
+		});
+		return { accepted: true, row: read() };
+	});
+	const { accepted, row } = apply();
+	return { accepted, machine: toMachineView(hb.machine_id, row, now) };
+}
+
+/** Always one row per MachineRole (cockpit, forge, spine); a machine never heard from is `unobserved`. */
+export function listMachines(db: Database, now: Date): MachineView[] {
+	const rows = db
+		.query<MachineRow, []>(`SELECT ${MACHINE_COLUMNS} FROM machines`)
+		.all();
+	const byId = new Map(rows.map((r) => [r.id, r]));
+	return MachineRole.options.map((role) =>
+		toMachineView(role, byId.get(role), now),
+	);
 }

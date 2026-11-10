@@ -58,6 +58,7 @@ bun run districts:draft  # config/districts.draft.yaml (gitignored; never overwr
 bun run db:reset         # hub stopped: DB (+ -wal/-shm) → <db>.bak.<UTC stamp>, fresh migrated DB
 bun run collector:hooks  # print-only merge of the Claude hook into ~/.claude/settings.json
 bun run collector:codex  # resident Codex log tailer
+bun run collector:heartbeat # resident machine heartbeat → hub (cockpit / forge / spine online · stale · offline)
 bun run check:secrets    # scan tracked/untracked files for token patterns
 ```
 

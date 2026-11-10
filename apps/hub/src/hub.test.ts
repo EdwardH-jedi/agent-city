@@ -77,7 +77,7 @@ describe("basics", () => {
 		expect(await res.json()).toMatchObject({ ok: true, ingest: "enabled" });
 	});
 
-	test("migrations: 7 tables, user_version 5, agents.ended_at, sessions.rev", () => {
+	test("migrations: 7 tables, user_version 6, agents.ended_at, sessions.rev, machines.heartbeat_*", () => {
 		const tables = ctx.db
 			.query<{ name: string }, []>(
 				"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -96,7 +96,23 @@ describe("basics", () => {
 		expect(
 			ctx.db.query<{ user_version: number }, []>("PRAGMA user_version").get()
 				?.user_version,
-		).toBe(5);
+		).toBe(6);
+		expect(
+			ctx.db
+				.query<{ name: string }, []>(
+					"SELECT name FROM pragma_table_info('machines')",
+				)
+				.all()
+				.map((r) => r.name),
+		).toEqual(
+			expect.arrayContaining([
+				"last_seen_at",
+				"heartbeat_at",
+				"heartbeat_boot",
+				"heartbeat_seq",
+				"heartbeat_interval_s",
+			]),
+		);
 		expect(
 			ctx.db
 				.query<{ name: string }, []>(

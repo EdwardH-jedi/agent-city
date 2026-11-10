@@ -1,5 +1,11 @@
 // Pure merge rules for the live view (unit-tested in merge.test.ts). No React, no DOM.
-import type { Event, Session, SessionStatus } from "@agent-city/schema";
+import {
+	type Event,
+	type MachineView,
+	machineStatus,
+	type Session,
+	type SessionStatus,
+} from "@agent-city/schema";
 
 export const EVENT_LIMIT = 200;
 
@@ -41,6 +47,7 @@ export type HubMessage =
 	| { kind: "event"; data: Event }
 	| { kind: "session"; data: Session }
 	| { kind: "repo"; data: unknown }
+	| { kind: "machine"; data: MachineView }
 	| { kind: "invalidate"; scope: Scope[] };
 
 /** Parse one /ws frame; unknown or malformed frames → null. */
@@ -57,9 +64,51 @@ export function parseHubMessage(raw: string): HubMessage | null {
 			: [];
 		return { kind: "invalidate", scope };
 	}
-	if (m?.kind === "event" || m?.kind === "session" || m?.kind === "repo")
+	if (
+		m?.kind === "event" ||
+		m?.kind === "session" ||
+		m?.kind === "repo" ||
+		m?.kind === "machine"
+	)
 		return m as HubMessage;
 	return null;
+}
+
+const MACHINE_ORDER = ["cockpit", "forge", "spine"] as const;
+
+/**
+ * Upsert machines by id. A snapshot or message carrying an older heartbeat never replaces a newer one
+ * (a snapshot that raced a live beat can't win), and the result is always cockpit, forge, spine.
+ */
+export function mergeMachines(
+	current: readonly MachineView[],
+	incoming: readonly MachineView[],
+): MachineView[] {
+	const byId = new Map(current.map((m) => [m.id, m]));
+	for (const m of incoming) {
+		const prev = byId.get(m.id);
+		if (!prev || (m.heartbeat_at ?? "") >= (prev.heartbeat_at ?? ""))
+			byId.set(m.id, m);
+	}
+	return MACHINE_ORDER.flatMap((id) => {
+		const m = byId.get(id);
+		return m ? [m] : [];
+	});
+}
+
+/**
+ * Re-derive every machine's state from this screen's clock. The hub's `status` is only a snapshot of
+ * the moment it answered; a machine that stops beating must turn stale, then offline, with no message.
+ */
+export function machinesAt(
+	machines: readonly MachineView[],
+	now: number,
+): MachineView[] {
+	const at = new Date(now);
+	return machines.map((m) => ({
+		...m,
+		status: machineStatus(m.heartbeat_at, at),
+	}));
 }
 
 const LIVE: ReadonlySet<SessionStatus> = new Set(["active", "waiting", "idle"]);

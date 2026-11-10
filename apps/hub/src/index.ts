@@ -20,6 +20,8 @@ export interface AppDeps {
 	db: Database;
 	ingestToken: string | undefined;
 	publish: Publish;
+	/** Clock for heartbeat receive time and machine liveness; tests inject one. */
+	now?: () => Date;
 	/** Host/Origin allowlists; defaults to a 127.0.0.1-bound hub. */
 	security?: SecurityConfig;
 }
@@ -44,7 +46,7 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	app.route("/ingest", createIngest({ ...deps, spoolDrops }));
-	app.route("/api", createApi(deps.db));
+	app.route("/api", createApi(deps.db, deps.now));
 
 	app.onError((err, c) => {
 		// Message only — never the request body.

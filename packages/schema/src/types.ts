@@ -2,7 +2,11 @@
 // is a valid value of its type (booleans are 0/1 in SQLite; the hub converts at the boundary).
 // Timestamps are ISO-8601 UTC strings.
 import { z } from "zod";
-import { MAX_INGEST_BATCH } from "./limits.ts";
+import {
+	HEARTBEAT_INTERVAL_MAX_S,
+	HEARTBEAT_INTERVAL_MIN_S,
+	MAX_INGEST_BATCH,
+} from "./limits.ts";
 
 const Ts = z.iso.datetime({ offset: true });
 
@@ -26,6 +30,46 @@ export type SessionStatus = z.infer<typeof SessionStatus>;
 
 export const AgentKind = z.enum(["main", "subagent"]);
 export type AgentKind = z.infer<typeof AgentKind>;
+
+/** What the screen shows per machine. A machine fact, never the success of any AI work. */
+export const MachineLiveness = z.enum([
+	"online",
+	"stale",
+	"offline",
+	"unobserved",
+]);
+export type MachineLiveness = z.infer<typeof MachineLiveness>;
+
+/**
+ * POST /ingest/heartbeat body. Strict: an unknown key is a 400, and there is deliberately no field
+ * that could carry a path, command or prompt.
+ */
+export const Heartbeat = z.strictObject({
+	schema: z.literal(1),
+	machine_id: MachineRole,
+	hostname: z.string().min(1).max(64).optional(),
+	boot_id: z.string().regex(/^[A-Za-z0-9-]{8,64}$/),
+	seq: z.number().int().nonnegative(),
+	/** Sender clock. Only for showing a clock difference; liveness never uses it. */
+	sent_at: Ts,
+	interval_s: z
+		.number()
+		.int()
+		.min(HEARTBEAT_INTERVAL_MIN_S)
+		.max(HEARTBEAT_INTERVAL_MAX_S),
+});
+export type Heartbeat = z.infer<typeof Heartbeat>;
+
+/** GET /api/machines row. Always one per MachineRole; `unobserved` when nothing was ever received. */
+export const MachineView = z.object({
+	id: MachineRole,
+	hostname: z.string().nullable(),
+	/** Hub receive time of the latest accepted heartbeat. */
+	heartbeat_at: Ts.nullable(),
+	interval_s: z.number().int().nullable(),
+	status: MachineLiveness,
+});
+export type MachineView = z.infer<typeof MachineView>;
 
 export const Machine = z.object({
 	id: z.string().min(1),

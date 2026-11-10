@@ -1,9 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { IngestBatch, IngestEvent, MAX_INGEST_BATCH } from "@agent-city/schema";
-import { Hono } from "hono";
+import {
+	HEARTBEAT_MAX_BODY_BYTES,
+	Heartbeat,
+	IngestBatch,
+	IngestEvent,
+	MAX_INGEST_BATCH,
+} from "@agent-city/schema";
+import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { ingestEvents } from "../store.ts";
+import { ingestEvents, recordHeartbeat } from "../store.ts";
 import type { Publish } from "./ws.ts";
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -22,6 +28,8 @@ export interface IngestDeps {
 	publish: Publish;
 	/** machine → cumulative events its collector spool has discarded (F05), shown on /healthz. */
 	spoolDrops?: Map<string, number>;
+	/** Receive clock for heartbeats; defaults to the wall clock. */
+	now?: () => Date;
 }
 
 const MACHINE_HEADER = /^[A-Za-z0-9._:-]{1,64}$/;
@@ -34,20 +42,24 @@ export function createIngest({
 	ingestToken,
 	publish,
 	spoolDrops,
+	now = () => new Date(),
 }: IngestDeps): Hono {
 	const ingest = new Hono();
 
+	// Shared by every ingest route: no token configured → 503, missing/wrong bearer → 401.
+	const auth: MiddlewareHandler = async (c, next) => {
+		if (!ingestToken) return c.json({ error: "ingest disabled" }, 503);
+		const header = c.req.header("authorization") ?? "";
+		const m = /^Bearer\s+(.+)$/i.exec(header);
+		if (!m?.[1] || !tokenMatches(m[1].trim(), ingestToken)) {
+			return c.json({ error: "unauthorized" }, 401);
+		}
+		await next();
+	};
+
 	ingest.post(
 		"/",
-		async (c, next) => {
-			if (!ingestToken) return c.json({ error: "ingest disabled" }, 503);
-			const auth = c.req.header("authorization") ?? "";
-			const m = /^Bearer\s+(.+)$/i.exec(auth);
-			if (!m?.[1] || !tokenMatches(m[1].trim(), ingestToken)) {
-				return c.json({ error: "unauthorized" }, 401);
-			}
-			await next();
-		},
+		auth,
 		bodyLimit({
 			maxSize: MAX_BODY_BYTES,
 			onError: (c) => c.json({ error: "payload too large" }, 413),
@@ -100,6 +112,37 @@ export function createIngest({
 				accepted: result.accepted,
 				duplicates: result.duplicates,
 			});
+		},
+	);
+
+	// POST /ingest/heartbeat — one machine's "I am running" beat. Same bearer token as /ingest, a
+	// strict body of at most 4 KiB, and liveness measured on the hub's receive clock only. A repeated
+	// or out-of-order beat (same boot_id, seq not increasing) answers {accepted:false} and changes nothing.
+	ingest.post(
+		"/heartbeat",
+		auth,
+		bodyLimit({
+			maxSize: HEARTBEAT_MAX_BODY_BYTES,
+			onError: (c) => c.json({ error: "payload too large" }, 413),
+		}),
+		async (c) => {
+			let raw: unknown;
+			try {
+				raw = await c.req.json();
+			} catch {
+				return c.json({ error: "invalid JSON" }, 400);
+			}
+			const parsed = Heartbeat.safeParse(raw);
+			if (!parsed.success) {
+				const issues = parsed.error.issues.slice(0, 20).map((i) => ({
+					path: i.path.join("."),
+					message: i.message,
+				}));
+				return c.json({ error: "invalid payload", issues }, 400);
+			}
+			const result = recordHeartbeat(db, parsed.data, now());
+			if (result.accepted) publish("machine", result.machine);
+			return c.json({ accepted: result.accepted });
 		},
 	);
 
