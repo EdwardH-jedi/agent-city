@@ -214,8 +214,11 @@ values are kept verbatim; the only thing City adds is the receive time and `snap
 is refused with 401), a strict snake_case JSON body of at most 256 KiB, and only from `machine_id:
 "cockpit"` (any other machine → 403). Every string is an allowlisted short code: `status` / `reason` /
 `alert` are UPPER_SNAKE, ids and event codes start with a letter or digit and hold no `/`, `\`, space,
-`..` or drive letter, `phase` is one or two capitalised words, `project` is `owner/name`; anything
-secret- or opaque-token-shaped (a known token prefix, `Bearer …`, a long random-looking run) is refused.
+`..` or drive letter, `phase` is exactly one of Office's nine pipeline phases (Goal, Plan, Approval,
+Implementation, QA, Independent Review, Integration, Cleanup, Report), `project` is a GitHub
+`owner/repo` (repo may start with `.` as in `.github`; not `.`/`..`, no `.git` suffix, no second `/`);
+anything secret- or opaque-token-shaped (a known token prefix, `Bearer …`, a long random-looking run)
+is refused (`project` gets the token-prefix checks only: long ordinary repo names are valid).
 So a goal text, a path, a session key or a token has no field and is a 400 (the value is never echoed).
 Reports are ordered by `(ledger_revision, last_event_sequence)`; at the same position only a strictly
 newer `observed_at` applies (compared exactly: below the millisecond, offsets applied). An older or
@@ -228,8 +231,10 @@ Known limits of the run projection (by design, not bugs):
 - `commit_on_remote` (joining a passed run to the GitHub sync) is not implemented.
 - A holder of the Office token can assert PASS/evidence_verified; City mirrors the cockpit's report and does not verify signatures.
 - Hub clock moving backwards can make elapsed time briefly wrong.
-- A short capitalised phrase as `phase`, or a two-part name like `ssh/id_rsa` as `project`, has a
-  legitimate shape and cannot be told apart without Office's own lists.
+- `phase` is a closed list mirrored from Office: a phase Office adds needs a City release, and until
+  then every report carrying it is rejected.
+- A two-part name like `ssh/id_rsa` as `project` has a legitimate `owner/repo` shape and cannot be
+  told apart from a real repository.
 
 **Ids.** Sessions are `claude:<session_id>` / `codex:<session_id>`; the main agent shares the session
 id; a subagent is `<session id>/sub:<tool_use_id>` (one function set in `packages/schema/src/ids.ts`,

@@ -113,59 +113,119 @@ describe("RunsPayload", () => {
 		expect(ok(payload({ runs: [run({ phase: "Report" })] }))).toBe(true);
 	});
 
-	test("phase: a few capitalised words only — no Bearer value, no prompt, no token", () => {
-		for (const good of [
-			"QA",
+	test("phase: exactly Office's nine phases; anything else is refused", () => {
+		const nine = [
+			"Goal",
 			"Plan",
-			"Report",
-			"Integration",
+			"Approval",
+			"Implementation",
+			"QA",
 			"Independent Review",
-		])
+			"Integration",
+			"Cleanup",
+			"Report",
+		];
+		for (const good of nine)
 			expect(ok(payload({ runs: [run({ phase: good })] }))).toBe(true);
 		const bad = [
+			"Delete Files",
+			"Bearer x",
 			"Bearer Abcdefghij",
 			`Bearer ${"abcdefghij".repeat(2)}0123456789`, // built at runtime (check:secrets)
 			"Token Abcdefgh",
 			"delete all my files",
-			"Please Delete Every File",
 			"Delete Every File",
 			"Ignore previous instructions",
+			"qa",
+			"QA ",
 			"QA\nrm",
-			"QA  Plan",
-			" QA",
-			"Abc1",
+			"Independent  Review",
+			"Review",
+			"",
 			`sk-${"a".repeat(20)}`,
 			"/etc/passwd",
-			".ssh",
 		];
 		for (const v of bad)
 			expect(ok(payload({ runs: [run({ phase: v })] }))).toBe(false);
 	});
 
-	test("project: owner/name only — relative paths, dot/tilde/drive starts and tokens are refused", () => {
+	test("project: GitHub owner/repo — real repo names pass; paths, extra segments and tokens are refused", () => {
 		for (const good of [
 			"EdwardH-jedi/station0",
+			"alpha/.github",
+			"alpha/observabilityplatform2026",
+			`alpha/${"a1B2".repeat(25)}`, // 100 chars, GitHub's maximum
 			"local/agent-city",
 			"a/b.c_d-e",
+			"owner/.env", // a legal repo name (accepted residual: same shape as a dotfile)
 		])
 			expect(ok(payload({ runs: [run({ project: good })] }))).toBe(true);
 		const bad = [
 			".ssh/id_rsa",
+			"~/x",
 			"~/id_rsa",
+			"a/b/c",
+			"owner/..",
+			"owner/.",
+			"owner/name.git",
+			"a\\b",
 			"./x",
 			"../x",
-			"owner/.env",
-			"owner/a..b",
 			"C:/x",
 			"C:\\x",
-			"owner\\name",
+			"/Users/x",
 			"owner/name/extra",
 			"owner name/x",
+			"owner/",
+			`alpha/${"a".repeat(101)}`,
 			`owner/ghp_${"a".repeat(30)}`,
-			`owner/${"aZ9".repeat(10)}`,
+			`owner/github_pat_${"a".repeat(30)}`,
+			`owner/sk-${"a".repeat(20)}`,
+			`owner/AKIA${"A".repeat(16)}`,
+			`owner/xoxb-${"1".repeat(12)}`,
 		];
 		for (const v of bad)
 			expect(ok(payload({ runs: [run({ project: v })] }))).toBe(false);
+	});
+
+	test("a two-run report where one project is alpha/.github is accepted in full", () => {
+		const r = RunsPayload.safeParse(
+			payload({
+				runs: [
+					run({ run_id: "station0-rule-engine-tests-1" }),
+					run({
+						run_id: "nwc-m1",
+						project: "alpha/.github",
+						workflow_id: "ao-w2-m1",
+					}),
+				],
+			}),
+		);
+		expect(r.success).toBe(true);
+		expect(r.data?.runs.map((x) => x.project)).toEqual([
+			"EdwardH-jedi/station0",
+			"alpha/.github",
+		]);
+	});
+
+	test("ordinary Office ids pass the opaque-run check", () => {
+		const slug = "station0-rule-engine-tests-abcde"; // 32-char hyphenated slug
+		expect(slug.length).toBe(32);
+		const ev = run().events[0];
+		for (const id of [
+			"station0-rule-engine-tests-1",
+			"station0-validation-notes",
+			"nwc-m1",
+			"ao-w2-m1",
+			slug,
+		]) {
+			expect(ok(payload({ runs: [run({ run_id: id })] })), id).toBe(true);
+			expect(ok(payload({ runs: [run({ workflow_id: id })] })), id).toBe(true);
+			expect(
+				ok(payload({ runs: [run({ events: [{ ...ev, test_run_key: id }] })] })),
+				id,
+			).toBe(true);
+		}
 	});
 
 	test("reason / status / alert: UPPER_SNAKE codes; an opaque token without a known prefix is refused", () => {

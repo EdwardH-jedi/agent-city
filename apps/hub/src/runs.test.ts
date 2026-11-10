@@ -207,9 +207,12 @@ describe("POST /ingest/runs — what may be posted", () => {
 		const key = "aZ9".repeat(10); // random-looking, no vendor prefix
 		for (const over of [
 			{ phase: `Bearer ${key}` },
+			{ phase: "Bearer x" },
+			{ phase: "Delete Files" },
 			{ phase: "Delete Every File" },
 			{ project: ".ssh/id_rsa" },
-			{ project: `owner/${key}` },
+			{ project: `.ssh/${key}` },
+			{ project: "a/b/c" },
 			{ reason: key },
 		]) {
 			const res = await post(ctx, payload({}, [run(over)]));
@@ -219,6 +222,56 @@ describe("POST /ingest/runs — what may be posted", () => {
 			expect(text).not.toContain(key);
 		}
 		expect(count(ctx, "runs")).toBe(0);
+	});
+
+	test("every Office phase and real GitHub repo names are accepted; a two-run report is stored in full", async () => {
+		const phases = [
+			"Goal",
+			"Plan",
+			"Approval",
+			"Implementation",
+			"QA",
+			"Independent Review",
+			"Integration",
+			"Cleanup",
+			"Report",
+		];
+		const res = await post(
+			ctx,
+			payload(
+				{},
+				phases.map((phase, i) =>
+					run({
+						run_id: `run-${i}`,
+						phase,
+						project: [
+							"alpha/.github",
+							"alpha/observabilityplatform2026",
+							"EdwardH-jedi/station0",
+						][i % 3],
+					}),
+				),
+			),
+		);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ applied: 9, ignored: 0 });
+		expect(count(ctx, "runs")).toBe(9);
+		const two = await post(
+			ctx,
+			payload({ ledger_revision: 43 }, [
+				run({ run_id: "station0-rule-engine-tests-1" }),
+				run({ run_id: "nwc-m1", project: "alpha/.github" }),
+			]),
+		);
+		expect(two.status).toBe(200);
+		expect(await two.json()).toEqual({ applied: 2, ignored: 0 });
+		const stored = await runs(ctx);
+		expect(stored.find((r) => r.run_id === "nwc-m1")?.project).toBe(
+			"alpha/.github",
+		);
+		expect(
+			stored.find((r) => r.run_id === "station0-rule-engine-tests-1")?.project,
+		).toBe("EdwardH-jedi/station0");
 	});
 
 	test("invalid JSON → 400; a body over the cap → 413", async () => {

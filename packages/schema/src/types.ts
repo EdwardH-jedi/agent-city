@@ -80,8 +80,9 @@ export type MachineView = z.infer<typeof MachineView>;
 // character class (no path separator, no quote, nothing token-shaped), so a goal text, an absolute
 // path or a secret has no field to ride in. Field names are snake_case (City convention).
 
-// Every check below is an allowlist shape plus two secret checks, and every message is a fixed phrase:
-// a rejected value is never echoed back.
+// Every check below is an allowlist shape plus two secret checks (`phase` is a closed enum; `project`
+// skips the opaque check, see there), and every message is a fixed phrase: a rejected value is never
+// echoed back.
 //   - redact(v) === v: no self-identifying token (sk-, ghp_, AKIA, JWT, "Bearer x"…) inside it;
 //   - not opaque: no long unbroken alphanumeric run that looks random. redact() only knows prefixed
 //     tokens, so a bare random key (base64 / hex / mixed-case) is refused by its shape instead.
@@ -128,29 +129,36 @@ const code = (max = 64) =>
 const upperCode = notSecret(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/));
 const hex = z.string().regex(/^[0-9a-f]{7,64}$/);
 /**
- * Pipeline phase: one or two capitalised words ("QA", "Plan", "Independent Review"), one space at
- * most, so there is no room for a sentence. An auth scheme word ("Bearer …") or anything token-shaped
- * is refused.
+ * Pipeline phase: exactly one of Agent Office's phases (server/pipeline/store.mjs `phases`), so a
+ * phase cannot carry prose or a credential. A phase Office adds later needs a City release.
  */
-const PHASE_WORD = "(?:[A-Z][a-z]{1,15}|[A-Z]{2,6})";
-const AUTH_WORD = /\b(?:bearer|basic|token|digest|authorization)\b/i;
-const phase = notSecret(
-	z
-		.string()
-		.max(32)
-		.regex(new RegExp(`^${PHASE_WORD}(?: ${PHASE_WORD})?$`))
-		.refine((v) => !AUTH_WORD.test(v), "secret-shaped"),
-);
+export const OfficePhase = z.enum([
+	"Goal",
+	"Plan",
+	"Approval",
+	"Implementation",
+	"QA",
+	"Independent Review",
+	"Integration",
+	"Cleanup",
+	"Report",
+]);
+export type OfficePhase = z.infer<typeof OfficePhase>;
 /**
- * `owner/name` only (GitHub shape): exactly one slash, each part starting with a letter or digit, so
- * an absolute or relative path (`/Users/…`, `~/x`, `.ssh/id_rsa`, `a/b/c`) does not match.
+ * GitHub `owner/repo`, configured by the Office owner (not run data). Exactly one slash; the owner
+ * starts with a letter or digit (so `/Users/…`, `~/x`, `.ssh/id_rsa`, `a/b/c`, `C:\x` do not match);
+ * the repo follows GitHub's rules: `[A-Za-z0-9._-]{1,100}`, may start with `.` (`.github`), is not
+ * `.` or `..` and does not end in `.git`. Known token prefixes are refused via redact(); the
+ * opaque-run heuristic is NOT applied here because ordinary long repo names trip it.
  */
-const project = notSecret(
-	z
-		.string()
-		.regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/)
-		.refine((v) => !v.includes(".."), "path-shaped"),
-);
+const project = z
+	.string()
+	.regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9._-]{1,100}$/)
+	.refine((v) => {
+		const repo = v.slice(v.indexOf("/") + 1);
+		return repo !== "." && repo !== ".." && !/\.git$/i.test(repo);
+	}, "path-shaped")
+	.refine((v) => redact(v) === v, "secret-shaped");
 
 export const RunEventInput = z.strictObject({
 	sequence: z.number().int().nonnegative(),
@@ -176,7 +184,7 @@ export const RunInput = z.strictObject({
 	run_id: code(128),
 	project: project.nullable(),
 	workflow_id: code(128),
-	phase,
+	phase: OfficePhase,
 	status: upperCode,
 	reason: upperCode.nullable(),
 	alert: upperCode.nullable(),
