@@ -70,6 +70,19 @@ Open http://127.0.0.1:5173. Set `INGEST_TOKEN` in `.env` before collecting
 events; an unset token disables ingest. Keep the hub on loopback. Read the
 [security model](#security-model) before changing its bind address.
 
+### Serving the web UI from the hub
+
+To run with one process (no Vite dev server), build the UI once, then start the hub alone:
+
+```sh
+bun --filter '@agent-city/web' build   # → apps/web/dist
+bun apps/hub/src/index.ts              # UI + API on http://127.0.0.1:4317
+```
+
+The hub serves `apps/web/dist` (override with `AGENTCITY_WEB_DIST`) on its own port, behind the same
+`Host`/CORS checks as `/api`. Without a built `index.html` it logs one line and serves the API only,
+as before. This does not change the bind address (`127.0.0.1` by default) or any auth.
+
 Collectors on cockpit:
 
 ```sh
@@ -119,6 +132,7 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `INGEST_TOKEN`             | hub, collector | Shared secret for `POST /ingest`. Unset on the hub → ingest disabled (503).              |
 | `OFFICE_PROJECTION_TOKEN`  | hub            | Separate secret for `POST /ingest/runs`, held only by the cockpit. Unset or equal to `INGEST_TOKEN` → disabled (503). |
 | `HUB_URL`                  | collector, web | Where collectors POST and the Vite proxy points.                                         |
+| `AGENTCITY_WEB_DIST`       | hub            | Built web UI served on the hub port (default `apps/web/dist`; relative = repo root).     |
 | `AGENTCITY_MACHINE`        | collector, hub | `cockpit` \| `forge` \| `spine`.                                                         |
 | `AGENTCITY_HOME`           | collector      | Spool / offsets / debug log dir (default `~/.agentcity`).                                |
 | `AGENTCITY_DEBUG`          | collector      | `1` → `~/.agentcity/hook.log` with timings + error messages (never payloads).            |

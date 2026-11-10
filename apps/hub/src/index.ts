@@ -13,9 +13,16 @@ import {
 	hostGuard,
 	type SecurityConfig,
 } from "./security.ts";
+import { resolveWebDist, webStatic } from "./static.ts";
 import { listReposByDistrict, sweepStale } from "./store.ts";
 
 export const STALE_SWEEP_MS = 60_000;
+/** Default bind: loopback only. Serving the web UI does not change it. */
+export const DEFAULT_HUB_HOST = "127.0.0.1";
+
+/** Bind address from the environment: HUB_HOST, else loopback. */
+export const hubHostFromEnv = (env: Record<string, string | undefined>) =>
+	env.HUB_HOST || DEFAULT_HUB_HOST;
 
 export interface AppDeps {
 	db: Database;
@@ -30,11 +37,13 @@ export interface AppDeps {
 	officeToken?: string;
 	/** Host/Origin allowlists; defaults to a 127.0.0.1-bound hub. */
 	security?: SecurityConfig;
+	/** Real path of the built web UI (see resolveWebDist). Unset → no static serving, as before. */
+	webDist?: string | null;
 }
 
 export function createApp(deps: AppDeps): Hono {
 	const app = new Hono();
-	const security = deps.security ?? { hubHost: "127.0.0.1" };
+	const security = deps.security ?? { hubHost: DEFAULT_HUB_HOST };
 	const spoolDrops = new Map<string, number>();
 	// The collector token must never also open the run route: forge/spine collectors could forge run state.
 	const officeToken =
@@ -68,6 +77,8 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	app.route("/api", createApi(deps.db, deps.now));
+	// Last, so every hub route wins and the Host/CORS guards above apply to static files too.
+	if (deps.webDist) app.get("*", webStatic(deps.webDist));
 
 	app.onError((err, c) => {
 		// Message only — never the request body.
@@ -87,6 +98,8 @@ export interface HubOptions {
 	staleSweepMs?: number;
 	/** Extra exact origins allowed for CORS and /ws (HUB_ALLOWED_ORIGINS). */
 	extraOrigins?: readonly string[];
+	/** Built web UI dir served on the same port (see AppDeps.webDist). */
+	webDist?: string | null;
 }
 
 /** Serve HTTP + /ws and run the stale sweep (once now, then every `staleSweepMs`). */
@@ -102,6 +115,7 @@ export function startHub(opts: HubOptions) {
 		officeToken: opts.officeToken,
 		publish: broadcaster.publish,
 		security,
+		webDist: opts.webDist,
 	});
 
 	const server = Bun.serve({
@@ -185,7 +199,7 @@ export function scheduleGithubSync(
 }
 
 if (import.meta.main) {
-	const hostname = process.env.HUB_HOST || "127.0.0.1";
+	const hostname = hubHostFromEnv(process.env);
 	const port = Number(process.env.HUB_PORT || 4317);
 	const dbPath = process.env.DB_PATH || "./data/agentcity.db";
 	const ingestToken = process.env.INGEST_TOKEN || undefined;
@@ -196,6 +210,8 @@ if (import.meta.main) {
 		.map((o) => o.trim())
 		.filter(Boolean);
 
+	const web = resolveWebDist(process.env.AGENTCITY_WEB_DIST);
+
 	const db = openDb(dbPath);
 	const { server, publish } = startHub({
 		db,
@@ -204,10 +220,12 @@ if (import.meta.main) {
 		hostname,
 		port,
 		extraOrigins,
+		webDist: web.dir,
 	});
 	console.log(
 		`[hub] listening on http://${server.hostname}:${server.port} (db: ${dbPath})`,
 	);
+	console.log(web.logLine);
 	if (!ingestToken) {
 		console.warn("[hub] INGEST_TOKEN is not set — /ingest is disabled (503)");
 	}
