@@ -560,3 +560,18 @@ The following work is planned, not implemented by the telemetry layer above.
   exposing a hub beyond loopback
 - Service units for the hub, Codex tailer, and SSH tunnels remain to be added
 - Old token-scoped `github_etags` rows are not automatically pruned
+- Board, session wait: the start of a wait lives only in screen memory, so after a reload a second
+  `Notification` (a later `last_event_at`) becomes the start. A wait at 0 min, a knock at 1 min, a
+  second `Notification` at 20 min and a reload give a second knock at 21 min, and the move to the
+  waiting list at 50 min instead of 30 (`sessions.ts`, `splitWaiting`)
+- Board, knock: a visit that starts inside the 5 s settle window gets no knock, then or later (wait
+  starts 07:59:02, visit 08:00:02 during settle) (`sound.ts`)
+- Board, runs: a run seen for the first time is timed from `last_progress_at`, so a run whose last
+  progress is 10 min old and that has just raised `FAILED_PROCESS_RECONCILE` shows its visit and red
+  border at once when the screen opens, instead of after 60 s (`visits.ts`)
+- Board, offline: a model built without the watch cannot restart the 60 s count when the cockpit
+  returns, so a wait of 100 s, stale at 140 s and a model built online at 1000 s shows the visit at
+  once. The Board always passes a watch, so the screen is not affected today (`visits.ts`)
+- Board, paused runs: the morning knock compares `pausedSeen < due.end`, which leaves out the exact
+  boundary; a run paused since the day before and first received at exactly 08:00:00 gets no knock
+  that morning (`sound.ts`)
