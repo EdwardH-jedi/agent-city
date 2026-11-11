@@ -221,6 +221,13 @@ function initializeCampusEngine(
 			v.figure.setPosture(p.posture, p.stride);
 			if (p.returning ? p.progress > 0 : p.progress < 1) walkers += 1;
 		}
+		// a lead that reached home on this frame is forgotten now (no frame may follow to do it)
+		const home = settleVisits(book, t, walkMsOf, reduced);
+		if (home !== book) {
+			book = home;
+			syncVisitors();
+			needsRender = true;
+		}
 		if (walkers !== walkingShown) {
 			walkingShown = walkers;
 			host.dataset.walking = String(walkers); // QA hook: leads on their way
@@ -525,6 +532,8 @@ function initializeCampusEngine(
 		reduced = input.reducedMotion;
 		const nextLayout = campusLayout(model.repos.map((r) => r.repo_id));
 		if (!world || nextLayout.key !== layout.key) rebuildWorld(nextLayout);
+		// forget leads already home (also while the tab was hidden and no frame ran), then reconcile
+		book = settleVisits(book, now(), walkMsOf, reduced);
 		book = reconcileVisits(book, model.visitors, now(), walkMsOf, reduced);
 		syncVisitors();
 		applyActivity();
