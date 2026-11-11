@@ -1,11 +1,25 @@
 // Right column (§13.5): one run, two lines — `프로젝트 · 단계` and Office's nine phases as a bar. No
-// workflow name, token count or report age; a stale run says `마지막 보고 N분 전`. At most 5, then +N.
+// workflow name, token count or report age; a stale run says `마지막 보고 N분 전`. Then the active
+// Claude / Codex sessions, one line each (decision D4). At most 5 rows, then +N.
 import { agoKo, type NowItem, type VillageModel } from "./model.ts";
 import { PHASES, projectLabel } from "./types.ts";
 
 export const NOW_SHOWN = 5;
 
+/** A session (decision D4): one line, `프로젝트 · Claude · N초 전`. No phase bar. */
+function SessionRow({ n, now }: { n: NowItem; now: number }) {
+	return (
+		<li className="now-run">
+			<div className="now-line">
+				{projectLabel(n.project_id)} · {n.phase_label}
+				<span className="now-age"> · {agoKo(n.reported_at, now)}</span>
+			</div>
+		</li>
+	);
+}
+
 function NowRow({ n, now }: { n: NowItem; now: number }) {
+	if (n.kind === "session") return <SessionRow n={n} now={now} />;
 	return (
 		<li
 			className={`now-run${n.stale ? " now-stale" : ""}${n.display === "no_progress_suspected" ? " now-slow" : ""}`}

@@ -10,7 +10,7 @@ export type Carry = "folder" | "binder";
 export interface CampusRepo {
 	repo_id: string;
 	label: string;
-	/** Running runs: one lit monitor each. */
+	/** Lit windows: running runs + active sessions, at most 4 (the board caps it). */
 	active_tasks: number;
 	/** The picture on each lit monitor, by the run's phase. */
 	monitors: MonitorKind[];
@@ -58,7 +58,7 @@ export function toCampusModel(v: VillageModel): CampusModel {
 		repos: v.village.shown.map((p) => ({
 			repo_id: p.id,
 			label: p.label,
-			active_tasks: p.running,
+			active_tasks: p.monitors.length,
 			monitors: [...p.monitors],
 			pending_requests: p.waiting + p.stopped,
 			has_stopped: p.stopped > 0,

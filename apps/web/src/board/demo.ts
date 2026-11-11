@@ -6,6 +6,7 @@ import type {
 	RunDisplay,
 	RunEventView,
 	RunView,
+	Session,
 } from "@agent-city/schema";
 import type { Districts, RepoView } from "../useHub.ts";
 import { type EventsByRun, runKey } from "./types.ts";
@@ -20,6 +21,7 @@ export interface DemoData {
 	machines: MachineView[];
 	districts: Districts;
 	eventsByRun: EventsByRun;
+	sessions: Session[];
 }
 
 export function demoData(t0: number): DemoData {
@@ -103,6 +105,41 @@ export function demoData(t0: number): DemoData {
 		}),
 		done("demo/beacon", "beacon-auth", 5 * HOUR),
 		done("demo/hollow", "hollow-cache", 9 * HOUR),
+		// decision D2: Office's loop ended for the day with tasks left
+		run("demo/ember", "ember-batch", "paused", {
+			status: "READY",
+			reason: "DISPATCH_STOPPED",
+			last_progress_at: at(3 * HOUR),
+		}),
+	];
+
+	// decision D4: Claude Code / Codex sessions (made up; no folder, branch or real id)
+	const session = (
+		id: string,
+		repo: string,
+		status: Session["status"],
+		agoMs: number,
+		provider: Session["provider"] = "claude",
+	): Session => ({
+		id: `${provider}:demo-${id}`,
+		provider,
+		machine_id: "cockpit",
+		repo_id: repo,
+		cwd: null,
+		branch: null,
+		model: null,
+		status,
+		started_at: at(agoMs + 20 * MIN),
+		last_event_at: at(agoMs),
+		ended_at: status === "ended" ? at(agoMs) : null,
+		rev: 1,
+	});
+	const sessions: Session[] = [
+		session("a", "demo/orchard", "active", 12_000),
+		session("b", "demo/quill", "active", 40_000, "codex"),
+		session("c", "demo/harbor", "waiting", 4 * MIN),
+		session("d", "demo/ferry", "waiting", 52 * MIN),
+		session("e", "demo/attic", "ended", 2 * HOUR),
 	];
 
 	const ev = (
@@ -194,5 +231,6 @@ export function demoData(t0: number): DemoData {
 			],
 		},
 		eventsByRun,
+		sessions,
 	};
 }

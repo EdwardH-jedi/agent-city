@@ -12,12 +12,14 @@ import {
 } from "./visits.ts";
 
 const none = new Map();
+const sign = (cur: ReturnType<typeof currentRuns>) =>
+	signVisits(cur, emptyWatch(), T0);
 const waiting = (over = {}) =>
 	runIn("waiting_owner", { reason: "AWAITING_PLAN_APPROVAL", ...over });
 
 describe("결재 (sign) visits", () => {
 	test("a run that needs the owner makes one sign carrying the folder, id machine:run", () => {
-		const v = signVisits(currentRuns([waiting()]));
+		const v = sign(currentRuns([waiting()]));
 		expect(v).toHaveLength(1);
 		expect(v[0]).toMatchObject({
 			id: "cockpit:demo-flow-1",
@@ -27,7 +29,7 @@ describe("결재 (sign) visits", () => {
 			code: "AWAITING_PLAN_APPROVAL",
 			until: null,
 		});
-		const hold = signVisits(
+		const hold = sign(
 			currentRuns([
 				runIn("hold", { status: "HOLD", reason: "BUDGET_EXHAUSTED" }),
 			]),
@@ -36,7 +38,7 @@ describe("결재 (sign) visits", () => {
 	});
 
 	test("a sign never ends because time passed", () => {
-		const cur = currentRuns([waiting({ last_progress_at: iso(-1000) })]);
+		const cur = currentRuns([waiting({ last_progress_at: iso(-60_000) })]);
 		for (const later of [0, 3_600_000, 30 * 24 * 3_600_000]) {
 			const v = buildVisits(cur, none, emptyWatch(), T0 + later);
 			expect(v.map((x) => x.kind)).toEqual(["sign"]);
@@ -63,7 +65,7 @@ describe("결재 (sign) visits", () => {
 
 	test("it survives the Mac going quiet: classified by what was last reported, not snapshot_stale", () => {
 		const stale = waiting({ display: "snapshot_stale" });
-		expect(signVisits(currentRuns([stale]))).toHaveLength(1);
+		expect(sign(currentRuns([stale]))).toHaveLength(1);
 	});
 
 	test("an older run of the same workflow makes no visit", () => {
@@ -119,10 +121,7 @@ describe("결재 (sign) visits", () => {
 				last_progress_at: iso(-600_000),
 			}),
 		]);
-		expect(signVisits(cur).map((v) => v.id)).toEqual([
-			"cockpit:a-1",
-			"cockpit:b-1",
-		]);
+		expect(sign(cur).map((v) => v.id)).toEqual(["cockpit:a-1", "cockpit:b-1"]);
 	});
 });
 

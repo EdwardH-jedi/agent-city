@@ -26,6 +26,20 @@ describe("stopPhrase (§6 文구表)", () => {
 		});
 	});
 
+	test("D1: a new mission (READY / GOAL_RECORDED) asks for a plan", () => {
+		expect(stopPhrase(run({ reason: "GOAL_RECORDED" }))).toEqual({
+			text: "목표를 기록했습니다. 계획을 세워 주세요.",
+			code: "GOAL_RECORDED",
+			known: true,
+		});
+	});
+
+	test("D8: PRESERVED_ON_HOLD keeps the sentence checked in Office lifecycle.mjs (report --close before Report → PARTIAL, worktree kept)", () => {
+		expect(STOP_PHRASES.PRESERVED_ON_HOLD).toBe(
+			"끝까지 가기 전에 닫았습니다. 작업 폴더는 남겨 두었습니다.",
+		);
+	});
+
 	test("a code that is not in the table is never explained: 확인이 필요합니다 + the code", () => {
 		const p = stopPhrase(run({ reason: "SOMETHING_NEW_FROM_OFFICE" }));
 		expect(p.text).toBe(UNKNOWN_TEXT);
