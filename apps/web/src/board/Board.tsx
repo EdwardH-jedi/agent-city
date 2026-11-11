@@ -1,10 +1,13 @@
 // The main screen (design doc §3): a status sentence, the HQ queue, the project village and what is
 // running now. It only reads (useHub, GET + /ws) and draws; there is nothing to click and no way to act.
+// `?demo=1` draws the same screen from made-up data instead (DemoBoard): no request, no sound, and the
+// screen says "예시 데이터".
 import { useEffect, useMemo, useRef, useState } from "react";
 import { machinesAt, runsAt } from "../merge.ts";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
+import { DEMO_LABEL, demoData } from "./demo.ts";
 import { Hq } from "./Hq.tsx";
-import { toVillageModel } from "./model.ts";
+import { toVillageModel, type VillageModel } from "./model.ts";
 import { Now } from "./Now.tsx";
 import {
 	isAudible,
@@ -87,33 +90,88 @@ export function Board({ hub }: { hub: HubData }) {
 	}, [model, now, prefs, loaded]);
 
 	return (
+		<BoardView
+			model={model}
+			now={now}
+			reconnecting={hub.conn === "reconnecting"}
+			error={hub.error}
+			demo={false}
+		/>
+	);
+}
+
+/** `?demo=1`: the same screen over made-up data. Nothing is fetched and nothing sounds. */
+export function DemoBoard() {
+	const now = useClock(1_000);
+	const [t0] = useState(() => Date.now());
+	const data = useMemo(() => demoData(t0), [t0]);
+	const model = useMemo(
+		() => toVillageModel({ ...data, now, conn: "open" }),
+		[data, now],
+	);
+	return (
+		<BoardView
+			model={model}
+			now={now}
+			reconnecting={false}
+			error={null}
+			demo={true}
+		/>
+	);
+}
+
+const MACHINE_WORD: Record<VillageModel["machines"][number]["status"], string> =
+	{
+		online: "켜짐",
+		stale: "늦음",
+		offline: "꺼짐",
+		unobserved: "모름",
+	};
+
+export function BoardView({
+	model,
+	now,
+	reconnecting,
+	error,
+	demo,
+}: {
+	model: VillageModel;
+	now: number;
+	reconnecting: boolean;
+	error: string | null;
+	demo: boolean;
+}) {
+	return (
 		<div className={`board border-${model.status.border}`}>
 			<header className="board-top">
 				<div className="board-sentence">{model.status.sentence}</div>
 				<ul className="board-machines" aria-label="머신">
 					{model.machines.map((m) => (
 						<li key={m.id} className={`bm bm-${m.status}`}>
-							<b>{m.id}</b> {m.status}
+							<i className="bm-dot" aria-hidden="true" />
+							{m.id} {MACHINE_WORD[m.status]}
 						</li>
 					))}
 				</ul>
 				<div className="board-counts">
 					오늘 완료 <b>{model.today.completed}</b> · 진행{" "}
 					<b>{model.today.running}</b>
-					<a className="board-link" href="#/detail">
-						상세 보기 (D)
-					</a>
 				</div>
+				{demo ? (
+					<span className="demo-band">{DEMO_LABEL}</span>
+				) : (
+					<a className="board-link" href="#/detail">
+						상세 (D)
+					</a>
+				)}
 			</header>
-			{hub.conn === "reconnecting" && (
-				<div className="conn-band">화면 연결 끊김</div>
-			)}
+			{reconnecting && <div className="conn-band">화면 연결 끊김</div>}
 			<div className="board-body">
 				<Hq model={model} now={now} />
 				<Village2d model={model} now={now} />
 				<Now model={model} now={now} />
 			</div>
-			{hub.error && <div className="board-error">{hub.error}</div>}
+			{error && <div className="board-error">{error}</div>}
 		</div>
 	);
 }

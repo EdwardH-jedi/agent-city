@@ -92,6 +92,14 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
   sound until the page has been interacted with, unless the kiosk browser allows autoplay.
 - A run code that is not in the phrase table (`apps/web/src/board/copy.ts`) is shown as
   `확인이 필요합니다` plus the code; the board never guesses what it means.
+- **The village** stands at most 8 project buildings (most urgent first); the rest fold into one
+  `외 N곳` sign. A building holds its name and pictures only (lit windows = running runs, a yellow / red
+  flag, the lead at the door). One speech bubble at the HQ door says the newest report; 결재 speak through
+  the HQ 대기 cards. The village dims and every figure stops when the cockpit or this screen's hub
+  connection goes quiet.
+- **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`)
+  so it can be looked at without a running Office. It opens no hub connection, plays no sound and says
+  `예시 데이터` in the top band. Without `?demo=1` only hub data is ever shown.
 
 ### Serving the web UI from the hub
 

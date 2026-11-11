@@ -79,6 +79,12 @@ export const REVIEW_TEXT = "Codex 리뷰에 들어갑니다.";
 export const AGAIN_TEXT = "한 번 실패해서 다시 시도합니다.";
 export const LEAVING_TEXT = "진행하겠습니다.";
 
+/** "T1 통과했습니다. 다음으로 넘어갑니다." → "T1 통과했습니다." (the history list keeps only what happened). */
+export function firstSentence(text: string): string {
+	const i = text.indexOf(". ");
+	return i < 0 ? text : text.slice(0, i + 1);
+}
+
 /** A report sentence for one run event, or null when the table has nothing for that transition. */
 export function eventPhrase(
 	e: Pick<RunEventView, "transition" | "task_id"> &

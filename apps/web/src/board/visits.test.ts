@@ -313,3 +313,38 @@ describe("changes only this screen can see (stepWatch)", () => {
 		expect(buildVisits(done, none, w, T0 + 60_000)).toEqual([]);
 	});
 });
+
+describe("HQ 대기 cards (signCards)", () => {
+	test("the same sentence is one card naming every project; red comes first; oldest first", async () => {
+		const { signCards } = await import("./model.ts");
+		const sign = (
+			id: string,
+			project_id: string,
+			carry: "folder" | "binder",
+			text: string,
+			since: string,
+		) => ({
+			id,
+			kind: "sign" as const,
+			project_id,
+			carry,
+			text,
+			code: "X",
+			since,
+			until: null,
+			closing: false,
+		});
+		const cards = signCards([
+			sign("a", "acme/a", "folder", "기다립니다.", iso(-3_000)),
+			sign("b", "acme/b", "folder", "기다립니다.", iso(-9_000)),
+			sign("c", "acme/c", "folder", "계획 승인 부탁드립니다.", iso(-1_000)),
+			sign("d", "acme/d", "binder", "멈췄습니다.", iso(-500)),
+		]);
+		expect(cards.map((c) => [c.carry, c.project_ids, c.since])).toEqual([
+			["binder", ["acme/d"], iso(-500)],
+			["folder", ["acme/a", "acme/b"], iso(-9_000)],
+			["folder", ["acme/c"], iso(-1_000)],
+		]);
+		expect(new Set(cards.map((c) => c.text)).size).toBe(cards.length);
+	});
+});

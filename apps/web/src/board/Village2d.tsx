@@ -1,111 +1,107 @@
-// Middle: the project village as a grid of cards (V1, 2D). HQ on top with the owner's chair, one
-// building per project. Everything drawn comes from the VillageModel; the cockpit going quiet dims it
-// and stops every figure (CSS class), it never adds motion of its own.
-import {
-	agoKo,
-	type MonitorKind,
-	type VillageModel,
-	type VillageProject,
-} from "./model.ts";
+// Middle: the project village as a 2D grid (V1, and the fallback when there is no WebGL). The HQ on
+// top with the owner's chair and the lobby, one speech bubble at its door, and at most eight project
+// buildings. A building holds its name and pictures only (windows = lit monitors, a flag, the lead at
+// the door); every sentence lives in the side columns or the one bubble. Everything drawn comes from
+// the VillageModel; when reports stop, the village dims and every figure stands still (CSS class).
+import type { MonitorKind, VillageModel, VillageProject } from "./model.ts";
+import { projectLabel } from "./types.ts";
 
-const MONITOR_LABEL: Record<MonitorKind, string> = {
+const MONITOR_GLYPH: Record<MonitorKind, string> = {
+	code: "</>",
+	checks: "✓",
+	review: "◎",
+	other: "▪",
+};
+const MONITOR_NAME: Record<MonitorKind, string> = {
 	code: "코드",
 	checks: "검사",
 	review: "리뷰",
 	other: "작업",
 };
 
-/** One lit monitor per running run, grouped by the picture on it. */
-function monitorCounts(list: readonly MonitorKind[]): [MonitorKind, number][] {
-	const m = new Map<MonitorKind, number>();
-	for (const k of list) m.set(k, (m.get(k) ?? 0) + 1);
-	return [...m.entries()];
-}
+/** Four windows per building; a lit one per running run (more than four stay four). */
+const WINDOWS = 4;
+const SLOTS = Array.from({ length: WINDOWS }, (_, i) => `w${i}`);
 
-function whereIsTheLead(model: VillageModel, p: VillageProject): string {
-	const v = model.visits.find((x) => x.project_id === p.id);
-	if (!v) return "책임자 · 건물 안";
-	return v.kind === "sign"
-		? "책임자 · HQ에서 결재 기다림"
-		: "책임자 · HQ에 보고하러 감";
-}
-
-function Building({ p, model }: { p: VillageProject; model: VillageModel }) {
-	const visiting = model.visits.some((x) => x.project_id === p.id);
-	// what Office already did, said by the lead who walked to the HQ (reports only; signs are in HQ 대기)
-	const report = model.visits.find(
-		(x) => x.project_id === p.id && x.kind === "report",
-	);
+function Building({ p, away }: { p: VillageProject; away: boolean }) {
+	const flag = p.stopped > 0 ? "red" : p.waiting > 0 ? "yellow" : null;
+	const label = [
+		p.label,
+		p.monitors.length
+			? `켜진 모니터 ${p.monitors.map((m) => MONITOR_NAME[m]).join(", ")}`
+			: "모니터 꺼짐",
+		flag === "red" ? "빨간 깃발" : flag === "yellow" ? "노란 깃발" : "",
+		away ? "책임자 HQ에 감" : "책임자 안에 있음",
+	]
+		.filter(Boolean)
+		.join(" · ");
 	return (
-		<li className="building">
-			<div className="building-head">
-				<span className="building-name">{p.label}</span>
-				{p.waiting > 0 && (
-					<span className="flag flag-yellow">결재 {p.waiting}</span>
-				)}
-				{p.stopped > 0 && (
-					<span className="flag flag-red">멈춤 {p.stopped}</span>
-				)}
-			</div>
-			<div
-				className="monitors"
-				role="img"
-				aria-label={`켜진 모니터 ${p.monitors.length}대`}
-			>
-				{p.monitors.length === 0 ? (
-					<span className="monitor monitor-off">꺼짐</span>
-				) : (
-					monitorCounts(p.monitors).map(([kind, n]) => (
-						<span key={kind} className={`monitor monitor-on monitor-${kind}`}>
-							{MONITOR_LABEL[kind]}
-							{n > 1 ? ` ×${n}` : ""}
-						</span>
-					))
-				)}
-			</div>
-			{report && <div className="bubble">{report.text}</div>}
-			<div className={`lead${visiting ? " lead-away" : ""}`}>
-				{whereIsTheLead(model, p)}
-			</div>
+		<li className="building" aria-label={label}>
+			{flag && <i className={`flag flag-${flag}`} aria-hidden="true" />}
+			<span className="building-name">{p.label}</span>
+			<span className="windows" aria-hidden="true">
+				{SLOTS.map((slot, i) => {
+					const kind = p.monitors[i];
+					return kind ? (
+						<i key={slot} className={`win win-on win-${kind}`}>
+							{MONITOR_GLYPH[kind]}
+						</i>
+					) : (
+						<i key={slot} className="win" />
+					);
+				})}
+			</span>
+			<i
+				className={`fig fig-lead${away ? " fig-gone" : ""}`}
+				aria-hidden="true"
+			/>
 		</li>
 	);
 }
 
-export function Village2d({
-	model,
-	now,
-}: {
-	model: VillageModel;
-	now: number;
-}) {
-	const shown = model.projects.filter((p) => !p.quiet);
-	const quiet = model.projects.length - shown.length;
-	const visitors = model.visits.length;
+export function Village2d({ model }: { model: VillageModel; now: number }) {
+	const { shown, folded } = model.village;
+	const away = new Set(model.visits.map((v) => v.project_id));
+	const door = model.door;
 	return (
 		<main
 			className={`village${model.status.dim ? " village-dim" : ""}`}
 			aria-label="프로젝트 마을"
 		>
 			<section
-				className={`hq-building${model.owner.present ? "" : " hq-empty-chair"}`}
+				className="hq-building"
+				aria-label={
+					model.owner.present ? "HQ · 사장 자리에 있음" : "HQ · 빈 의자"
+				}
 			>
-				<h2>내 건물 (HQ)</h2>
-				<p className="owner">
-					{model.owner.present
-						? "사장실 · 자리에 앉아 있음"
-						: `빈 의자 · 자리 비움 · 마지막 보고 ${agoKo(model.owner.last_report_at, now)}`}
-				</p>
-				<p className="lobby">로비 {visitors}명 대기·방문</p>
+				<span className="building-name">HQ</span>
+				<span className="hq-rooms" aria-hidden="true">
+					<i
+						className={`fig fig-owner${model.owner.present ? "" : " fig-chair"}`}
+					/>
+					<span className="lobby">
+						{model.visits.map((v) => (
+							<i
+								key={v.id}
+								className={`fig fig-visit fig-${v.kind === "sign" ? (v.carry ?? "folder") : "report"}`}
+							/>
+						))}
+					</span>
+				</span>
 			</section>
+			<div className="door">
+				{door && (
+					<p className="bubble">
+						<b>{projectLabel(door.project_id)}</b> {door.text}
+					</p>
+				)}
+			</div>
 			<ul className="buildings">
 				{shown.map((p) => (
-					<Building key={p.id} p={p} model={model} />
+					<Building key={p.id} p={p} away={away.has(p.id)} />
 				))}
 			</ul>
-			{shown.length === 0 && (
-				<p className="hq-empty">마을에 활동 중인 프로젝트가 없습니다</p>
-			)}
-			{quiet > 0 && <p className="quiet">조용함 {quiet}곳</p>}
+			{folded > 0 && <p className="quiet">외 {folded}곳</p>}
 		</main>
 	);
 }

@@ -2,7 +2,8 @@
 // of what the hub reported and this screen's clock; no React, no DOM.
 import type { MachineView, RunView } from "@agent-city/schema";
 import type { Conn, Districts } from "../useHub.ts";
-import { buildIncidents, type Incident } from "./incidents.ts";
+import { firstSentence } from "./copy.ts";
+import { buildIncidents, INCIDENT_LIMIT, type Incident } from "./incidents.ts";
 import {
 	type CurrentRun,
 	currentRuns,
@@ -15,6 +16,8 @@ import { buildVisits, emptyWatch, type Visit, type Watch } from "./visits.ts";
 
 export const PARTIAL_RED_MS = 24 * 3_600_000;
 export const REPO_RECENT_MS = 7 * 24 * 3_600_000;
+/** At most this many project buildings stand in the village; the rest fold into one sign. */
+export const BUILDING_CAP = 8;
 
 export type Border = "red" | "yellow" | "none";
 export type MonitorKind = "code" | "checks" | "review" | "other";
@@ -51,7 +54,10 @@ export interface VillageModel {
 	status: {
 		sentence: string;
 		border: Border;
-		/** The cockpit is not reporting: dim the village, freeze every figure, make no sound. */
+		/**
+		 * The cockpit is not reporting, or this screen lost the hub: dim the village and freeze every
+		 * figure. Nothing moves that was not reported.
+		 */
 		dim: boolean;
 	};
 	owner: { present: boolean; last_report_at: string | null };
@@ -61,7 +67,11 @@ export interface VillageModel {
 		heartbeat_at: string | null;
 	}[];
 	projects: VillageProject[];
+	/** The buildings that stand (at most BUILDING_CAP, most urgent first) and how many fold into one sign. */
+	village: { shown: VillageProject[]; folded: number };
 	visits: Visit[];
+	/** The one speech bubble at the HQ door: the newest report. Signs speak through the HQ 대기 cards. */
+	door: Visit | null;
 	now: NowItem[];
 	incidents: Incident[];
 	today: { completed: number; running: number };
@@ -113,6 +123,51 @@ function recentPartial(c: CurrentRun, now: number): boolean {
 
 const isStopped = (c: CurrentRun, now: number) =>
 	c.state === "hold" || c.state === "needs_reconcile" || recentPartial(c, now);
+
+export interface SignCard {
+	/** The visits it stands for (one or more projects saying the same thing). */
+	ids: string[];
+	project_ids: string[];
+	carry: "folder" | "binder";
+	text: string;
+	code: string | null;
+	/** The oldest of them: how long the owner has been waited for. */
+	since: string;
+}
+
+/**
+ * The HQ 대기 cards: 결재 visits that say the same sentence (and code) share one card, so a sentence
+ * is never on screen twice. 멈춤 (binder) cards come first so a red one is never folded out of sight,
+ * then 승인 대기 (folder); oldest first within each.
+ */
+export function signCards(visits: readonly Visit[]): SignCard[] {
+	const byText = new Map<string, SignCard>();
+	for (const v of visits) {
+		if (v.kind !== "sign") continue;
+		const carry = v.carry ?? "folder";
+		const k = `${carry}|${v.text}|${v.code ?? ""}`;
+		const card = byText.get(k);
+		if (!card) {
+			byText.set(k, {
+				ids: [v.id],
+				project_ids: [v.project_id],
+				carry,
+				text: v.text,
+				code: v.code,
+				since: v.since,
+			});
+			continue;
+		}
+		card.ids.push(v.id);
+		if (!card.project_ids.includes(v.project_id))
+			card.project_ids.push(v.project_id);
+		if (v.since < card.since) card.since = v.since;
+	}
+	const rank = (c: SignCard) => (c.carry === "binder" ? 0 : 1);
+	return [...byText.values()].sort(
+		(a, b) => rank(a) - rank(b) || a.since.localeCompare(b.since),
+	);
+}
 
 export function toVillageModel(input: ModelInput): VillageModel {
 	const { runs, machines, districts, eventsByRun, now } = input;
@@ -178,8 +233,29 @@ export function toVillageModel(input: ModelInput): VillageModel {
 		}
 	}
 
+	const projects = buildProjects(runs, current, districts, now, {
+		stopped,
+		waiting,
+		running,
+	});
+	const active = projects.filter((p) => !p.quiet);
+	const shown = active.slice(0, BUILDING_CAP);
+	const reports = visits.filter((v) => v.kind === "report");
+	const conn = input.conn === "open" ? "open" : "reconnecting";
+	const door = reports.reduce<Visit | null>(
+		(a, v) => (!a || v.since > a.since ? v : a),
+		null,
+	);
+	// the bubble already says it: the history list does not say it again (same project, time, sentence)
+	const said = door
+		? `${door.project_id}|${Date.parse(door.since)}|${firstSentence(door.text)}`
+		: null;
+	const incidents = buildIncidents(current, eventsByRun, INCIDENT_LIMIT + 1)
+		.filter((i) => `${i.project_id}|${Date.parse(i.at)}|${i.text}` !== said)
+		.slice(0, INCIDENT_LIMIT);
+
 	return {
-		status: { sentence, border, dim: down },
+		status: { sentence, border, dim: down || conn !== "open" },
 		owner: {
 			present: cockpitStatus === "online",
 			last_report_at: cockpit?.heartbeat_at ?? null,
@@ -189,21 +265,19 @@ export function toVillageModel(input: ModelInput): VillageModel {
 			status: m.status,
 			heartbeat_at: m.heartbeat_at,
 		})),
-		projects: buildProjects(runs, current, districts, now, {
-			stopped,
-			waiting,
-			running,
-		}),
+		projects,
+		village: { shown, folded: projects.length - shown.length },
 		visits,
+		door,
 		now: nowItems,
-		incidents: buildIncidents(current, eventsByRun),
+		incidents,
 		today: { completed, running: nowItems.length },
 		marks: {
 			waiting: waiting.map((c) => c.key),
 			stopped: stopped.map((c) => c.key),
 			passed: current.filter((c) => c.state === "passed").map((c) => c.key),
 		},
-		conn: input.conn === "open" ? "open" : "reconnecting",
+		conn,
 	};
 }
 

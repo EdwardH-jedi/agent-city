@@ -8,7 +8,8 @@ import type {
 	SessionStatus,
 } from "@agent-city/schema";
 import { useEffect, useMemo, useState } from "react";
-import { Board } from "./board/Board.tsx";
+import { Board, DemoBoard } from "./board/Board.tsx";
+import { isDemo } from "./board/demo.ts";
 import { liveCountByRepo, machinesAt, runsAt } from "./merge.ts";
 import { NeedsOwner, Runs } from "./Runs.tsx";
 import {
@@ -67,7 +68,12 @@ function useRoute(): Route {
 	return route;
 }
 
+/** `?demo=1` draws the board from made-up data and never opens the hub connection. */
 export function App() {
+	return isDemo(window.location.search) ? <DemoBoard /> : <LiveApp />;
+}
+
+function LiveApp() {
 	const [filter, setFilter] = useState<EventFilter>({
 		repo: null,
 		provider: null,

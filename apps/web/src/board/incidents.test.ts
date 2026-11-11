@@ -42,7 +42,42 @@ describe("자리 비운 사이", () => {
 		);
 		expect(out.map((i) => i.text)).toEqual([
 			"전부 끝났습니다.",
-			"T1 통과했습니다. 다음으로 넘어갑니다.",
+			"T1 통과했습니다.",
+		]);
+	});
+
+	test("a run waiting for the owner has no line: its HQ 대기 card says it (said once)", () => {
+		for (const state of ["waiting_owner", "hold", "needs_reconcile"] as const) {
+			expect(
+				buildIncidents(
+					currentRuns([runIn(state, { reason: "AWAITING_PLAN_APPROVAL" })]),
+					new Map(),
+				),
+			).toEqual([]);
+		}
+	});
+
+	test("no line repeats the tail of another: only the first sentence of a report", () => {
+		const r = runIn("running");
+		const out = buildIncidents(
+			currentRuns([r]),
+			new Map([
+				[
+					runKey(r),
+					[1, 2, 3].map((n) =>
+						ev({
+							sequence: n,
+							task_id: `T${n}`,
+							occurred_at: iso(-n * 60_000),
+						}),
+					),
+				],
+			]),
+		);
+		expect(out.map((i) => i.text)).toEqual([
+			"T1 통과했습니다.",
+			"T2 통과했습니다.",
+			"T3 통과했습니다.",
 		]);
 	});
 

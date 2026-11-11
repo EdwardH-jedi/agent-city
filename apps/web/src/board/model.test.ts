@@ -346,3 +346,121 @@ describe("connection", () => {
 		expect(model([], { conn: "connecting" }).conn).toBe("reconnecting");
 	});
 });
+
+describe("§13 (as given in the task): one screen, said once", () => {
+	test("at most 8 buildings stand; the rest fold into one sign, most urgent first", () => {
+		const runs = Array.from({ length: 11 }, (_, i) =>
+			runIn(i === 10 ? "waiting_owner" : "passed", {
+				project: `acme/p${i}`,
+				workflow_id: `w${i}`,
+				run_id: `w${i}-1`,
+				reason: i === 10 ? "AWAITING_PLAN_APPROVAL" : null,
+			}),
+		);
+		const m = model(runs, {
+			districts: {
+				d: [
+					{
+						id: "acme/old",
+						pushed_at: iso(-60 * 86_400_000),
+						active_sessions: 0,
+					} as never,
+				],
+			},
+		});
+		expect(m.village.shown).toHaveLength(8);
+		expect(m.village.shown[0]?.id).toBe("acme/p10"); // the 결재 building is never folded away
+		expect(m.village.folded).toBe(12 - 8); // 3 more active + 1 quiet repo
+		expect(model([runIn("running")]).village).toMatchObject({ folded: 0 });
+	});
+
+	test("one bubble at the HQ door: the newest report; signs speak in HQ 대기 only", () => {
+		const a = runIn("running", {
+			project: "acme/a",
+			workflow_id: "a",
+			run_id: "a-1",
+		});
+		const b = runIn("running", {
+			project: "acme/b",
+			workflow_id: "b",
+			run_id: "b-1",
+		});
+		const s = runIn("waiting_owner", {
+			project: "acme/s",
+			workflow_id: "s",
+			run_id: "s-1",
+			reason: "AWAITING_PLAN_APPROVAL",
+		});
+		const m = model([a, b, s], {
+			eventsByRun: new Map([
+				["cockpit:a-1", [ev({ task_id: "T1", occurred_at: iso(-120_000) })]],
+				["cockpit:b-1", [ev({ task_id: "T9", occurred_at: iso(-30_000) })]],
+			]),
+		});
+		expect(m.door).toMatchObject({ project_id: "acme/b", kind: "report" });
+		expect(model([s]).door).toBeNull();
+	});
+
+	test("what the bubble says is not repeated in 자리 비운 사이", () => {
+		const r = runIn("running");
+		const m = model([r], {
+			eventsByRun: new Map([
+				[
+					"cockpit:demo-flow-1",
+					[
+						ev({ sequence: 2, task_id: "T2", occurred_at: iso(-30_000) }),
+						ev({ sequence: 1, task_id: "T1", occurred_at: iso(-20 * 60_000) }),
+					],
+				],
+			]),
+		});
+		expect(m.door?.text).toBe("T2 통과했습니다. 다음으로 넘어갑니다.");
+		expect(m.incidents.map((i) => i.text)).toEqual(["T1 통과했습니다."]);
+	});
+
+	test("a different line at the same moment stays (only the bubble's own sentence is dropped)", () => {
+		const r = runIn("passed", { last_progress_at: iso(-30_000) });
+		const m = model([r], {
+			eventsByRun: new Map([
+				[
+					"cockpit:demo-flow-1",
+					[ev({ task_id: "T3", occurred_at: iso(-30_000) })],
+				],
+			]),
+		});
+		expect(m.door?.text).toBe("T3 통과했습니다. 다음으로 넘어갑니다.");
+		expect(m.incidents.map((i) => i.text)).toEqual(["전부 끝났습니다."]);
+	});
+
+	test("the village dims when this screen loses the hub too, not only when the Mac stops", () => {
+		expect(model([], { conn: "reconnecting" }).status.dim).toBe(true);
+		expect(model([], { conn: "open" }).status.dim).toBe(false);
+	});
+});
+
+describe("cockpit offline: figures stop and nothing sounds (§10 V1)", () => {
+	test("the model says dim, the stylesheet stops every figure under dim, and sound is off", async () => {
+		const { readFileSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const { isAudible, parseSoundPrefs } = await import("./sound.ts");
+		const m = model(
+			[runIn("waiting_owner", { reason: "AWAITING_PLAN_APPROVAL" })],
+			{ machines: [machine("offline", "cockpit", 3_600_000)] },
+		);
+		expect(m.status.dim).toBe(true);
+		expect(m.visits).toHaveLength(1); // the visit stays where it was…
+		const css = readFileSync(join(import.meta.dir, "..", "style.css"), "utf8");
+		// …and stands still: every figure's animation is off under .village-dim
+		expect(css).toMatch(/\.village-dim \.fig \{\s*animation: none;/);
+		const cockpit =
+			m.machines.find((x) => x.id === "cockpit")?.status ?? "unobserved";
+		expect(
+			isAudible({
+				prefs: parseSoundPrefs(""),
+				date: new Date(2026, 10, 11, 14, 0),
+				cockpit,
+				conn: m.conn,
+			}),
+		).toBe(false);
+	});
+});

@@ -3,7 +3,22 @@
 import { agoKo, type NowItem, type VillageModel } from "./model.ts";
 import { PHASES, projectLabel } from "./types.ts";
 
-function NowCard({ n, now }: { n: NowItem; now: number }) {
+/** "cockpit 보고 · 13초 전": said once in the heading; a card repeats it only when its own differs. */
+const freshness = (n: NowItem, now: number): string =>
+	n.stale
+		? `마지막 보고: running (${agoKo(n.reported_at, now)})`
+		: `${n.machine_id} 보고 · ${agoKo(n.reported_at, now)}`;
+
+function NowCard({
+	n,
+	now,
+	shared,
+}: {
+	n: NowItem;
+	now: number;
+	shared: string | null;
+}) {
+	const own = freshness(n, now);
 	return (
 		<li className={`card now-card${n.stale ? " now-stale" : ""}`}>
 			<div className="card-project">{projectLabel(n.project_id)}</div>
@@ -24,11 +39,7 @@ function NowCard({ n, now }: { n: NowItem; now: number }) {
 				)}
 			</div>
 			<div className="card-meta">
-				<span>
-					{n.stale
-						? `마지막 보고: running (${agoKo(n.reported_at, now)})`
-						: `${n.machine_id} 보고 · ${agoKo(n.reported_at, now)}`}
-				</span>
+				{own !== shared && <span>{own}</span>}
 				<span>
 					오늘 토큰 {n.tokens_today ?? "—"}
 					{n.usage_unknown ? " + 사용량 미확인" : ""}
@@ -39,15 +50,20 @@ function NowCard({ n, now }: { n: NowItem; now: number }) {
 }
 
 export function Now({ model, now }: { model: VillageModel; now: number }) {
+	const first = model.now[0];
+	const shared = first ? freshness(first, now) : null;
 	return (
 		<aside className="now" aria-label="지금 진행">
-			<h2>지금 진행</h2>
+			<h2>
+				지금 진행
+				{shared && <span className="now-shared">{shared}</span>}
+			</h2>
 			{model.now.length === 0 ? (
-				<p className="hq-empty">진행 중인 작업 없음</p>
+				<p className="hq-empty">없음</p>
 			) : (
 				<ul className="cards">
 					{model.now.map((n) => (
-						<NowCard key={n.key} n={n} now={now} />
+						<NowCard key={n.key} n={n} now={now} shared={shared} />
 					))}
 				</ul>
 			)}
