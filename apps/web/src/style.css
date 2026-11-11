@@ -297,3 +297,360 @@ tr.st-waiting td {
 .type {
 	font-weight: 600;
 }
+
+/* ── board ──────────────────────────────────────────────────────────────────
+   Main screen for a monitor seen from 1.5–2 m (design doc §3). Dark on purpose: it stays on all night.
+   Nothing below 16px. Reading size: status sentence 44px+, cards 22px+. */
+.board {
+	--b-bg: #0e1013;
+	--b-panel: #171a20;
+	--b-line: #2a2f38;
+	--b-fg: #f1f2f4;
+	--b-muted: #aab0bb;
+	--b-yellow: #f5c518;
+	--b-red: #ff4d4f;
+	--b-ok: #4ade80;
+	position: fixed;
+	inset: 0;
+	display: grid;
+	grid-template-rows: 72px 1fr;
+	background: var(--b-bg);
+	color: var(--b-fg);
+	font-size: 16px;
+	line-height: 1.35;
+	overflow: hidden;
+}
+/* the 8px frame: red > yellow > none */
+.board::after {
+	content: "";
+	position: fixed;
+	inset: 0;
+	border: 8px solid transparent;
+	pointer-events: none;
+}
+.border-red::after {
+	border-color: var(--b-red);
+}
+.border-yellow::after {
+	border-color: var(--b-yellow);
+}
+.board h2 {
+	font-size: 20px;
+	margin: 0 0 10px;
+	color: var(--b-muted);
+	letter-spacing: 0.02em;
+}
+.board code {
+	font-size: 16px;
+	color: var(--b-muted);
+}
+.board-top {
+	display: flex;
+	align-items: center;
+	gap: 28px;
+	padding: 0 28px;
+	border-bottom: 1px solid var(--b-line);
+}
+.board-sentence {
+	font-size: 44px;
+	font-weight: 700;
+	line-height: 72px;
+	white-space: nowrap;
+}
+.border-red .board-sentence {
+	color: var(--b-red);
+}
+.border-yellow .board-sentence {
+	color: var(--b-yellow);
+}
+.board-machines {
+	display: flex;
+	gap: 12px;
+	list-style: none;
+	margin: 0 auto 0 0;
+	padding: 0;
+}
+.bm {
+	padding: 4px 14px;
+	border: 1px solid var(--b-line);
+	border-radius: 999px;
+	color: var(--b-muted);
+	font-size: 18px;
+}
+.bm-online {
+	color: var(--b-ok);
+}
+.bm-stale {
+	color: var(--b-yellow);
+}
+.bm-offline {
+	color: var(--b-red);
+}
+.board-counts {
+	font-size: 22px;
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	white-space: nowrap;
+}
+.board-link {
+	margin-left: 20px;
+	font-size: 16px;
+	color: var(--b-muted);
+}
+.conn-band {
+	position: fixed;
+	top: 72px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 5;
+	padding: 6px 24px;
+	background: #3b2a00;
+	border: 1px solid var(--b-yellow);
+	border-radius: 0 0 10px 10px;
+	font-size: 20px;
+}
+.board-error {
+	position: fixed;
+	bottom: 12px;
+	left: 24px;
+	color: var(--b-muted);
+	font-size: 16px;
+}
+.board-body {
+	display: grid;
+	grid-template-columns: 360px minmax(0, 1fr) 360px;
+	min-height: 0;
+}
+.hq,
+.now {
+	padding: 18px 16px;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	gap: 18px;
+	min-height: 0;
+}
+.hq {
+	border-right: 1px solid var(--b-line);
+}
+.now {
+	border-left: 1px solid var(--b-line);
+}
+.hq-empty,
+.quiet {
+	color: var(--b-muted);
+	font-size: 18px;
+	margin: 0;
+}
+.cards {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: grid;
+	gap: 12px;
+}
+.card {
+	background: var(--b-panel);
+	border: 1px solid var(--b-line);
+	border-left: 6px solid var(--b-line);
+	border-radius: 8px;
+	padding: 12px 14px;
+}
+.card-folder {
+	border-left-color: var(--b-yellow);
+}
+.card-binder {
+	border-left-color: var(--b-red);
+}
+.card-project {
+	font-size: 22px;
+	font-weight: 700;
+}
+.card-text {
+	font-size: 24px;
+	margin: 6px 0;
+}
+.card-meta {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	color: var(--b-muted);
+	font-size: 16px;
+}
+.hq-away {
+	min-height: 0;
+	overflow: hidden;
+}
+.incidents {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: grid;
+	gap: 8px;
+}
+.incidents li {
+	display: grid;
+	grid-template-columns: 56px 1fr;
+	column-gap: 10px;
+	font-size: 16px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid var(--b-line);
+}
+.inc-time {
+	color: var(--b-muted);
+	grid-row: span 2;
+}
+.inc-project {
+	font-weight: 700;
+}
+.inc-text {
+	font-size: 18px;
+}
+.inc-code {
+	grid-column: 2;
+}
+.now-workflow {
+	color: var(--b-muted);
+	font-size: 18px;
+}
+.phases {
+	display: grid;
+	grid-template-columns: repeat(9, 1fr);
+	gap: 3px;
+	margin: 10px 0 6px;
+}
+.phase {
+	height: 12px;
+	border-radius: 2px;
+	background: var(--b-line);
+}
+.phase-done {
+	background: #2f7d4f;
+}
+.phase-now {
+	background: var(--b-ok);
+}
+.now-phase {
+	font-size: 22px;
+}
+.now-flag {
+	color: var(--b-yellow);
+}
+.now-stale {
+	opacity: 0.7;
+}
+.village {
+	padding: 22px 28px;
+	display: flex;
+	flex-direction: column;
+	gap: 18px;
+	overflow: hidden;
+	transition: filter 0.6s;
+}
+/* the Mac stopped reporting: dim the village. Nothing in it moves. */
+.village-dim {
+	filter: saturate(0.35) brightness(0.65);
+}
+.hq-building {
+	align-self: center;
+	min-width: 480px;
+	padding: 14px 28px;
+	text-align: center;
+	background: var(--b-panel);
+	border: 2px solid #4a5160;
+	border-radius: 12px;
+}
+.hq-building h2 {
+	color: var(--b-fg);
+	font-size: 26px;
+	margin-bottom: 4px;
+}
+.hq-building p {
+	margin: 0;
+	font-size: 22px;
+}
+.hq-building .lobby {
+	font-size: 18px;
+	color: var(--b-muted);
+}
+.hq-empty-chair .owner {
+	color: var(--b-yellow);
+}
+.buildings {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+	gap: 16px;
+	align-content: start;
+}
+.building {
+	background: var(--b-panel);
+	border: 1px solid var(--b-line);
+	border-radius: 10px;
+	padding: 14px 16px;
+	display: grid;
+	gap: 10px;
+}
+.building-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.building-name {
+	font-size: 24px;
+	font-weight: 700;
+	margin-right: auto;
+}
+.flag {
+	padding: 1px 10px;
+	border-radius: 6px;
+	font-size: 18px;
+	font-weight: 700;
+	color: #111;
+}
+.flag-yellow {
+	background: var(--b-yellow);
+}
+.flag-red {
+	background: var(--b-red);
+}
+.monitors {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.monitor {
+	padding: 4px 12px;
+	border-radius: 4px;
+	font-size: 16px;
+	border: 1px solid var(--b-line);
+}
+.monitor-off {
+	color: var(--b-muted);
+}
+.monitor-on {
+	background: #12301f;
+	border-color: #2f7d4f;
+	color: var(--b-ok);
+}
+.lead {
+	color: var(--b-muted);
+	font-size: 18px;
+}
+.lead-away {
+	color: var(--b-yellow);
+	animation: lead-pulse 2s ease-in-out infinite;
+}
+@keyframes lead-pulse {
+	50% {
+		opacity: 0.55;
+	}
+}
+/* the Mac stopped reporting: the figure that was pulsing stands still */
+.village-dim .lead-away {
+	animation: none;
+}

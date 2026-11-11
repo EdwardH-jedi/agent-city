@@ -3,7 +3,7 @@
 // in the run screen, no write route on the read API, no request sent from the web view other than
 // GET. Comments are stripped first, so explaining the rule in prose is fine.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
@@ -43,5 +43,109 @@ describe("City cannot act on a run", () => {
 		expect(runs).not.toMatch(ACTION_WORDS);
 		const routes = runs.match(/\bruns\.(post|put|patch|delete|get|all)\(/g);
 		expect(routes).toEqual(["runs.post("]);
+	});
+});
+
+// ── the main screen: apps/web/src/board/** (and apps/web/src/campus/** once the 3D scene lands) ──────
+// Screen code only: *.test.ts files are not scanned (they spell out the codes they test). A directory
+// that does not exist yet is skipped.
+const SCREEN_DIRS = ["apps/web/src/board", "apps/web/src/campus"];
+
+function screenFiles(dir: string): string[] {
+	const abs = join(ROOT, dir);
+	if (!existsSync(abs)) return [];
+	return readdirSync(abs).flatMap((name) => {
+		const rel = join(dir, name);
+		if (statSync(join(ROOT, rel)).isDirectory()) return screenFiles(rel);
+		return /\.(ts|tsx)$/.test(name) && !/\.test\.ts$/.test(name) ? [rel] : [];
+	});
+}
+const FILES = SCREEN_DIRS.flatMap(screenFiles);
+
+/**
+ * The one place the action words may appear: Office's own state code `PLAN_APPROVED`, which the phrase
+ * table must be able to name (it is data Office reports, not something City does). Nothing else is
+ * allowed; the test below pins this list so it cannot grow quietly.
+ */
+const ALLOWED_OFFICE_CODES: Record<string, string[]> = {
+	"apps/web/src/board/copy.ts": ["PLAN_APPROVED"],
+};
+
+/** `<button>` and `onClick` are for switching screens only. Nothing in the board needs them, so the list is empty. */
+const ALLOWED_CONTROLS: Record<string, string[]> = {};
+
+const screenCode = (rel: string) => {
+	let src = code(rel);
+	for (const lit of ALLOWED_OFFICE_CODES[rel] ?? [])
+		src = src.replaceAll(lit, "");
+	return src;
+};
+
+describe("the main screen cannot act on a run", () => {
+	test("the scan finds the board (and survives a missing campus/ directory)", () => {
+		expect(FILES.some((f) => f.endsWith("board/Board.tsx"))).toBe(true);
+		expect(FILES.some((f) => f.endsWith("board/model.ts"))).toBe(true);
+	});
+
+	test("no request is sent from it: no fetch, no method:, no XMLHttpRequest, no socket of its own", () => {
+		for (const f of FILES) {
+			const src = code(f);
+			expect({
+				f,
+				hit: /fetch\(|XMLHttpRequest|WebSocket|sendBeacon|method\s*:/.exec(
+					src,
+				)?.[0],
+			}).toEqual({ f, hit: undefined });
+		}
+	});
+
+	test("no approve / launch / retry anywhere in it", () => {
+		for (const f of FILES) {
+			expect({ f, hit: ACTION_WORDS.exec(screenCode(f))?.[0] }).toEqual({
+				f,
+				hit: undefined,
+			});
+		}
+	});
+
+	test("the allow-list of Office codes stays exactly one literal in one file", () => {
+		expect(ALLOWED_OFFICE_CODES).toEqual({
+			"apps/web/src/board/copy.ts": ["PLAN_APPROVED"],
+		});
+	});
+
+	test("buttons and handlers only where listed (nowhere)", () => {
+		const CONTROLS =
+			/<button|<form|<input|<select|<textarea|onClick|onSubmit|onChange|onKey\w*|onPointer\w*|onMouse\w*/;
+		for (const f of FILES) {
+			const allowed = ALLOWED_CONTROLS[f] ?? [];
+			const hit = CONTROLS.exec(code(f))?.[0];
+			expect({
+				f,
+				hit: hit && !allowed.includes(hit) ? hit : undefined,
+			}).toEqual({ f, hit: undefined });
+		}
+	});
+
+	test("the data comes through useHub: the board only imports its hooks and pure modules", () => {
+		const board = code("apps/web/src/board/Board.tsx");
+		expect(board).toMatch(/from "\.\.\/useHub\.ts"/);
+		const hub = code("apps/web/src/useHub.ts");
+		expect(hub).toMatch(/useRunEvents/);
+		// the only fetch in useHub goes through getJson, which sends a plain GET
+		expect(hub.match(/fetch\(/g)).toHaveLength(1);
+		expect(hub).toMatch(/await fetch\(path\)/);
+	});
+
+	test("nothing on screen is smaller than 16px", () => {
+		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
+		const board = css.slice(css.indexOf("/* ── board"));
+		expect(board.length).toBeGreaterThan(100);
+		const sizes = [...board.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) =>
+			Number(m[1]),
+		);
+		expect(sizes.length).toBeGreaterThan(5);
+		expect(Math.min(...sizes)).toBeGreaterThanOrEqual(16);
+		expect(Math.max(...sizes)).toBeGreaterThanOrEqual(44); // the status sentence
 	});
 });

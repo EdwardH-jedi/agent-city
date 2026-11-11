@@ -70,6 +70,29 @@ Open http://127.0.0.1:5173. Set `INGEST_TOKEN` in `.env` before collecting
 events; an unset token disables ingest. Keep the hub on loopback. Read the
 [security model](#security-model) before changing its bind address.
 
+### The screens
+
+`/` is the **board**, made for a monitor watched from 1.5–2 m: one status sentence (`전부 정상` ·
+`결재 N건` · `멈춤 N건` · `Mac 보고 끊김 (N분 전)`), an 8 px frame (red > yellow > none), the **HQ 대기** cards
+and **자리 비운 사이** list on the left, the project village in the middle (2D cards; the 3D scene is a
+later step) and **지금 진행** on the right. `#/detail` (key `D` flips between the two) is the table view
+with Needs owner, Runs, Repos, Live sessions and Events.
+
+The board only reads: it draws what the hub reports through `useHub` (GET + `/ws`, plus
+`GET /api/runs/:machine/:id/events` for the current runs) and has no button or form. Approving, running or
+re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.test.ts` scans
+`apps/web/src/board/**` for it.
+
+- **Current run.** Of several runs with the same `(project, workflow_id)` only the one with the latest
+  `last_progress_at` counts (ties: higher `last_event_sequence`, then higher run id). The others show only
+  in `#/detail`.
+- **Sound** is synthesised (no audio files) and plays only while the cockpit is `online`, the screen is
+  connected to the hub and it is not quiet time. Quiet hours default to 23:00–08:00 local time; change them
+  in the page URL: `?quiet=22-7`, `?quiet=off`, `?sound=off`. No environment variable. Browsers refuse
+  sound until the page has been interacted with, unless the kiosk browser allows autoplay.
+- A run code that is not in the phrase table (`apps/web/src/board/copy.ts`) is shown as
+  `확인이 필요합니다` plus the code; the board never guesses what it means.
+
 ### Serving the web UI from the hub
 
 To run with one process (no Vite dev server), build the UI once, then start the hub alone:
