@@ -3,6 +3,7 @@
 // `?demo=1` draws the same screen from made-up data instead (DemoBoard): no request, no sound, and the
 // screen says "예시 데이터".
 import { useEffect, useMemo, useRef, useState } from "react";
+import { CampusView } from "../campus/CampusView.tsx";
 import { machinesAt, runsAt } from "../merge.ts";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
 import { DEMO_LABEL, demoData } from "./demo.ts";
@@ -17,7 +18,6 @@ import {
 	type SoundMemory,
 } from "./sound.ts";
 import { currentRuns } from "./types.ts";
-import { Village2d } from "./Village2d.tsx";
 import { emptyWatch, stepWatch } from "./visits.ts";
 
 export type HubData = ReturnType<typeof useHub>;
@@ -168,7 +168,7 @@ export function BoardView({
 			{reconnecting && <div className="conn-band">화면 연결 끊김</div>}
 			<div className="board-body">
 				<Hq model={model} now={now} />
-				<Village2d model={model} now={now} />
+				<CampusView model={model} now={now} />
 				<Now model={model} now={now} />
 			</div>
 			{error && <div className="board-error">{error}</div>}

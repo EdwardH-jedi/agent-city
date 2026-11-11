@@ -857,3 +857,69 @@ tr.st-waiting td {
 .village-dim .fig {
 	animation: none;
 }
+
+/* ── the campus (3D, lazy): canvas, name tags, the one bubble at the HQ door ─ */
+.campus {
+	padding: 0;
+	position: relative;
+	background: #1f2438;
+}
+.campus-night {
+	filter: brightness(0.82);
+}
+.campus.village-dim {
+	filter: saturate(0.35) brightness(0.6);
+}
+.cmp-scene,
+.cmp-gl,
+.cmp-pins {
+	position: absolute;
+	inset: 0;
+}
+.cmp-gl canvas {
+	display: block;
+}
+.cmp-pins {
+	pointer-events: none;
+	overflow: hidden;
+}
+.cmp-pin,
+.cmp-bubble {
+	position: absolute;
+	left: 0;
+	top: 0;
+	white-space: nowrap;
+	will-change: transform;
+}
+.cmp-pin {
+	translate: -50% 0;
+	padding: 2px 10px;
+	border-radius: 6px;
+	background: #14161fcc;
+	color: var(--b-fg);
+	font-size: 18px;
+	font-weight: 700;
+}
+.cmp-pin-hq {
+	font-size: 22px;
+	color: #f0d9a0;
+}
+.cmp-bubble {
+	translate: -50% -100%;
+	max-width: 70%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	padding: 8px 16px;
+	border-radius: 12px;
+	background: #f4efe4;
+	color: #1d1b22;
+	font-size: 22px;
+}
+.cmp-bubble[hidden] {
+	display: none;
+}
+.campus-folded {
+	position: absolute;
+	right: 20px;
+	bottom: 16px;
+}
