@@ -19,6 +19,7 @@ import {
 	parsePorts,
 	plistXml,
 	run,
+	validProject,
 	validTunnelTarget,
 	xmlEscape,
 } from "./install-launchd.ts";
@@ -155,6 +156,116 @@ describe("plist", () => {
 		expect(xml).toContain("<string>&lt;arg&gt;</string>");
 		expect(xml).toContain("<string>/p1:/p2</string>");
 		expect(xml).toContain("<key>KeepAlive</key>");
+	});
+});
+
+describe("exporter flags (--office-home, --project)", () => {
+	const plan = (extra: { home?: string | null; projects?: string[] }) =>
+		buildPlan({
+			repoRoot: "/r/checkout",
+			agentcityHome: "/h/.agentcity",
+			bin: { bun: "/b/bun", node: "/b/node", ssh: "/usr/bin/ssh" },
+			hubUrl: "http://127.0.0.1:4317",
+			tunnel: null,
+			office: {
+				dir: "/o/office",
+				envFile: "/h/.agentcity/office-projection.env",
+				...extra,
+			},
+		}).jobs.find((j) => j.name === "exporter");
+
+	test("project shape mirrors the exporter's own --project check", () => {
+		expect(validProject("station0-nav=Owner/station0")).toBe(true);
+		expect(validProject("wt.1_x=a-b/c.d_e")).toBe(true);
+		for (const bad of [
+			"",
+			"=Owner/repo",
+			"wt",
+			"wt=",
+			"wt=repo",
+			"wt=Owner/..",
+			"-wt=Owner/repo",
+			"wt=Owner/re po",
+			"wt=own_er/repo",
+		])
+			expect(validProject(bad)).toBe(false);
+	});
+
+	test("--home and every --project follow --hub as separate arguments; the shell text never contains them", () => {
+		const e = plan({
+			home: "/h/.agent-office-x",
+			projects: ["wt-a=Owner/repo", "wt-b=Owner/other"],
+		});
+		// args[3] is $0 of the shell; the positional arguments start after it
+		expect(e?.args.slice(4)).toEqual([
+			"/h/.agentcity/office-projection.env",
+			"/b/node",
+			"http://127.0.0.1:4317",
+			"--home",
+			"/h/.agent-office-x",
+			"--project",
+			"wt-a=Owner/repo",
+			"--project",
+			"wt-b=Owner/other",
+		]);
+		expect(e?.args[2]).toContain('"$@"');
+		expect(e?.args[2]).not.toMatch(/agent-office|Owner/);
+		expect(e?.note).not.toContain("No --office-home");
+	});
+
+	test("without --office-home no --home is passed, and the note says which home is read", () => {
+		const e = plan({});
+		expect(e?.args).not.toContain("--home");
+		expect(e?.args).not.toContain("--project");
+		expect(e?.note).toContain("No --office-home");
+	});
+
+	test("run: bad or orphaned exporter flags write nothing and exit 2", () => {
+		const o = ["--office-dir", join(home, "office")];
+		expect(run([...o, "--project", "wt=repo"], deps())).toBe(2);
+		expect(run([...o, "--office-home", "relative/dir"], deps())).toBe(2);
+		expect(run(["--project", "wt=Owner/repo"], deps())).toBe(2);
+		expect(run(["--office-home", join(home, "state")], deps())).toBe(2);
+		expect(existsSync(outDir())).toBe(false);
+	});
+
+	test("run: the plist carries --home and --project, never the token; a missing exporter script is warned about", () => {
+		const office = join(home, "office");
+		mkdirSync(join(home, ".agentcity"), { recursive: true });
+		writeFileSync(
+			join(home, ".agentcity", "office-projection.env"),
+			`OFFICE_PROJECTION_TOKEN=${SENTINEL}\n`,
+		);
+		const state = join(home, "state");
+		expect(
+			run(
+				[
+					"--office-dir",
+					office,
+					"--office-home",
+					state,
+					"--project",
+					"wt-a=Owner/repo",
+					"--project",
+					"wt-b=Owner/other",
+				],
+				deps(),
+			),
+		).toBe(0);
+		const xml = read(`${LABEL_PREFIX}.exporter.plist`);
+		expect(xml).toContain("<string>--home</string>");
+		expect(xml).toContain(`<string>${state}</string>`);
+		expect(xml.match(/<string>--project<\/string>/g)).toHaveLength(2);
+		expect(xml).toContain("<string>wt-a=Owner/repo</string>");
+		expect(xml).not.toContain(SENTINEL);
+		expect(lines.join("\n")).not.toContain(SENTINEL);
+		expect(lines.join("\n")).toContain("warning      :"); // no scripts/city-export.mjs there yet
+
+		mkdirSync(join(office, "scripts"), { recursive: true });
+		writeFileSync(join(office, "scripts", "city-export.mjs"), "");
+		lines = [];
+		expect(run(["--office-dir", office], deps())).toBe(0);
+		expect(lines.join("\n")).not.toContain("warning      :");
 	});
 });
 

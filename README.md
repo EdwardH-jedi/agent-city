@@ -376,7 +376,9 @@ and prints the commands; copying the files into `~/Library/LaunchAgents` and loa
 ```sh
 # from the main checkout (the checkout path is baked into the files)
 bun run collector:launchd -- --tunnel-target <user@host-or-ssh-alias> \
-                              --office-dir <Agent Office checkout that has scripts/city-export.mjs>
+                              --office-dir <Agent Office checkout that has scripts/city-export.mjs> \
+                              --office-home <state home that recorded your runs> \
+                              --project <worktreeId>=<owner/name>
 ```
 
 | Flag | Meaning |
@@ -384,13 +386,17 @@ bun run collector:launchd -- --tunnel-target <user@host-or-ssh-alias> \
 | `--tunnel-target` | SSH target of the hub host. Without it the tunnel job is skipped. Never committed anywhere. |
 | `--ports` | Forwarded loopback ports, default `4317,5173` (what the running tunnel forwards). |
 | `--office-dir` | Checkout whose `scripts/city-export.mjs` is the exporter. Without it the exporter job is skipped. |
+| `--office-home` | The Office state home the exporter reads (`city-export --home`). Without it the exporter reads its own default (`~/.agent-office`), which may not hold your runs, and the generator says so. Absolute path. Needs `--office-dir`. |
+| `--project` | `<worktreeId>=<owner/name>`, repeatable, passed to the exporter as `--project` (same shape it accepts). Needs `--office-dir`. |
 | `--office-env` | File with `OFFICE_PROJECTION_TOKEN=…`, default `~/.agentcity/office-projection.env`. |
 | `--hub` | Hub URL the exporter posts to, default `http://127.0.0.1:4317`. |
 | `--out-dir` | Must be inside `~/.agentcity`; `~/Library/LaunchAgents` and `~/.claude` are refused. |
 
 - **No secret is written.** The heartbeat and the tailer read this checkout's own `.env` when they start. The
   exporter job runs `sh -c '. <env file>; exec node scripts/city-export.mjs …'`, so the token is read when the
-  job starts; the generator never opens that file.
+  job starts; the generator never opens that file. `--office-home` and `--project` are passed to the
+  exporter as separate arguments after `--hub`, never spliced into the shell text. The generator warns when
+  `<office-dir>/scripts/city-export.mjs` does not exist; the job would then exit and be retried every 10 s.
 - **Stop the terminal copies first** (the printed list says which). Two tunnels fight over the port, two Codex
   tailers share one offsets file, two heartbeats flap `boot_id`.
 - **The tunnel runs with `BatchMode=yes`**, so it needs a key that works without a prompt. On the cockpit Mac the

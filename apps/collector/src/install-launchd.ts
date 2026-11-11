@@ -13,6 +13,7 @@
 // The checkout path is baked into the files, so generate them from the `main` checkout.
 import {
 	chmodSync,
+	existsSync,
 	lstatSync,
 	mkdirSync,
 	realpathSync,
@@ -46,7 +47,14 @@ export interface PlanOptions {
 	bin: { bun: string; node: string | null; ssh: string };
 	hubUrl: string;
 	tunnel: { target: string; ports: number[] } | null;
-	office: { dir: string; envFile: string } | null;
+	office: {
+		dir: string;
+		envFile: string;
+		/** The Office state home the exporter reads (`--home`); null = the exporter's own default. */
+		home?: string | null;
+		/** `<worktreeId>=<owner/name>` entries, each passed as `--project`. */
+		projects?: string[];
+	} | null;
 }
 
 export interface Plan {
@@ -71,6 +79,20 @@ export function parsePorts(text: string): number[] | null {
 		if (!out.includes(n)) out.push(n);
 	}
 	return out.length > 0 ? out : null;
+}
+
+const WORKTREE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const PROJECT_NAME_RE =
+	/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
+
+/** `<worktreeId>=<owner/name>`, the same shape the exporter accepts for `--project`. */
+export function validProject(entry: string): boolean {
+	const i = entry.indexOf("=");
+	if (i < 1) return false;
+	return (
+		WORKTREE_ID_RE.test(entry.slice(0, i)) &&
+		PROJECT_NAME_RE.test(entry.slice(i + 1))
+	);
 }
 
 export function buildPlan(o: PlanOptions): Plan {
@@ -136,16 +158,21 @@ export function buildPlan(o: PlanOptions): Plan {
 			args: [
 				"/bin/sh",
 				"-c",
-				'set -a; . "$1"; set +a; exec "$2" scripts/city-export.mjs --hub "$3"',
+				'set -a; . "$1"; set +a; n="$2"; h="$3"; shift 3; exec "$n" scripts/city-export.mjs --hub "$h" "$@"',
 				"agentcity-exporter",
 				o.office.envFile,
 				o.bin.node,
 				o.hubUrl,
+				// Further flags ride along as positional arguments: nothing is spliced into the shell text.
+				...(o.office.home ? ["--home", o.office.home] : []),
+				...(o.office.projects ?? []).flatMap((p) => ["--project", p]),
 			],
 			workingDirectory: o.office.dir,
 			logPath: log("exporter"),
 			stopFirst: "the terminal `npm run city:export`",
-			note: "Runs scripts/city-export.mjs of the checkout given as --office-dir; if that file is not there, the job exits and is retried every 10 s.",
+			note: o.office.home
+				? "Runs scripts/city-export.mjs of the checkout given as --office-dir; if that file is not there, the job exits and is retried every 10 s."
+				: "No --office-home: the exporter reads its default state home (~/.agent-office), which may not hold your runs; pass --office-home <the state home that recorded them>. Runs scripts/city-export.mjs of --office-dir; if that file is not there, the job exits and is retried every 10 s.",
 		});
 	}
 	return { jobs, skipped };
@@ -232,6 +259,8 @@ export function run(argv: string[], deps: Deps): number {
 		ports?: string;
 		"office-dir"?: string;
 		"office-env"?: string;
+		"office-home"?: string;
+		project?: string[];
 		hub?: string;
 		"out-dir"?: string;
 	};
@@ -243,6 +272,8 @@ export function run(argv: string[], deps: Deps): number {
 				ports: { type: "string", default: "4317,5173" },
 				"office-dir": { type: "string" },
 				"office-env": { type: "string" },
+				"office-home": { type: "string" },
+				project: { type: "string", multiple: true },
 				hub: { type: "string", default: "http://127.0.0.1:4317" },
 				"out-dir": { type: "string" },
 			},
@@ -279,12 +310,29 @@ export function run(argv: string[], deps: Deps): number {
 	}
 
 	let office: PlanOptions["office"] = null;
-	if (values["office-dir"] !== undefined) {
+	const projects = values.project ?? [];
+	if (values["office-dir"] === undefined) {
+		if (values["office-home"] !== undefined || projects.length > 0) {
+			deps.log("error: --office-home and --project need --office-dir");
+			return 2;
+		}
+	} else {
+		const home = values["office-home"];
+		if (home !== undefined && !isAbsolute(home)) {
+			deps.log("error: --office-home must be an absolute path");
+			return 2;
+		}
+		if (!projects.every(validProject)) {
+			deps.log("error: --project must look like <worktreeId>=<owner/name>");
+			return 2;
+		}
 		office = {
 			dir: resolve(values["office-dir"]),
 			envFile: resolve(
 				values["office-env"] ?? join(agentcityHome, "office-projection.env"),
 			),
+			home: home ?? null,
+			projects,
 		};
 	}
 
@@ -356,6 +404,10 @@ export function run(argv: string[], deps: Deps): number {
 	out(`files in     : ${outDir}`);
 	for (const { job, path } of written) out(`  ${job.name.padEnd(9)} ${path}`);
 	for (const s of plan.skipped) out(`skipped      : ${s}`);
+	if (office && !existsSync(join(office.dir, "scripts", "city-export.mjs")))
+		out(
+			`warning      : ${join(office.dir, "scripts", "city-export.mjs")} does not exist — the exporter job would exit and be retried every 10 s`,
+		);
 	out(
 		"\n1. stop the terminal copies first (two of a kind fight over a port / offsets file / boot_id):",
 	);
