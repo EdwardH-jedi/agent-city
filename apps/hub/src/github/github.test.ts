@@ -422,9 +422,10 @@ describe("districts", () => {
 			uncategorized: ["local/scratch", "octo-example/zeta"],
 		});
 		expect(DISTRICTS_DRAFT_PATH).not.toBe(DISTRICTS_PATH);
-		expect(DISTRICTS_DRAFT_PATH.endsWith("config/districts.draft.yaml")).toBe(
-			true,
-		);
+		// native separators: DISTRICTS_DRAFT_PATH is built with path.join
+		expect(
+			DISTRICTS_DRAFT_PATH.endsWith(join("config", "districts.draft.yaml")),
+		).toBe(true);
 	});
 });
 
@@ -713,7 +714,12 @@ describe("local scan (temp git repos)", () => {
 		git(join(root, ".hidden", "r"), "init", "-q");
 
 		const found = findCheckouts([root]).map((p) => p.slice(root.length + 1));
-		expect(found).toEqual(["a", "wt/a-feature", "y1/y2/y3/at-four"]);
+		// findCheckouts returns native paths (the code opens them / hands them to git)
+		expect(found).toEqual([
+			"a",
+			join("wt", "a-feature"),
+			join("y1", "y2", "y3", "at-four"),
+		]);
 
 		const main = await probeCheckout(a);
 		expect(main).toMatchObject({

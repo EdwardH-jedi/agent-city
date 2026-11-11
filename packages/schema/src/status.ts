@@ -28,15 +28,26 @@ export function machineStatus(
 	return "offline";
 }
 
-/** READY states in which Office is waiting for the owner (02 §6). */
+/**
+ * READY states in which Office is waiting for the owner (02 §6). `GOAL_RECORDED` is a new mission
+ * whose goal is on record and which has no plan yet: the next step is the owner's (decision D1).
+ */
 const WAITING_OWNER_REASONS: ReadonlySet<string> = new Set([
+	"GOAL_RECORDED",
 	"AWAITING_PLAN_APPROVAL",
 	"AWAITING_OWNER_INTEGRATION",
 	"DRAFT_REQUIRES_OWNER_COMMIT",
 	"PLAN_APPROVED",
 ]);
 
-/** Displays that put a run in the "Needs owner" list. */
+/**
+ * READY + DISPATCH_STOPPED: Office's run loop ended with exit code 0 (no failure) while the plan still
+ * has tasks left — a rest between loops, nothing for the owner to do. The same reason after a failed
+ * loop is reported as HOLD (lifecycle.mjs `run()`), which stays `hold`.
+ */
+const PAUSED_REASON = "DISPATCH_STOPPED";
+
+/** Displays that put a run in the "Needs owner" list. `paused` is deliberately not one of them. */
 const NEEDS_OWNER: ReadonlySet<RunDisplay> = new Set([
 	"waiting_owner",
 	"hold",
@@ -45,9 +56,22 @@ const NEEDS_OWNER: ReadonlySet<RunDisplay> = new Set([
 ]);
 
 /**
+ * `evidence_verified=false` outranks only a run that claims to be done: passed / partial become
+ * `unverified`, so a run whose evidence nobody checked can never read as passed. A run still in
+ * progress keeps its own state (running, waiting, paused, hold…): a new run has no signed event yet
+ * and is reported unverified for that reason alone.
+ */
+function isFinished(display: RunDisplay): boolean {
+	return display === "passed" || display === "partial";
+}
+
+/**
  * The state Office reported, mapped by the 02 §6 table. City never reinterprets: a combination the
- * table does not list is `unknown` rather than a guess. Unverified evidence wins over everything, so
- * a run with unchecked evidence can never read as passed.
+ * table does not list is `unknown` rather than a guess.
+ *
+ * The alert `EVIDENCE_UNVERIFIED` is different from the flag: it means Office failed to read the
+ * evidence (an error), and it is the one alert slot, so it also hides `FAILED_PROCESS_RECONCILE` and
+ * `STALE_OR_IDLE`. It therefore wins for every run, as before.
  */
 export function reportedRunState(run: {
 	status: string;
@@ -55,9 +79,16 @@ export function reportedRunState(run: {
 	alert: string | null;
 	evidence_verified: boolean;
 }): RunDisplay {
-	if (!run.evidence_verified || run.alert === "EVIDENCE_UNVERIFIED") {
-		return "unverified";
-	}
+	if (run.alert === "EVIDENCE_UNVERIFIED") return "unverified";
+	const base = mappedRunState(run);
+	return !run.evidence_verified && isFinished(base) ? "unverified" : base;
+}
+
+function mappedRunState(run: {
+	status: string;
+	reason: string | null;
+	alert: string | null;
+}): RunDisplay {
 	if (
 		run.alert === "FAILED_PROCESS_RECONCILE" ||
 		run.alert === "MISSION_RECONCILIATION_REQUIRED"
@@ -73,11 +104,10 @@ export function reportedRunState(run: {
 		case "RUNNING":
 			return "running";
 		case "READY":
-			return run.reason !== null && WAITING_OWNER_REASONS.has(run.reason)
-				? "waiting_owner"
-				: "unknown";
-		case "HOLD":
-			return "hold";
+			if (run.reason === null) return "unknown";
+			if (WAITING_OWNER_REASONS.has(run.reason)) return "waiting_owner";
+			if (run.reason === PAUSED_REASON) return "paused";
+			return "unknown";
 		case "PASS":
 			return "passed";
 		case "PARTIAL":
