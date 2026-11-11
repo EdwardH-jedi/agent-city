@@ -17,6 +17,7 @@ const LABEL: Record<RunDisplay, string> = {
 	no_progress_suspected: "no progress suspected",
 	needs_reconcile: "needs reconcile",
 	waiting_owner: "waiting for owner",
+	paused: "paused",
 	hold: "hold",
 	passed: "passed",
 	partial: "partial",

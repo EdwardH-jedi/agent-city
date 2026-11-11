@@ -362,7 +362,9 @@ export function backupDb(opts: BackupOptions): BackupResult {
 			src.close();
 		}
 		chmodSync(out, 0o600);
-		const fd = openSync(out, "r");
+		// "r+", not "r": on Windows fsync (FlushFileBuffers) needs a write-capable handle and fails
+		// with EPERM on a read-only one. The file is our own private copy; nothing is written to it.
+		const fd = openSync(out, "r+");
 		try {
 			fsyncSync(fd);
 		} finally {

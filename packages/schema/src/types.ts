@@ -216,6 +216,7 @@ export const RunDisplay = z.enum([
 	"no_progress_suspected",
 	"needs_reconcile",
 	"waiting_owner",
+	"paused",
 	"hold",
 	"passed",
 	"partial",
