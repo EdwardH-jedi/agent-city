@@ -415,6 +415,32 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   (today only loopback + `HUB_HOST` pass), put TLS in front, and require auth on `/api` and `/ws`.
 - Back up the DB nightly with `bun run db:backup --keep N` (and copy `data/backups/` off the machine).
 
+## Board kiosk on spine (RX) — scripts only, not applied
+
+The board is meant to stay on the RX 6600 monitor of spine, full-screen, with nobody at the keyboard.
+Two PowerShell scripts in `scripts/kiosk/` prepare that; neither has been run on spine yet.
+
+| Script | What it does |
+| ------ | ------------ |
+| `start-board.ps1` | Waits for `GET http://127.0.0.1:4317/healthz`, then opens Edge (or `-Browser chrome`) in kiosk mode on the hub-served board with `--autoplay-policy=no-user-gesture-required` (so the 결재 knock can play without a click) and its own profile. Loopback URLs only. `-DryRun` prints the command. |
+| `install-board.ps1` | **Print-only by default.** Lists what it would set up: a Scheduled Task *AgentCity Board* that runs `start-board.ps1` at the current user's logon (interactive), display-off / sleep / hibernate never on AC (`powercfg`), screen saver off for that user. `-Apply` makes the changes; `-Uninstall -Apply` removes the task. |
+
+```powershell
+# on spine, after building the web UI and starting the hub (see "Serving the web UI from the hub")
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kiosk\start-board.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kiosk\install-board.ps1          # review
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kiosk\install-board.ps1 -Apply   # owner
+```
+
+- **Logon.** The hub and heartbeat tasks run without a logged-on desktop (S4U) and cannot show a
+  window, so the board task runs at logon. Without Windows automatic logon the board appears only after
+  someone logs in after a reboot. Automatic logon stores a password and is the owner's decision (design
+  doc 07 §12.1); the scripts never enable it.
+- **Sound.** Whether Edge/Chrome on spine actually plays the knock with the autoplay flag is not yet
+  confirmed (doc 07 §5). Quiet hours and muting stay in the URL: `-Url "http://127.0.0.1:4317/?quiet=23-8"`.
+- **Burn-in.** Moving the top band a pixel or two every few minutes is part of V3 but is web code, not
+  a script; it is not done yet.
+
 ## Security model
 
 - GitHub is read-only: REST `GET` only; GraphQL is `query`-only (mutations are rejected before sending).
