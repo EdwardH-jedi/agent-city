@@ -70,6 +70,77 @@ Open http://127.0.0.1:5173. Set `INGEST_TOKEN` in `.env` before collecting
 events; an unset token disables ingest. Keep the hub on loopback. Read the
 [security model](#security-model) before changing its bind address.
 
+### The screens
+
+`/` is the **board**, made for a monitor watched from 1.5–2 m: one status sentence (`전부 정상` ·
+`결재 N건` · `멈춤 N건` · `입력 대기 N건` · `Mac 보고 끊김 (N분 전)`), an 8 px frame (red > yellow > none), the **HQ 대기** cards
+and **자리 비운 사이** list on the left, the project village in the middle (a 3D campus when WebGL works, the 2D grid otherwise) and **지금 진행** on the right. `#/detail` (key `D` flips between the two) is the table view
+with Needs owner, Runs, Repos, Live sessions and Events.
+
+The board only reads: it draws what the hub reports through `useHub` (GET + `/ws`, plus
+`GET /api/runs/:machine/:id/events` for the current runs) and has no button or form. Approving, running or
+re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.test.ts` scans
+`apps/web/src/board/**` for it.
+
+- **Current run.** Of several runs with the same `(project, workflow_id)` only the one with the latest
+  `last_progress_at` counts (ties: higher `last_event_sequence`, then higher run id). The others show only
+  in `#/detail`.
+- **Sound** is synthesised (no audio files) and plays only while the cockpit is `online`, the screen is
+  connected to the hub and it is not quiet time. Quiet hours default to 23:00–08:00 local time; change them
+  in the page URL: `?quiet=22-7`, `?quiet=off`, `?sound=off`. No environment variable. Browsers refuse
+  sound until the page has been interacted with, unless the kiosk browser allows autoplay.
+- A run code that is not in the phrase table (`apps/web/src/board/copy.ts`) is shown as
+  `확인이 필요합니다` plus the code on its card (`확인 필요` in 자리 비운 사이); the board never guesses what it
+  means. `DISPATCH_STOPPED` and `PRESERVED_ON_HOLD` were checked against Agent Office's
+  `server/pipeline/lifecycle.mjs` and have sentences.
+- **Screen rules (design doc 07 §13).** One fact, one place: a 결재 sentence only on its HQ 대기 card, the
+  newest report only in the one bubble at the HQ door. Three text sizes (48 · 24–28 · 16–18 px). 자리 비운
+  사이 is one short dim line per item (`17:03 docs T3 통과`, at most 6, a `어제` divider where the date
+  changes, no code strings). 지금 진행 is two lines per run (`프로젝트 · 단계`, the nine-phase bar; at most 5,
+  then `+N`). Columns are 320 px / village / 300 px.
+- **The village** stands at most 8 project buildings, by recent activity (a flagged one always stands);
+  the rest fold into one `조용함 N곳` sign. A building holds its name and pictures only: lit windows for
+  running runs (dark when nothing runs), a big yellow (결재) or red (멈춤) flag. The village dims and every
+  figure stops when the cockpit or this screen's hub connection goes quiet.
+- **The 3D campus** (`apps/web/src/campus/`, a lazy chunk with `three`) draws the same model: a fixed
+  panorama camera (it never moves or follows anything), building names only, the lead walking to the HQ
+  for a 결재 (folder = 승인 대기, binder = 멈춤) or a report and walking back when it ends, the owner at the
+  HQ desk while the cockpit is `online` (an empty chair otherwise), the one bubble at the HQ door, and
+  evening colours (a little darker during the `?quiet=` hours), working buildings lit warm from inside. It
+  has no pointer or keyboard input. Without WebGL, if the scene chunk cannot load, or if the GPU context is
+  lost, the 2D tile grid is shown instead.
+- **60 s rule (decision D3).** A 결재 or 멈춤 counts — HQ visit, knock, border colour, building flag and
+  the status sentence — only once the run has stayed in that state (same code) for 60 s, so running goal →
+  plan → approve on the Mac does not knock at every step. A state the screen saw change counts from when
+  it saw it; one it finds on opening counts from Office's `last_progress_at`. Reports are not held back.
+- **When the Mac stops reporting (07 §7, 08 Q4).** From the moment the cockpit stops counting as
+  `online`, the whole village stands still: no 결재, 멈춤 or session visit starts, none that was there
+  leaves because time passed (a session keeps its visit past its 30 minutes), the border keeps its colour
+  and nothing sounds. Reports that still arrive (the exporter runs apart from the heartbeat) are drawn
+  only once the Mac is back, and a 60 s count that had not finished starts again from zero then.
+- **Paused runs (decision D2).** `paused` (Office's loop ended for the day with tasks left) is not a 결재:
+  no visit, no border, no sound, its building dark with the lead inside. It is listed under HQ 대기 as
+  `쉬는 중 · 이어서 실행 필요` with `오늘 몫은 끝났습니다. 남은 작업이 있습니다.` The first time the quiet hours end
+  after it paused (08:00 by default, the `?quiet=` end hour), the board knocks once — once per
+  paused run per day. A morning that passes while the board may not sound (cockpit offline, `?sound=off`)
+  or before the page was opened is not made up later.
+- **Sessions (decision D4).** Claude Code / Codex sessions from `GET /api/sessions` and ws `session` (no
+  new request): a repo with a session active in the last 7 days gets a building (`local/<dir>` too; the
+  name tag is the part after the slash; a session outside any checkout raises none). Lit windows =
+  running runs + `active` sessions, at most 4. 지금 진행 lists each `active` session as one line,
+  `프로젝트 · Claude · N초 전` (no phase bar). A session `waiting` for input for 60 s sends its lead to the HQ:
+  `입력을 기다리고 있습니다.`, one knock (no 30-minute reminder), yellow border; visit id `session:<id>`.
+  30 min after the wait began the visit ends and the session moves to the quiet `기다리는 세션` list (no
+  sound, no border). Change the 30 min in the page URL: `?session_wait=45`; `?session_wait=0` turns
+  session visits off (waiting sessions go straight to the list). `idle`, `stale` and `ended` sessions light
+  nothing and visit nobody; an `active` session silent for 15 min is `stale` by the screen's clock. While
+  the cockpit, or the session's own machine, is not reporting, session visits stand still (see below).
+  Known limit: the dispatcher's own Claude runs carry the same hook, so a run and its session can both
+  light a window in the same building (the cap of 4 holds).
+- **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`, in
+  its own lazy chunk that the live page never loads) so it can be looked at without a running Office. It opens no hub connection, plays no sound and says
+  `예시 데이터` in the top band. Without `?demo=1` only hub data is ever shown.
+
 ### Serving the web UI from the hub
 
 To run with one process (no Vite dev server), build the UI once, then start the hub alone:
@@ -422,6 +493,32 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   (today only loopback + `HUB_HOST` pass), put TLS in front, and require auth on `/api` and `/ws`.
 - Back up the DB nightly with `bun run db:backup --keep N` (and copy `data/backups/` off the machine).
 
+## Board kiosk on spine (RX) — scripts only, not applied
+
+The board is meant to stay on the RX 6600 monitor of spine, full-screen, with nobody at the keyboard.
+Two PowerShell scripts in `scripts/kiosk/` prepare that; neither has been run on spine yet.
+
+| Script | What it does |
+| ------ | ------------ |
+| `start-board.ps1` | Waits for `GET http://127.0.0.1:4317/healthz`, then opens Edge (or `-Browser chrome`) in kiosk mode on the hub-served board with `--autoplay-policy=no-user-gesture-required` (so the 결재 knock can play without a click) and its own profile. Loopback URLs only. `-DryRun` prints the command. |
+| `install-board.ps1` | **Print-only by default.** Lists what it would set up: a Scheduled Task *AgentCity Board* that runs `start-board.ps1` at the current user's logon (interactive), display-off / sleep / hibernate never on AC (`powercfg`), screen saver off for that user. `-Apply` makes the changes; `-Uninstall -Apply` removes the task. |
+
+```powershell
+# on spine, after building the web UI and starting the hub (see "Serving the web UI from the hub")
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kiosk\start-board.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kiosk\install-board.ps1          # review
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kiosk\install-board.ps1 -Apply   # owner
+```
+
+- **Logon.** The hub and heartbeat tasks run without a logged-on desktop (S4U) and cannot show a
+  window, so the board task runs at logon. Without Windows automatic logon the board appears only after
+  someone logs in after a reboot. Automatic logon stores a password and is the owner's decision (design
+  doc 07 §12.1); the scripts never enable it.
+- **Sound.** Whether Edge/Chrome on spine actually plays the knock with the autoplay flag is not yet
+  confirmed (doc 07 §5). Quiet hours and muting stay in the URL: `-Url "http://127.0.0.1:4317/?quiet=23-8"`.
+- **Burn-in.** The board itself moves its top band by 1–2 px every 3 minutes (a slow loop, never more
+  than 2 px from where it started; `apps/web/src/board/burnin.ts`).
+
 ## Security model
 
 - GitHub is read-only: REST `GET` only; GraphQL is `query`-only (mutations are rejected before sending).
@@ -435,6 +532,10 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   every run is shown as *reported* with its age.
 - `/ingest` takes at most 500 events per request (`MAX_INGEST_BATCH`; more → 413) inside a 5 MiB
   body; collectors send in chunks of exactly that size.
+- The "no `/Users/` path" rule covers the run tables only (`runs`, `run_events`; `apps/hub/src/runs.test.ts`).
+  Session and event rows keep the working folder and file paths by design (prompt text is never stored,
+  secrets are masked). The board never draws a session's folder, branch or model — only its repo name
+  (`scripts/no-run-actions.test.ts` checks the board code never reads `.cwd` / `.branch`).
 - Collectors redact before spooling/sending: prompt text is never stored (length only); `tool_input`
   is reduced to tool name + file path + first 80 chars of a command, all through `redact()`; every
   string field of an event is sanitized, and the hub re-applies all of it before storing.
@@ -501,3 +602,35 @@ The following work is planned, not implemented by the telemetry layer above.
   exposing a hub beyond loopback
 - Service units for the hub, Codex tailer, and SSH tunnels remain to be added
 - Old token-scoped `github_etags` rows are not automatically pruned
+- Board known limits: open P2s from the Codex reviews of `feat/board-sessions` (line numbers as of
+  `0855f2b`). Accepted for now; if the kiosk shows a real miss, the dwell logic is to be reworked as
+  one function rather than patched piece by piece.
+  - P2-1 `sessions.ts:282`: a wait's start is kept only in screen memory, so after a reload a later
+    `Notification` becomes the start (a second knock, and the list move at 50 min instead of 30).
+  - P2-2 `sound.ts:166`: a visit that starts inside the 5 s settle window gets no knock, then or later.
+  - P2-3 `visits.ts:266`: a run seen for the first time is timed from `last_progress_at`, so a
+    long-stuck run shows its visit and border at once instead of after 60 s.
+  - P2-4 `visits.ts:89`: a model built without the watch cannot restart the 60 s count on return (the
+    Board always passes one, so the screen is not affected).
+  - P2-5 `sound.ts:147`: the morning knock leaves out the exact boundary (`pausedSeen < due.end`), so a
+    run first received at exactly 08:00:00 gets none that morning.
+  - #1 `sessions.ts:157`: heartbeats the screen missed (skipped ticks) are taken for an outage and
+    restart the count, so a visit that is already due waits up to 120 s more.
+  - #2 `sessions.ts:209`: an outage that falls between two skipped ticks resets a count that had
+    already finished.
+  - #3 `sessions.ts:211`: elapsed time is a wall-clock difference, so a clock set back delays the
+    60 s rule.
+  - #4 `sessions.ts:259`: without a reload, the 30 min move is counted from the first wait, not from a
+    later last activity.
+  - #5 `sessions.ts:212`: a visit that was unfinished at the last tick before stale can start while
+    stale.
+  - #6 `model.ts:270`: while stale, a new run state is applied as it comes, which removes an existing
+    결재 visit and border.
+  - #7 `visits.ts:330`: report visits do not go through the offline gate, so one can appear or expire
+    while stale.
+  - #8 `sessions.ts:61`: the 7-day cutoff is applied while offline and can remove a standing session
+    visit.
+  - #9 `sound.ts:153`: if the screen misses every tick of an outage in a background tab, a morning
+    knock that fell due during it sounds as soon as the cockpit returns.
+  - #12 `App.tsx:325` (the detail screen, older than this branch): the tooltip of a session row without
+    `repo_id` shows its `cwd`.

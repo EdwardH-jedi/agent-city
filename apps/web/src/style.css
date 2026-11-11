@@ -300,3 +300,581 @@ tr.st-waiting td {
 .type {
 	font-weight: 600;
 }
+
+/* ── board ──────────────────────────────────────────────────────────────────
+   Main screen for a monitor seen from 1.5–2 m (design doc §3, §13). Dark on purpose: it stays on all
+   night. One background colour; yellow / red / green only for state. Three text sizes only: the status
+   sentence 48px, 결재 cards and the bubble 24–28px, everything else 16–18px. Two weights (400, 700). */
+.board {
+	--b-bg: #0e1013;
+	--b-line: #2a2f38;
+	--b-fg: #f1f2f4;
+	--b-muted: #9aa1ac;
+	--b-dim: #5b616c;
+	--b-yellow: #f5c518;
+	--b-red: #ff4d4f;
+	--b-ok: #4ade80;
+	position: fixed;
+	inset: 0;
+	display: grid;
+	grid-template-rows: 80px 1fr;
+	background: var(--b-bg);
+	color: var(--b-fg);
+	font-size: 16px;
+	font-weight: 400;
+	line-height: 1.35;
+	overflow: hidden;
+}
+/* the 8px frame: red > yellow > none */
+.board::after {
+	content: "";
+	position: fixed;
+	inset: 0;
+	border: 8px solid transparent;
+	pointer-events: none;
+}
+.border-red::after {
+	border-color: var(--b-red);
+}
+.border-yellow::after {
+	border-color: var(--b-yellow);
+}
+.board h2 {
+	font-size: 18px;
+	font-weight: 700;
+	margin: 0 0 10px;
+	color: var(--b-muted);
+}
+.board b {
+	font-weight: 700;
+}
+.board-top {
+	display: flex;
+	align-items: center;
+	gap: 28px;
+	padding: 0 28px;
+	border-bottom: 1px solid var(--b-line);
+	transition: transform 1s;
+}
+.board-sentence {
+	font-size: 48px;
+	font-weight: 700;
+	line-height: 80px;
+	white-space: nowrap;
+}
+.border-red .board-sentence {
+	color: var(--b-red);
+}
+.border-yellow .board-sentence {
+	color: var(--b-yellow);
+}
+.board-machines {
+	display: flex;
+	gap: 12px;
+	list-style: none;
+	margin: 0 auto 0 0;
+	padding: 0;
+}
+.bm {
+	padding: 4px 14px;
+	border: 1px solid var(--b-line);
+	border-radius: 999px;
+	color: var(--b-muted);
+	font-size: 18px;
+}
+.bm-dot {
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	margin-right: 8px;
+	border-radius: 50%;
+	background: currentColor;
+}
+.bm-online {
+	color: var(--b-ok);
+}
+.bm-stale {
+	color: var(--b-yellow);
+}
+.bm-offline {
+	color: var(--b-red);
+}
+.board-counts {
+	font-size: 18px;
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	white-space: nowrap;
+}
+.board-link {
+	font-size: 16px;
+	color: var(--b-muted);
+}
+.demo-band {
+	padding: 4px 14px;
+	white-space: nowrap;
+	border: 1px solid var(--b-muted);
+	border-radius: 6px;
+	color: var(--b-fg);
+	font-size: 18px;
+	font-weight: 700;
+}
+.conn-band {
+	position: fixed;
+	top: 80px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 5;
+	padding: 6px 24px;
+	background: var(--b-bg);
+	border: 2px solid var(--b-yellow);
+	border-radius: 0 0 10px 10px;
+	font-size: 18px;
+	font-weight: 700;
+}
+.board-error {
+	position: fixed;
+	bottom: 12px;
+	left: 24px;
+	color: var(--b-muted);
+	font-size: 16px;
+}
+/* §13.7: left 320, right 300, the village takes the rest */
+.board-body {
+	display: grid;
+	grid-template-columns: 320px minmax(0, 1fr) 300px;
+	min-height: 0;
+}
+.hq,
+.now {
+	padding: 18px 16px;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	gap: 18px;
+	min-height: 0;
+}
+.hq {
+	border-right: 1px solid var(--b-line);
+}
+.now {
+	border-left: 1px solid var(--b-line);
+}
+.hq-empty,
+.quiet {
+	color: var(--b-muted);
+	font-size: 18px;
+	margin: 0;
+}
+.hq-wait {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.hq-wait h2 {
+	margin: 0;
+}
+/* a list that never cuts a row in half: what does not fit wraps into a second column out of sight */
+.cards,
+.incidents,
+.now-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	flex-wrap: wrap;
+	align-content: flex-start;
+	column-gap: 64px;
+	row-gap: 14px;
+	overflow: hidden;
+	min-height: 0;
+}
+.cards > li,
+.incidents > li,
+.now-list > li {
+	width: 100%;
+	flex: none;
+}
+.card {
+	border-left: 6px solid var(--b-line);
+	padding: 4px 0 4px 14px;
+	display: grid;
+	gap: 4px;
+}
+.card-folder {
+	border-left-color: var(--b-yellow);
+}
+.card-binder {
+	border-left-color: var(--b-red);
+}
+.card-project {
+	font-size: 24px;
+	font-weight: 700;
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+}
+.card-names {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.card-wait {
+	flex: none;
+	font-size: 18px;
+	font-weight: 400;
+	color: var(--b-muted);
+}
+.card-text {
+	font-size: 26px;
+	overflow-wrap: anywhere;
+}
+.card code {
+	font-size: 16px;
+	color: var(--b-muted);
+	overflow-wrap: anywhere;
+}
+.hq-away {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+.incidents {
+	flex: 1;
+	row-gap: 6px;
+}
+/* §13.4: one dim line each, `17:03 docs T3 통과`, ellipsis when long */
+.inc {
+	display: flex;
+	gap: 10px;
+	color: var(--b-muted);
+	font-size: 16px;
+	white-space: nowrap;
+	overflow: hidden;
+}
+.inc-time {
+	flex: none;
+}
+.inc-project {
+	flex: none;
+	max-width: 110px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.inc-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.inc-day {
+	margin-top: 4px;
+	padding-top: 4px;
+	border-top: 1px solid var(--b-line);
+	color: var(--b-dim);
+	font-size: 16px;
+}
+/* §13.5: two lines per run */
+.now-line {
+	font-size: 18px;
+	font-weight: 700;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.now-age {
+	font-weight: 400;
+	color: var(--b-muted);
+}
+.phases {
+	display: grid;
+	grid-template-columns: repeat(9, 1fr);
+	gap: 3px;
+	margin-top: 6px;
+}
+.phase {
+	height: 12px;
+	border-radius: 2px;
+	background: var(--b-line);
+}
+.phase-done {
+	background: #2f7d4f;
+}
+.phase-now {
+	background: var(--b-ok);
+}
+.now-slow .phase-now {
+	background: var(--b-yellow);
+}
+.now-stale {
+	opacity: 0.6;
+}
+
+/* ── the village (2D tile grid, §13.10) ───────────────────────────────────── */
+.village {
+	position: relative;
+	padding: 22px 28px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 14px;
+	overflow: hidden;
+	min-height: 0;
+	transition: filter 0.6s;
+}
+/* reports stopped (Mac or this screen): dim the village. Nothing in it moves. */
+.village-dim {
+	filter: saturate(0.35) brightness(0.6);
+}
+.tile-name {
+	font-size: 18px;
+	font-weight: 700;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 100%;
+}
+.hq-tile {
+	flex: none;
+	width: min(420px, 100%);
+	padding: 12px 20px;
+	display: flex;
+	align-items: center;
+	gap: 24px;
+	border: 2px solid var(--b-muted);
+	border-radius: 8px;
+}
+.hq-rooms {
+	display: flex;
+	align-items: flex-end;
+	gap: 28px;
+	min-height: 40px;
+	min-width: 0;
+}
+.lobby {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+/* figures: a body with a head, drawn in CSS */
+.fig {
+	position: relative;
+	display: inline-block;
+	width: 14px;
+	height: 22px;
+	margin-top: 14px;
+	border-radius: 7px 7px 3px 3px;
+	background: var(--b-muted);
+	flex: none;
+}
+.fig::before {
+	content: "";
+	position: absolute;
+	left: 1px;
+	top: -13px;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	background: inherit;
+}
+.fig-owner {
+	background: var(--b-fg);
+}
+.fig-chair {
+	background: transparent;
+	border: 3px solid var(--b-dim);
+	border-top-width: 10px;
+}
+.fig-chair::before {
+	display: none;
+}
+.fig-visit {
+	animation: fig-wait 2.4s ease-in-out infinite;
+}
+.fig-visit::after {
+	content: "";
+	position: absolute;
+	right: -9px;
+	top: 7px;
+	width: 10px;
+	height: 13px;
+	border-radius: 2px;
+}
+.fig-folder::after {
+	background: var(--b-yellow);
+}
+.fig-binder::after {
+	background: var(--b-red);
+}
+.fig-report {
+	background: var(--b-fg);
+}
+.fig-report::after {
+	display: none;
+}
+@keyframes fig-wait {
+	50% {
+		transform: translateY(-3px);
+	}
+}
+.door {
+	flex: none;
+	min-height: 52px;
+	display: flex;
+	justify-content: center;
+	width: 100%;
+}
+.bubble {
+	margin: 0;
+	max-width: min(720px, 100%);
+	padding: 6px 16px;
+	border: 2px solid var(--b-fg);
+	border-radius: 14px;
+	font-size: 24px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.tiles {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	width: 100%;
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 16px;
+	align-content: start;
+}
+.tile {
+	position: relative;
+	min-width: 0;
+	padding: 12px 14px;
+	display: grid;
+	gap: 12px;
+	border: 1px solid var(--b-line);
+	border-radius: 8px;
+}
+.tile-on {
+	border-color: #2f7d4f;
+}
+.tile .tile-name {
+	padding-right: 34px;
+}
+.dots {
+	display: flex;
+	gap: 10px;
+}
+.dot {
+	width: 16px;
+	height: 16px;
+	border-radius: 3px;
+	background: var(--b-line);
+}
+.dot-on {
+	background: var(--b-ok);
+	box-shadow: 0 0 12px var(--b-ok);
+}
+/* a flag big enough to see from 2 m */
+.flag {
+	position: absolute;
+	top: 8px;
+	right: 12px;
+	width: 4px;
+	height: 40px;
+	background: var(--b-muted);
+}
+.flag::after {
+	content: "";
+	position: absolute;
+	left: 4px;
+	top: 0;
+	border-style: solid;
+	border-width: 12px 0 12px 26px;
+	border-color: transparent;
+}
+.flag-yellow::after {
+	border-left-color: var(--b-yellow);
+}
+.flag-red::after {
+	border-left-color: var(--b-red);
+}
+.tile:has(.flag) {
+	min-height: 64px;
+}
+/* nothing running: clearly dark (the flag keeps full strength) */
+.tile-off .tile-name,
+.tile-off .dots {
+	opacity: 0.35;
+}
+
+/* ── the campus (3D, lazy): canvas, name tags, the one bubble at the HQ door ─ */
+.campus {
+	padding: 0;
+	position: relative;
+}
+.campus-night {
+	filter: brightness(0.82);
+}
+.campus.village-dim {
+	filter: saturate(0.35) brightness(0.6);
+}
+.cmp-scene,
+.cmp-gl,
+.cmp-pins {
+	position: absolute;
+	inset: 0;
+}
+.cmp-gl canvas {
+	display: block;
+}
+.cmp-pins {
+	pointer-events: none;
+	overflow: hidden;
+}
+.cmp-pin,
+.cmp-bubble {
+	position: absolute;
+	left: 0;
+	top: 0;
+	white-space: nowrap;
+	will-change: transform;
+}
+/* name tags: names only; long ones end in an ellipsis and are kept inside the stage (engine) */
+.cmp-pin {
+	max-width: 200px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	padding: 2px 10px;
+	border-radius: 6px;
+	background: #0e1013cc;
+	color: var(--b-fg);
+	font-size: 18px;
+	font-weight: 700;
+}
+.cmp-bubble {
+	max-width: 70%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	padding: 6px 16px;
+	border: 2px solid var(--b-fg);
+	border-radius: 14px;
+	background: #0e1013e6;
+	color: var(--b-fg);
+	font-size: 24px;
+}
+.cmp-bubble[hidden] {
+	display: none;
+}
+.campus-folded {
+	position: absolute;
+	right: 20px;
+	bottom: 16px;
+}
+/* reports stopped: every figure stands where it is */
+.village-dim .fig {
+	animation: none;
+}
