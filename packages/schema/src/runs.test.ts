@@ -371,8 +371,9 @@ describe("reportedRunState — the 02 §6 table, row by row", () => {
 			"needs_reconcile",
 		);
 	});
-	test("waiting_owner: READY with one of the four owner reasons", () => {
+	test("waiting_owner: READY with one of the owner reasons", () => {
 		for (const reason of [
+			"GOAL_RECORDED",
 			"AWAITING_PLAN_APPROVAL",
 			"AWAITING_OWNER_INTEGRATION",
 			"DRAFT_REQUIRES_OWNER_COMMIT",
@@ -506,8 +507,7 @@ describe("reportedRunState — the 02 §6 table, row by row", () => {
 	test("a combination the table does not list is `unknown`, never a guess", () => {
 		expect(s({ status: "READY", reason: "SOMETHING_NEW" })).toBe("unknown");
 		expect(s({ status: "READY", reason: null })).toBe("unknown");
-		// a fresh mission before any plan: not in the table, so not guessed
-		expect(s({ status: "READY", reason: "GOAL_RECORDED" })).toBe("unknown");
+		expect(s({ status: "READY", reason: "goal_recorded" })).toBe("unknown");
 		expect(s({ status: "READY", reason: "dispatch_stopped" })).toBe("unknown");
 		expect(s({ status: "WEIRD" })).toBe("unknown");
 		expect(s({ alert: "A_NEW_ALERT" })).toBe("unknown");
@@ -566,6 +566,7 @@ describe("runStateAt — what City itself adds", () => {
 		expect(need({ status: "READY", reason: "AWAITING_PLAN_APPROVAL" })).toBe(
 			true,
 		);
+		expect(need({ status: "READY", reason: "GOAL_RECORDED" })).toBe(true);
 		expect(need({ status: "HOLD" })).toBe(true);
 		expect(need({ alert: "FAILED_PROCESS_RECONCILE" })).toBe(true);
 		expect(need({ status: "PASS", evidence_verified: false })).toBe(true);

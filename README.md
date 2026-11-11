@@ -253,7 +253,7 @@ values are kept verbatim; the only thing City adds is the receive time and `snap
 | `running`               | `RUNNING`, no alert                                                              |
 | `no progress suspected` | alert `STALE_OR_IDLE` — an alert, **not** a failure                              |
 | `needs reconcile`       | alert `FAILED_PROCESS_RECONCILE` or `MISSION_RECONCILIATION_REQUIRED`            |
-| `waiting for owner`     | `READY` with `AWAITING_PLAN_APPROVAL`, `AWAITING_OWNER_INTEGRATION`, `DRAFT_REQUIRES_OWNER_COMMIT` or `PLAN_APPROVED` |
+| `waiting for owner`     | `READY` with `GOAL_RECORDED` (goal on record, no plan yet), `AWAITING_PLAN_APPROVAL`, `AWAITING_OWNER_INTEGRATION`, `DRAFT_REQUIRES_OWNER_COMMIT` or `PLAN_APPROVED` |
 | `paused`                | `READY` with `DISPATCH_STOPPED` — Office's loop stopped **without a failure** and tasks are left. Not in *Needs owner*. The same reason after a failed loop arrives as `HOLD` and stays `hold` |
 | `hold` + reason         | `HOLD`                                                                           |
 | `passed` / `partial`    | `PASS` / `PARTIAL`                                                               |

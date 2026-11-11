@@ -28,8 +28,12 @@ export function machineStatus(
 	return "offline";
 }
 
-/** READY states in which Office is waiting for the owner (02 §6). */
+/**
+ * READY states in which Office is waiting for the owner (02 §6). `GOAL_RECORDED` is a new mission
+ * whose goal is on record and which has no plan yet: the next step is the owner's (decision D1).
+ */
 const WAITING_OWNER_REASONS: ReadonlySet<string> = new Set([
+	"GOAL_RECORDED",
 	"AWAITING_PLAN_APPROVAL",
 	"AWAITING_OWNER_INTEGRATION",
 	"DRAFT_REQUIRES_OWNER_COMMIT",
