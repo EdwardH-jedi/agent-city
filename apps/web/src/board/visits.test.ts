@@ -101,7 +101,7 @@ describe("결재 (sign) visits", () => {
 		expect(m.visits).toEqual([]);
 		expect(m.incidents).toHaveLength(1);
 		expect(m.incidents[0]).toMatchObject({
-			text: "확인이 필요합니다",
+			text: "확인 필요",
 			code: "PRESERVED_ON_HOLD",
 		});
 	});

@@ -19,7 +19,7 @@ describe("예시 데이터 (?demo=1 only)", () => {
 			expect(r.id.startsWith("demo/")).toBe(true);
 		expect(DEMO_LABEL).toBe("예시 데이터");
 		const board = readFileSync(join(import.meta.dir, "Board.tsx"), "utf8");
-		expect(board).toMatch(/demo && <|demo \?/);
+		expect(board).toMatch(/demo \?/);
 		expect(board).toMatch(/\{DEMO_LABEL\}/);
 	});
 
@@ -38,15 +38,35 @@ describe("예시 데이터 (?demo=1 only)", () => {
 		expect(m.village.folded).toBeGreaterThan(0);
 	});
 
-	test("the live screen never reaches the demo data: App picks one or the other before useHub", () => {
-		const app = readFileSync(join(import.meta.dir, "..", "App.tsx"), "utf8");
+	test("§13.9: the fixture is a lazy chunk the live path never imports", () => {
+		const { readdirSync } = require("node:fs") as typeof import("node:fs");
+		const src = join(import.meta.dir, "..");
+		const app = readFileSync(join(src, "App.tsx"), "utf8");
 		expect(app).toMatch(
-			/isDemo\(window\.location\.search\) \? <DemoBoard \/> : <LiveApp \/>/,
+			/lazy\(\(\) => import\("\.\/board\/DemoBoard\.tsx"\)\)/,
 		);
-		const board = readFileSync(join(import.meta.dir, "Board.tsx"), "utf8");
-		const demoFn = board.slice(board.indexOf("export function DemoBoard"));
-		expect(demoFn.slice(0, demoFn.indexOf("\n}\n"))).not.toMatch(
-			/useHub|useRunEvents|play\(/,
+		expect(app).toMatch(/isDemo\(window\.location\.search\) \?/);
+		// only DemoBoard.tsx imports demo.ts (and nothing statically imports DemoBoard.tsx)
+		const importers: string[] = [];
+		const walk = (dir: string) => {
+			for (const e of readdirSync(dir, { withFileTypes: true })) {
+				const f = join(dir, e.name);
+				if (e.isDirectory()) walk(f);
+				else if (/\.tsx?$/.test(e.name) && !e.name.endsWith(".test.ts")) {
+					const code = readFileSync(f, "utf8");
+					if (/from "\.\/demo\.ts"|from "\.\/board\/demo\.ts"/.test(code))
+						importers.push(e.name);
+					if (/from "[^"]*DemoBoard\.tsx"/.test(code))
+						importers.push(`static:${e.name}`);
+				}
+			}
+		};
+		walk(src);
+		expect(importers).toEqual(["DemoBoard.tsx"]);
+		const demoBoard = readFileSync(
+			join(import.meta.dir, "DemoBoard.tsx"),
+			"utf8",
 		);
+		expect(demoBoard).not.toMatch(/useHub|useRunEvents|play\(/);
 	});
 });

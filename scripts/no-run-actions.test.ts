@@ -141,7 +141,9 @@ describe("the main screen cannot act on a run", () => {
 
 	test("the scene is a lazy chunk and imports no hub, store or transport", () => {
 		const view = code("apps/web/src/campus/CampusView.tsx");
-		expect(view).toMatch(/lazy\(\(\) => import\("\.\/CampusScene\.tsx"\)\)/);
+		expect(view).toMatch(
+			/lazy\([\s\S]*?import\("\.\/CampusScene\.tsx"\)\.catch\(/,
+		);
 		expect(view).not.toMatch(/from "\.\/(CampusScene|engine|world)\.tsx?"/);
 		for (const f of FILES.filter((x) => x.includes("/campus/"))) {
 			expect({
@@ -174,5 +176,26 @@ describe("the main screen cannot act on a run", () => {
 		expect(sizes.length).toBeGreaterThan(5);
 		expect(Math.min(...sizes)).toBeGreaterThanOrEqual(16);
 		expect(Math.max(...sizes)).toBeGreaterThanOrEqual(44); // the status sentence
+	});
+
+	test("§13.3: three text sizes only (48 · 24–28 · 16–18) and two weights", () => {
+		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
+		const board = css.slice(css.indexOf("/* ── board"));
+		const sizes = new Set(
+			[...board.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1])),
+		);
+		for (const px of sizes)
+			expect({
+				px,
+				ok: px === 48 || (px >= 24 && px <= 28) || (px >= 16 && px <= 18),
+			}).toEqual({
+				px,
+				ok: true,
+			});
+		expect(sizes.has(48)).toBe(true);
+		const weights = new Set(
+			[...board.matchAll(/font-weight:\s*(\w+)/g)].map((m) => m[1]),
+		);
+		expect([...weights].sort()).toEqual(["400", "700"]);
 	});
 });

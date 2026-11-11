@@ -41,6 +41,16 @@ export interface CampusModel {
 	door: { label: string; text: string } | null;
 }
 
+/** Props of the lazily loaded scene (CampusScene.tsx); here so the view needs no import of it. */
+export interface CampusSceneProps {
+	model: CampusModel;
+	/** prefers-reduced-motion: leads are already where they go. */
+	reducedMotion: boolean;
+	/** Called once if WebGL cannot start, the context is lost or the chunk is missing (2D takes over). */
+	onUnavailable(reason: "context_lost" | "init_failed"): void;
+	onReady?(): void;
+}
+
 /** Pure: the village model → the scene model. Only the buildings that stand in the 2D grid (≤ 8). */
 export function toCampusModel(v: VillageModel): CampusModel {
 	const shown = new Set(v.village.shown.map((p) => p.id));

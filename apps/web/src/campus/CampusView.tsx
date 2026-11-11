@@ -1,9 +1,16 @@
-// The middle column (design doc §4): the 3D campus when WebGL works, the 2D grid otherwise. Both
+// The middle column (design doc §4): the 3D campus when WebGL works, the 2D tile grid otherwise. Both
 // draw the same VillageModel. The scene is a lazy chunk, fetched only when a WebGL context can be
-// made; if it cannot start or its context is lost, the 2D grid takes over for good (until reload).
-// The view adds no motion of its own: a dim village (reports stopped) is a CSS filter, and the
-// evening tone darkens a little more during the quiet hours (the same `?quiet=` as the sound).
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+// made; if the chunk cannot be loaded, WebGL cannot start, or its context is lost, the 2D grid takes
+// over for good (until reload). The view adds no motion of its own: a dim village (reports stopped)
+// is a CSS filter, and the evening tone darkens a little during the quiet hours (`?quiet=`).
+import {
+	type ComponentType,
+	lazy,
+	Suspense,
+	useEffect,
+	useMemo,
+	useState,
+} from "react";
 import type { VillageModel } from "../board/model.ts";
 import { isQuiet, parseSoundPrefs } from "../board/sound.ts";
 import { Village2d } from "../board/Village2d.tsx";
@@ -12,14 +19,39 @@ import {
 	watchReducedMotion,
 	webglAvailable,
 } from "./environment.ts";
-import { toCampusModel } from "./presentation.ts";
+import { type CampusSceneProps, toCampusModel } from "./presentation.ts";
 
-const CampusScene = lazy(() => import("./CampusScene.tsx"));
+/** Stands in for the scene when its chunk cannot be loaded: it only says so, once. */
+function SceneMissing({ onUnavailable }: CampusSceneProps) {
+	useEffect(() => onUnavailable("init_failed"), [onUnavailable]);
+	return null;
+}
 
-function useReducedMotion(): boolean {
+const CampusScene = lazy(
+	(): Promise<{ default: ComponentType<CampusSceneProps> }> =>
+		import("./CampusScene.tsx").catch(() => ({ default: SceneMissing })),
+);
+
+/** Only mounted while the scene is shown, so its OS listener goes when the 2D grid takes over. */
+function SceneHost({
+	model,
+	onUnavailable,
+}: {
+	model: VillageModel;
+	onUnavailable: () => void;
+}) {
 	const [reduced, setReduced] = useState(prefersReducedMotion);
 	useEffect(() => watchReducedMotion(setReduced), []);
-	return reduced;
+	const scene = useMemo(() => toCampusModel(model), [model]);
+	return (
+		<Suspense fallback={null}>
+			<CampusScene
+				model={scene}
+				reducedMotion={reduced}
+				onUnavailable={onUnavailable}
+			/>
+		</Suspense>
+	);
 }
 
 export function CampusView({
@@ -30,25 +62,18 @@ export function CampusView({
 	now: number;
 }) {
 	const [gl, setGl] = useState(webglAvailable);
-	const reduced = useReducedMotion();
-	const scene = useMemo(() => toCampusModel(model), [model]);
 	const prefs = useMemo(() => parseSoundPrefs(window.location.search), []);
 	const night = isQuiet(prefs, new Date(now));
+	const fallBack = useMemo(() => () => setGl(false), []);
 	if (!gl) return <Village2d model={model} now={now} />;
 	return (
 		<main
 			className={`village campus${model.status.dim ? " village-dim" : ""}${night ? " campus-night" : ""}`}
 			aria-label="프로젝트 마을"
 		>
-			<Suspense fallback={null}>
-				<CampusScene
-					model={scene}
-					reducedMotion={reduced}
-					onUnavailable={() => setGl(false)}
-				/>
-			</Suspense>
+			<SceneHost model={model} onUnavailable={fallBack} />
 			{model.village.folded > 0 && (
-				<p className="quiet campus-folded">외 {model.village.folded}곳</p>
+				<p className="quiet campus-folded">조용함 {model.village.folded}곳</p>
 			)}
 		</main>
 	);
