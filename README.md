@@ -129,7 +129,8 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
   sound, no border). Change the 30 min in the page URL: `?session_wait=45`; `?session_wait=0` turns
   session visits off (waiting sessions go straight to the list). `idle`, `stale` and `ended` sessions light
   nothing and visit nobody; an `active` session silent for 15 min is `stale` by the screen's clock. While
-  the session's machine is not reporting (stale / offline) its visits stand still: none starts, none ends.
+  the cockpit, or the session's own machine, is not reporting (stale / offline) session visits stand
+  still from the moment it stopped counting as online: none starts, none ends, nothing sounds.
   Known limit: the dispatcher's own Claude runs carry the same hook, so a run and its session can both
   light a window in the same building (the cap of 4 holds).
 - **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`, in
