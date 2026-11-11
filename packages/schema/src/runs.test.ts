@@ -422,22 +422,41 @@ describe("reportedRunState — the 02 §6 table, row by row", () => {
 			}),
 		).toBe("unverified");
 	});
-	test("a run in progress keeps its own state when evidence is unchecked", () => {
+	test("a run in progress keeps its own state when evidence_verified is false (e.g. no signed event yet)", () => {
+		expect(s({ status: "RUNNING", evidence_verified: false })).toBe("running");
+		expect(
+			s({
+				status: "READY",
+				reason: "AWAITING_PLAN_APPROVAL",
+				evidence_verified: false,
+			}),
+		).toBe("waiting_owner");
+		expect(
+			s({
+				status: "READY",
+				reason: "DISPATCH_STOPPED",
+				evidence_verified: false,
+			}),
+		).toBe("paused");
+		expect(
+			s({
+				status: "HOLD",
+				reason: "MODEL_CHAIN_EXHAUSTED",
+				evidence_verified: false,
+			}),
+		).toBe("hold");
+	});
+	test("the EVIDENCE_UNVERIFIED alert (an evidence read error) still wins for every run: it hides a dead-runner alert", () => {
 		for (const over of [
-			{ evidence_verified: false },
-			{ alert: "EVIDENCE_UNVERIFIED" }, // Office sends both together
-			{ alert: "EVIDENCE_UNVERIFIED", evidence_verified: false },
+			{ status: "RUNNING" },
+			{ status: "READY", reason: "DISPATCH_STOPPED" },
+			{ status: "READY", reason: "AWAITING_PLAN_APPROVAL" },
+			{ status: "HOLD", reason: "MODEL_CHAIN_EXHAUSTED" },
 		]) {
-			expect(s({ status: "RUNNING", ...over })).toBe("running");
+			expect(s({ ...over, alert: "EVIDENCE_UNVERIFIED" })).toBe("unverified");
 			expect(
-				s({ status: "READY", reason: "AWAITING_PLAN_APPROVAL", ...over }),
-			).toBe("waiting_owner");
-			expect(s({ status: "READY", reason: "DISPATCH_STOPPED", ...over })).toBe(
-				"paused",
-			);
-			expect(
-				s({ status: "HOLD", reason: "MODEL_CHAIN_EXHAUSTED", ...over }),
-			).toBe("hold");
+				s({ ...over, alert: "EVIDENCE_UNVERIFIED", evidence_verified: false }),
+			).toBe("unverified");
 		}
 	});
 	test("an alert other than the evidence one still decides, and is never turned into passed", () => {

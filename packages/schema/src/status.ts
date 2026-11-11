@@ -52,9 +52,10 @@ const NEEDS_OWNER: ReadonlySet<RunDisplay> = new Set([
 ]);
 
 /**
- * Unchecked evidence outranks only a run that claims to be done: passed / partial become
+ * `evidence_verified=false` outranks only a run that claims to be done: passed / partial become
  * `unverified`, so a run whose evidence nobody checked can never read as passed. A run still in
- * progress keeps its own state (running, waiting, paused, hold…) — its evidence is not final yet.
+ * progress keeps its own state (running, waiting, paused, hold…): a new run has no signed event yet
+ * and is reported unverified for that reason alone.
  */
 function isFinished(display: RunDisplay): boolean {
 	return display === "passed" || display === "partial";
@@ -63,6 +64,10 @@ function isFinished(display: RunDisplay): boolean {
 /**
  * The state Office reported, mapped by the 02 §6 table. City never reinterprets: a combination the
  * table does not list is `unknown` rather than a guess.
+ *
+ * The alert `EVIDENCE_UNVERIFIED` is different from the flag: it means Office failed to read the
+ * evidence (an error), and it is the one alert slot, so it also hides `FAILED_PROCESS_RECONCILE` and
+ * `STALE_OR_IDLE`. It therefore wins for every run, as before.
  */
 export function reportedRunState(run: {
 	status: string;
@@ -70,16 +75,9 @@ export function reportedRunState(run: {
 	alert: string | null;
 	evidence_verified: boolean;
 }): RunDisplay {
-	const evidenceUnchecked =
-		!run.evidence_verified || run.alert === "EVIDENCE_UNVERIFIED";
-	// Office reports bad evidence twice (evidence_verified=false and alert=EVIDENCE_UNVERIFIED), so the
-	// alert is set aside here: it must not turn an in-progress run into `unknown`.
-	const base = mappedRunState({
-		status: run.status,
-		reason: run.reason,
-		alert: run.alert === "EVIDENCE_UNVERIFIED" ? null : run.alert,
-	});
-	return evidenceUnchecked && isFinished(base) ? "unverified" : base;
+	if (run.alert === "EVIDENCE_UNVERIFIED") return "unverified";
+	const base = mappedRunState(run);
+	return !run.evidence_verified && isFinished(base) ? "unverified" : base;
 }
 
 function mappedRunState(run: {
