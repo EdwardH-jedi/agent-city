@@ -62,6 +62,7 @@ describe("D4 · a session waiting for input visits the HQ", () => {
 				since: iso(5 * S),
 				until: null,
 				closing: false,
+				starts: iso(65 * S),
 			},
 		]);
 		expect(r.model.status.border).toBe("yellow");

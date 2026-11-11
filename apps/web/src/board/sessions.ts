@@ -117,16 +117,69 @@ export interface WaitingSession {
 	provider: Session["provider"];
 	/** When the wait began. */
 	since: string;
+	/** When the visit (the lead's walk) begins: its 60 s count done. */
+	starts: string;
 }
 
 // ── the 60 s count (decision D3) and the Mac going quiet (07 §7) ─────────────────────────────────
 
-/** Is the item's 60 s count on hold: the cockpit, or its own machine, has stopped reporting? */
+const quiet = (m: MachineLike | undefined) =>
+	m?.status === "stale" || m?.status === "offline";
+
+/** Is the item's 60 s count on hold: the cockpit, or its own machine, is stale or offline? */
 export const isHeld = (
 	machineId: string,
 	machines: readonly MachineLike[],
+): boolean =>
+	quiet(machines.find((m) => m.id === "cockpit")) ||
+	quiet(machines.find((m) => m.id === machineId));
+
+/** Last heartbeat (epoch ms) of each machine, remembered between ticks. */
+export function beatsOf(
+	machines: readonly MachineLike[],
+): Record<string, number> {
+	const out: Record<string, number> = {};
+	for (const m of machines) {
+		const t = m.heartbeat_at ? Date.parse(m.heartbeat_at) : Number.NaN;
+		if (!Number.isNaN(t)) out[m.id] = t;
+	}
+	return out;
+}
+
+/** The Mac was quiet between the last tick and this one: a heartbeat gap of 90 s or more. */
+const gapped = (
+	id: string,
+	prev: Readonly<Record<string, number>>,
+	cur: Readonly<Record<string, number>>,
+) =>
+	prev[id] !== undefined &&
+	cur[id] !== undefined &&
+	cur[id] - prev[id] >= HEARTBEAT_ONLINE_BELOW_MS;
+
+/** What one tick knows about the Mac for an item on `machineId`. */
+export interface Liveness {
+	/** Not reporting now (stale / offline). */
+	held: boolean;
+	/** It was not reporting at some time since the last tick (even if both ticks saw it online). */
+	resumed: boolean;
+	/** The clock the count runs to: stops when the Mac stopped counting as online. */
+	clock: number;
+}
+
+export function livenessOf(
+	machineId: string,
+	machines: readonly MachineLike[],
 	now: number,
-): boolean => sessionClock(machineId, machines, now) < now;
+	prevBeats: Readonly<Record<string, number>>,
+): Liveness {
+	const cur = beatsOf(machines);
+	return {
+		held: isHeld(machineId, machines),
+		resumed:
+			gapped("cockpit", prevBeats, cur) || gapped(machineId, prevBeats, cur),
+		clock: sessionClock(machineId, machines, now),
+	};
+}
 
 /** One item's 60 s count, as this screen has followed it. */
 export interface Dwell {
@@ -139,22 +192,25 @@ export interface Dwell {
 }
 
 /**
- * One tick of the count. `start` is when the state began (used for an item not followed yet). While the
- * Mac is not reporting nothing matures (07 §7: every figure stands where it is, the border stays as it
- * was); an item that had already matured keeps its visit. On the first tick after the Mac is back, an
- * item that had not matured starts its 60 s again from that tick.
+ * One tick of the count. `start` is when the state began (used for an item not followed yet). The count
+ * runs on `live.clock`, which stops when the Mac stops counting as online (07 §7: every figure stands
+ * where it is, the border stays as it was): what had lasted 60 s by then keeps (or gets) its visit,
+ * nothing else matures. When the Mac is back — seen on this tick, or a heartbeat gap between two ticks —
+ * a count that had not finished starts again from zero.
  */
 export function stepDwell(
 	prev: Dwell | undefined,
 	start: number,
-	held: boolean,
+	live: Liveness,
 	now: number,
 ): Dwell {
 	let from = prev ? prev.from : start;
 	let ok = prev ? prev.ok : false;
-	if (prev?.held && !held && !ok) from = now;
-	if (!held && !ok && now - from >= DWELL_MS) ok = true;
-	return { from, ok, held };
+	if (!ok && !live.held && (prev?.held || live.resumed)) from = now;
+	// held: only what had lasted 60 s before the Mac went quiet (a tie at that instant does not count)
+	const lasted = live.clock - from;
+	if (!ok && (live.held ? lasted > DWELL_MS : lasted >= DWELL_MS)) ok = true;
+	return { from, ok, held: live.held };
 }
 
 /** Without a followed count (a model built with no watch): matured if `clock` is 60 s past `start`. */
@@ -196,6 +252,9 @@ export function splitWaiting(
 			project_id: s.project_id,
 			provider: s.provider,
 			since: new Date(since).toISOString(),
+			starts: new Date(
+				(followed?.dwell.from ?? since) + DWELL_MS,
+			).toISOString(),
 		};
 		if (waitMs > 0 && clock - since < waitMs) visits.push(w);
 		else list.push(w);
@@ -214,6 +273,7 @@ export function stepWaiting(
 	live: readonly LiveSession[],
 	machines: readonly MachineLike[],
 	now: number,
+	prevBeats: Readonly<Record<string, number>> = {},
 ): Record<string, Waiting> {
 	const next: Record<string, Waiting> = {};
 	for (const s of live) {
@@ -226,7 +286,7 @@ export function stepWaiting(
 			dwell: stepDwell(
 				before?.dwell,
 				since,
-				isHeld(s.machine_id, machines, now),
+				livenessOf(s.machine_id, machines, now, prevBeats),
 				now,
 			),
 		};

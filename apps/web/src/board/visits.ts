@@ -13,10 +13,12 @@ import {
 	stopPhrase,
 } from "./copy.ts";
 import {
+	beatsOf,
+	DWELL_MS,
 	type Dwell,
 	dwellAt,
-	isHeld,
 	type LiveSession,
+	livenessOf,
 	type MachineLike,
 	sessionClock,
 	stepDwell,
@@ -44,6 +46,11 @@ export interface Visit {
 	until: string | null;
 	/** Reports only: the stay is over and the figure is on its way back. */
 	closing: boolean;
+	/**
+	 * When the lead sets off: a sign once its 60 s count is done (decision D3; after the Mac was back, the
+	 * restarted count), a report at its event. The 3D walk is anchored here.
+	 */
+	starts: string;
 }
 
 const SIGN_STATES = new Set(["waiting_owner", "hold", "needs_reconcile"]);
@@ -100,6 +107,12 @@ export function signVisits(
 		.map((c) => {
 			const p = stopPhrase({ ...c.run, last_display: c.state });
 			const since = new Date(condSince(c, watch, now)).toISOString();
+			const seen = watch.seen[c.key];
+			const from =
+				seen && seen.cond === condOf(c)
+					? seen.dwell.from
+					: condSince(c, watch, now);
+			const starts = new Date(from + DWELL_MS).toISOString();
 			return {
 				id: c.key,
 				kind: "sign" as const,
@@ -113,6 +126,7 @@ export function signVisits(
 				since,
 				until: null,
 				closing: false,
+				starts,
 			};
 		})
 		.sort((a, b) => a.since.localeCompare(b.since));
@@ -130,6 +144,7 @@ export function sessionVisit(w: WaitingSession): Visit {
 		since: w.since,
 		until: null,
 		closing: false,
+		starts: w.starts,
 	};
 }
 
@@ -152,6 +167,7 @@ function reportVisit(
 		since: new Date(atMs).toISOString(),
 		until: new Date(until).toISOString(),
 		closing,
+		starts: new Date(atMs).toISOString(),
 	};
 }
 
@@ -212,12 +228,15 @@ export interface Watch {
 	observed: readonly { c: CurrentRun; text: string; at: number }[];
 	/** Sessions seen `waiting`, by session id: when the wait began and its 60 s count (decision D4). */
 	waiting: Readonly<Record<string, Waiting>>;
+	/** Each machine's last heartbeat on the last tick (a gap of 90 s+ means the Mac was quiet between). */
+	beats: Readonly<Record<string, number>>;
 }
 
 export const emptyWatch = (): Watch => ({
 	seen: {},
 	observed: [],
 	waiting: {},
+	beats: {},
 });
 
 /**
@@ -253,12 +272,16 @@ export function stepWatch(
 					: Number.isNaN(data)
 						? now
 						: data;
-		const dwell = stepDwell(
-			before?.cond === cond ? before.dwell : undefined,
-			since,
-			isHeld(c.run.machine_id, machines, now),
-			now,
-		);
+		const live_ = livenessOf(c.run.machine_id, machines, now, prev.beats);
+		// while the Mac is quiet a new code for the same state changes nothing on screen (07 §3: the
+		// border stays as it was): it keeps the count it had
+		const carried =
+			before &&
+			(before.cond === cond ||
+				(live_.held && before.state === c.state && before.dwell.ok))
+				? before.dwell
+				: undefined;
+		const dwell = stepDwell(carried, since, live_, now);
 		seen[c.key] = { state: c.state, phase: c.run.phase, cond, since, dwell };
 		if (!before) continue;
 		let text: string | null = null;
@@ -280,7 +303,8 @@ export function stepWatch(
 	return {
 		seen,
 		observed,
-		waiting: stepWaiting(prev.waiting, live, machines, now),
+		waiting: stepWaiting(prev.waiting, live, machines, now, prev.beats),
+		beats: { ...prev.beats, ...beatsOf(machines) },
 	};
 }
 
