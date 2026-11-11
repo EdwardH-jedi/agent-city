@@ -179,7 +179,13 @@ describe("D4 · a session waiting for input visits the HQ", () => {
 			id: "claude:fake-b",
 			repo_id: "acme/gears",
 		});
-		s.step(T0, { ...base, sessions: [a] });
+		// online, ticking: `a` reaches its 60 s at T0 + 60 s (the last beat is at T0 + 70 s)
+		for (const t of [0, 30, 60, 70])
+			s.step(T0 + t * S, {
+				...base,
+				machines: [{ ...machine("online"), heartbeat_at: iso(t * S) }],
+				sessions: [a],
+			});
 		const cues: string[] = [];
 		for (const t of [5 * 60, 20 * 60, 45 * 60, 3 * 60 * 60]) {
 			const r = s.step(T0 + t * S, {

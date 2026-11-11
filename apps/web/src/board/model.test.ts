@@ -444,8 +444,14 @@ describe("cockpit offline: figures stop and nothing sounds (§10 V1)", () => {
 		const { readFileSync } = await import("node:fs");
 		const { join } = await import("node:path");
 		const { isAudible, parseSoundPrefs } = await import("./sound.ts");
+		// waiting since before the cockpit went quiet (an hour ago): the visit was there and stays
 		const m = model(
-			[runIn("waiting_owner", { reason: "AWAITING_PLAN_APPROVAL" })],
+			[
+				runIn("waiting_owner", {
+					reason: "AWAITING_PLAN_APPROVAL",
+					last_progress_at: iso(-2 * 3_600_000),
+				}),
+			],
 			{ machines: [machine("offline", "cockpit", 3_600_000)] },
 		);
 		expect(m.status.dim).toBe(true);

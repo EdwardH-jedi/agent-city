@@ -265,10 +265,10 @@ export function toVillageModel(input: ModelInput): VillageModel {
 	const current = currentRuns(runs);
 	// decision D3: 결재 and 멈춤 count (visit, knock, border, flag, sentence) once they have lasted 60 s
 	const stopped = current.filter(
-		(c) => isStopped(c, now) && settled(c, watch, now),
+		(c) => isStopped(c, now) && settled(c, watch, now, machines),
 	);
 	const waiting = current.filter(
-		(c) => c.state === "waiting_owner" && settled(c, watch, now),
+		(c) => c.state === "waiting_owner" && settled(c, watch, now, machines),
 	);
 	const running = current.filter((c) => RUNNING.has(c.state));
 	const paused = current.filter((c) => c.state === "paused");
@@ -305,7 +305,14 @@ export function toVillageModel(input: ModelInput): VillageModel {
 			? parts.join(" · ")
 			: "전부 정상";
 
-	const visits = buildVisits(current, eventsByRun, watch, now, waits.visits);
+	const visits = buildVisits(
+		current,
+		eventsByRun,
+		watch,
+		now,
+		waits.visits,
+		machines,
+	);
 	const nowItems: NowItem[] = running
 		.map((c) => ({
 			kind: "run" as const,

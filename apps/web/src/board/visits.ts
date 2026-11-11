@@ -13,9 +13,15 @@ import {
 	stopPhrase,
 } from "./copy.ts";
 import {
-	DWELL_MS,
+	type Dwell,
+	dwellAt,
+	isHeld,
 	type LiveSession,
+	type MachineLike,
+	sessionClock,
+	stepDwell,
 	stepWaiting,
+	type Waiting,
 	type WaitingSession,
 } from "./sessions.ts";
 import type { CurrentRun, EventsByRun } from "./types.ts";
@@ -61,12 +67,23 @@ export function condSince(c: CurrentRun, watch: Watch, now: number): number {
 }
 
 /**
- * Has the run been in this condition for 60 s? Before that it makes no visit, sound or border. Runs
- * count on the screen's clock: the run reports come from the exporter, a separate process from the
- * heartbeat, so a silent heartbeat says nothing about whether a run's state is current.
+ * Has the run been in this condition for 60 s? Before that it makes no visit, sound or border. The count
+ * is the one the watch followed (it stands still while the Mac is not reporting and starts again when it
+ * is back, 07 §7); a model built without a watch counts on the clock that stops with the cockpit.
  */
-export const settled = (c: CurrentRun, watch: Watch, now: number): boolean =>
-	now - condSince(c, watch, now) >= DWELL_MS;
+export function settled(
+	c: CurrentRun,
+	watch: Watch,
+	now: number,
+	machines: readonly MachineLike[] = [],
+): boolean {
+	const seen = watch.seen[c.key];
+	if (seen && seen.cond === condOf(c)) return seen.dwell.ok;
+	return dwellAt(
+		condSince(c, watch, now),
+		sessionClock(c.run.machine_id, machines, now),
+	);
+}
 
 /**
  * One sign per current run that needs the owner and has for 60 s. `unverified` is not one (it lands in
@@ -76,9 +93,10 @@ export function signVisits(
 	current: readonly CurrentRun[],
 	watch: Watch,
 	now: number,
+	machines: readonly MachineLike[] = [],
 ): Visit[] {
 	return current
-		.filter((c) => SIGN_STATES.has(c.state) && settled(c, watch, now))
+		.filter((c) => SIGN_STATES.has(c.state) && settled(c, watch, now, machines))
 		.map((c) => {
 			const p = stopPhrase({ ...c.run, last_display: c.state });
 			const since = new Date(condSince(c, watch, now)).toISOString();
@@ -182,16 +200,18 @@ function eventReports(
 export interface Seen {
 	state: string;
 	phase: string;
-	/** `condOf` and when this screen takes it to have begun (the 60 s rule). */
+	/** `condOf` and when this screen takes it to have begun. */
 	cond: string;
 	since: number;
+	/** Its 60 s count (decision D3), held while the Mac is not reporting. */
+	dwell: Dwell;
 }
 
 export interface Watch {
 	seen: Readonly<Record<string, Seen>>;
 	observed: readonly { c: CurrentRun; text: string; at: number }[];
-	/** Sessions seen `waiting`, by session id → when the wait began (decision D4). */
-	waiting: Readonly<Record<string, number>>;
+	/** Sessions seen `waiting`, by session id: when the wait began and its 60 s count (decision D4). */
+	waiting: Readonly<Record<string, Waiting>>;
 }
 
 export const emptyWatch = (): Watch => ({
@@ -207,13 +227,15 @@ export const emptyWatch = (): Watch => ({
  *
  * Also the start of each run's condition (60 s rule): kept while the condition holds; on first sight
  * Office's `last_progress_at` (or now without one); a change seen while open began no earlier than now.
- * And the start of each session's wait (`live`, already re-derived at `now`).
+ * And the start of each session's wait (`live`, already re-derived at `now`). Each 60 s count stands
+ * still while the Mac is not reporting (`machines`, re-derived at `now`).
  */
 export function stepWatch(
 	prev: Watch,
 	current: readonly CurrentRun[],
 	now: number,
 	live: readonly LiveSession[] = [],
+	machines: readonly MachineLike[] = [],
 ): Watch {
 	const seen: Record<string, Seen> = {};
 	const observed = prev.observed.filter(
@@ -231,7 +253,13 @@ export function stepWatch(
 					: Number.isNaN(data)
 						? now
 						: data;
-		seen[c.key] = { state: c.state, phase: c.run.phase, cond, since };
+		const dwell = stepDwell(
+			before?.cond === cond ? before.dwell : undefined,
+			since,
+			isHeld(c.run.machine_id, machines, now),
+			now,
+		);
+		seen[c.key] = { state: c.state, phase: c.run.phase, cond, since, dwell };
 		if (!before) continue;
 		let text: string | null = null;
 		if (c.state !== before.state) {
@@ -249,7 +277,11 @@ export function stepWatch(
 			observed.push({ c, text, at: now });
 		}
 	}
-	return { seen, observed, waiting: stepWaiting(prev.waiting, live) };
+	return {
+		seen,
+		observed,
+		waiting: stepWaiting(prev.waiting, live, machines, now),
+	};
 }
 
 /**
@@ -263,9 +295,10 @@ export function buildVisits(
 	watch: Watch,
 	now: number,
 	sessionWaits: readonly WaitingSession[] = [],
+	machines: readonly MachineLike[] = [],
 ): Visit[] {
 	const signs = [
-		...signVisits(current, watch, now),
+		...signVisits(current, watch, now, machines),
 		...sessionWaits.map(sessionVisit),
 	].sort((a, b) => a.since.localeCompare(b.since) || a.id.localeCompare(b.id));
 	const signed = new Set(signs.map((s) => s.id));

@@ -60,9 +60,10 @@ export function Board({ hub }: { hub: HubData }) {
 			currentRuns(runs),
 			now,
 			recentSessions(hub.sessions, now),
+			machines,
 		);
 		return watchRef.current;
-	}, [runs, hub.sessions, now]);
+	}, [runs, hub.sessions, machines, now]);
 
 	// `?session_wait=30` (minutes; 0 = no session visit): a URL query, no env variable
 	const sessionWaitMs = useMemo(

@@ -113,6 +113,11 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
   the status sentence — only once the run has stayed in that state (same code) for 60 s, so running goal →
   plan → approve on the Mac does not knock at every step. A state the screen saw change counts from when
   it saw it; one it finds on opening counts from Office's `last_progress_at`. Reports are not held back.
+- **When the Mac stops reporting (07 §7, 08 Q4).** From the moment the cockpit stops counting as
+  `online`, the whole village stands still: no 결재, 멈춤 or session visit starts, none that was there
+  leaves because time passed (a session keeps its visit past its 30 minutes), the border keeps its colour
+  and nothing sounds. Reports that still arrive (the exporter runs apart from the heartbeat) are drawn
+  only once the Mac is back, and a 60 s count that had not finished starts again from zero then.
 - **Paused runs (decision D2).** `paused` (Office's loop ended for the day with tasks left) is not a 결재:
   no visit, no border, no sound, its building dark with the lead inside. It is listed under HQ 대기 as
   `쉬는 중 · 이어서 실행 필요` with `오늘 몫은 끝났습니다. 남은 작업이 있습니다.` The morning after it paused,
@@ -129,8 +134,7 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
   sound, no border). Change the 30 min in the page URL: `?session_wait=45`; `?session_wait=0` turns
   session visits off (waiting sessions go straight to the list). `idle`, `stale` and `ended` sessions light
   nothing and visit nobody; an `active` session silent for 15 min is `stale` by the screen's clock. While
-  the cockpit, or the session's own machine, is not reporting (stale / offline) session visits stand
-  still from the moment it stopped counting as online: none starts, none ends, nothing sounds.
+  the cockpit, or the session's own machine, is not reporting, session visits stand still (see below).
   Known limit: the dispatcher's own Claude runs carry the same hook, so a run and its session can both
   light a window in the same building (the cap of 4 holds).
 - **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`, in

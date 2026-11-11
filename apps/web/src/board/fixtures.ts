@@ -133,6 +133,7 @@ export function screen(search = "") {
 				currentRuns(input.runs),
 				now,
 				recentSessions(input.sessions ?? [], now),
+				input.machines,
 			);
 			const model = toVillageModel({
 				conn: "open",

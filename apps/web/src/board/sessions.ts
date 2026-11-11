@@ -72,7 +72,7 @@ export function recentSessions(
 	return out;
 }
 
-type MachineLike = Pick<MachineView, "id" | "status" | "heartbeat_at">;
+export type MachineLike = Pick<MachineView, "id" | "status" | "heartbeat_at">;
 
 /**
  * When a machine stopped reporting: the moment it stopped counting as online (last heartbeat + 90 s),
@@ -119,15 +119,64 @@ export interface WaitingSession {
 	since: string;
 }
 
+// ── the 60 s count (decision D3) and the Mac going quiet (07 §7) ─────────────────────────────────
+
+/** Is the item's 60 s count on hold: the cockpit, or its own machine, has stopped reporting? */
+export const isHeld = (
+	machineId: string,
+	machines: readonly MachineLike[],
+	now: number,
+): boolean => sessionClock(machineId, machines, now) < now;
+
+/** One item's 60 s count, as this screen has followed it. */
+export interface Dwell {
+	/** When the count started. */
+	from: number;
+	/** It has lasted 60 s: visit, knock and border may start (and stay while the state holds). */
+	ok: boolean;
+	/** The Mac was not reporting on the last tick. */
+	held: boolean;
+}
+
 /**
- * Waiting sessions split into the ones at the HQ (60 s ≤ waited < `waitMs`) and the ones in the quiet
- * list (waited ≥ `waitMs`, or `waitMs` = 0). Under 60 s a session is in neither. `waitingSince` holds
- * when this screen first saw each wait (an event that keeps the session waiting does not restart it);
- * a wait this screen has not seen began at the session's last event.
+ * One tick of the count. `start` is when the state began (used for an item not followed yet). While the
+ * Mac is not reporting nothing matures (07 §7: every figure stands where it is, the border stays as it
+ * was); an item that had already matured keeps its visit. On the first tick after the Mac is back, an
+ * item that had not matured starts its 60 s again from that tick.
+ */
+export function stepDwell(
+	prev: Dwell | undefined,
+	start: number,
+	held: boolean,
+	now: number,
+): Dwell {
+	let from = prev ? prev.from : start;
+	let ok = prev ? prev.ok : false;
+	if (prev?.held && !held && !ok) from = now;
+	if (!held && !ok && now - from >= DWELL_MS) ok = true;
+	return { from, ok, held };
+}
+
+/** Without a followed count (a model built with no watch): matured if `clock` is 60 s past `start`. */
+export const dwellAt = (start: number, clock: number): boolean =>
+	clock - start >= DWELL_MS;
+
+/** A session seen `waiting`: when the wait began, and its 60 s count. */
+export interface Waiting {
+	since: number;
+	dwell: Dwell;
+}
+
+/**
+ * Waiting sessions split into the ones at the HQ (60 s counted, and waited < `waitMs`) and the ones in
+ * the quiet list (waited ≥ `waitMs`, or `waitMs` = 0). Before its 60 s a session is in neither.
+ * `waiting` holds what this screen followed (an event that keeps the session waiting does not restart
+ * it); a wait it has not followed began at the session's last event. The 30 min run on the session clock,
+ * which stops while the Mac is not reporting.
  */
 export function splitWaiting(
 	live: readonly LiveSession[],
-	waitingSince: Readonly<Record<string, number>>,
+	waiting: Readonly<Record<string, Waiting>>,
 	machines: readonly MachineLike[],
 	now: number,
 	waitMs: number,
@@ -136,18 +185,19 @@ export function splitWaiting(
 	const list: WaitingSession[] = [];
 	for (const s of live) {
 		if (s.status !== "waiting") continue;
-		const since = waitingSince[s.id] ?? Date.parse(s.last_event_at);
+		const followed = waiting[s.id];
+		const since = followed?.since ?? Date.parse(s.last_event_at);
 		if (Number.isNaN(since)) continue;
 		const clock = sessionClock(s.machine_id, machines, now);
-		const waited = clock - since;
-		if (waited < DWELL_MS) continue;
+		const ok = followed ? followed.dwell.ok : dwellAt(since, clock);
+		if (!ok) continue;
 		const w: WaitingSession = {
 			id: sessionVisitId(s.id),
 			project_id: s.project_id,
 			provider: s.provider,
 			since: new Date(since).toISOString(),
 		};
-		if (waitMs > 0 && waited < waitMs) visits.push(w);
+		if (waitMs > 0 && clock - since < waitMs) visits.push(w);
 		else list.push(w);
 	}
 	const bySince = (a: WaitingSession, b: WaitingSession) =>
@@ -156,20 +206,30 @@ export function splitWaiting(
 }
 
 /**
- * Remember when each wait began, as this screen saw it: kept while the session stays `waiting` (a
- * second Notification does not restart the 60 s or the walk), dropped as soon as it is not.
+ * Follow each wait: its start is kept while the session stays `waiting` (a second Notification does not
+ * restart the 60 s or the walk) and dropped as soon as it is not; its 60 s count steps with the Mac.
  */
 export function stepWaiting(
-	prev: Readonly<Record<string, number>>,
+	prev: Readonly<Record<string, Waiting>>,
 	live: readonly LiveSession[],
-): Record<string, number> {
-	const next: Record<string, number> = {};
+	machines: readonly MachineLike[],
+	now: number,
+): Record<string, Waiting> {
+	const next: Record<string, Waiting> = {};
 	for (const s of live) {
 		if (s.status !== "waiting") continue;
-		const t = Date.parse(s.last_event_at);
-		const kept = prev[s.id];
-		if (kept !== undefined) next[s.id] = kept;
-		else if (!Number.isNaN(t)) next[s.id] = t;
+		const before = prev[s.id];
+		const since = before?.since ?? Date.parse(s.last_event_at);
+		if (Number.isNaN(since)) continue;
+		next[s.id] = {
+			since,
+			dwell: stepDwell(
+				before?.dwell,
+				since,
+				isHeld(s.machine_id, machines, now),
+				now,
+			),
+		};
 	}
 	return next;
 }
