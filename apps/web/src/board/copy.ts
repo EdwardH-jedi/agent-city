@@ -22,6 +22,8 @@ const RECONCILE = "실행이 비정상 종료됐습니다. 복구 확인이 필�
 
 /** Run-level status / reason / alert codes the owner must look at. */
 export const STOP_PHRASES: Readonly<Record<string, string>> = {
+	// decision D1: a new mission with its goal on record and no plan yet
+	GOAL_RECORDED: "목표를 기록했습니다. 계획을 세워 주세요.",
 	AWAITING_PLAN_APPROVAL: "계획 승인 부탁드립니다.",
 	PLAN_APPROVED: "승인은 받았습니다. 실행을 시작해 주세요.",
 	AWAITING_OWNER_INTEGRATION: "작업을 마쳤습니다. 통합 확인 부탁드립니다.",
@@ -119,6 +121,21 @@ export const PARTIAL_TEXT = "일부만 끝내고 닫았습니다.";
 export const REVIEW_TEXT = "Codex 리뷰에 들어갑니다.";
 export const AGAIN_TEXT = "한 번 실패해서 다시 시도합니다.";
 export const LEAVING_TEXT = "진행하겠습니다.";
+
+/** Decision D2: a paused run (Office's loop ended for the day with tasks left). Said once, in its list. */
+export const PAUSED_HEADING = "쉬는 중 · 이어서 실행 필요";
+export const PAUSED_TEXT = "오늘 몫은 끝났습니다. 남은 작업이 있습니다.";
+
+/** Decision D4: a Claude Code / Codex session waiting for input. */
+export const SESSION_WAIT_TEXT = "입력을 기다리고 있습니다.";
+export const SESSION_LIST_HEADING = "기다리는 세션";
+
+/** The provider's name on screen (`docs · Claude`). */
+export const PROVIDER_NAME: Readonly<Record<string, string>> = {
+	claude: "Claude",
+	codex: "Codex",
+	ollama: "Ollama",
+};
 
 /** "T1 통과했습니다. 다음으로 넘어갑니다." → "T1 통과했습니다." (the history list keeps only what happened). */
 export function firstSentence(text: string): string {

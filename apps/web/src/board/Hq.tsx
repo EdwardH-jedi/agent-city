@@ -3,11 +3,14 @@
 // the heading). The column never clips a card or a line in half: at most SIGN_SHOWN cards stand (the
 // rest are counted), and history lines are one short line each (§13.4) with a divider where the
 // date changes; lines that do not fit drop out whole (CSS column wrap).
+import { PAUSED_HEADING, PAUSED_TEXT, SESSION_LIST_HEADING } from "./copy.ts";
 import { type Incident, incidentRows } from "./incidents.ts";
 import { signCards, type VillageModel } from "./model.ts";
 import { projectLabel } from "./types.ts";
 
 export const SIGN_SHOWN = 3;
+/** Rows of 기다리는 세션 before `외 N` (old waits never go stale on the hub; §13.8 at 1366×768). */
+export const WAITING_SHOWN = 3;
 
 const hhmm = (iso: string) => {
 	const d = new Date(iso);
@@ -59,6 +62,8 @@ export function Hq({ model, now }: { model: VillageModel; now: number }) {
 				)}
 				{more > 0 && <p className="hq-empty">외 {more}건</p>}
 			</section>
+			<Paused model={model} />
+			<WaitingSessions model={model} now={now} />
 			<section className="hq-away" aria-label="자리 비운 사이">
 				<h2>자리 비운 사이</h2>
 				{model.incidents.length === 0 ? (
@@ -81,6 +86,59 @@ export function Hq({ model, now }: { model: VillageModel; now: number }) {
 				)}
 			</section>
 		</aside>
+	);
+}
+
+/**
+ * Decision D2: runs resting between loops, under HQ 대기 — no sound, no border colour, dim text. The
+ * sentence is said once for all of them; the names are one line.
+ */
+function Paused({ model }: { model: VillageModel }) {
+	if (model.paused.length === 0) return null;
+	const names = [
+		...new Set(model.paused.map((p) => projectLabel(p.project_id))),
+	];
+	return (
+		<section className="hq-wait" aria-label="쉬는 중">
+			<h2>{PAUSED_HEADING}</h2>
+			<ol className="incidents">
+				<li className="inc">
+					<span className="inc-text">{names.join(" · ")}</span>
+				</li>
+				<li className="inc">
+					<span className="inc-text">{PAUSED_TEXT}</span>
+				</li>
+			</ol>
+		</section>
+	);
+}
+
+/**
+ * Decision D4: sessions still waiting for input after their 30 minutes at the HQ — one dim line each
+ * (`42분째 docs Claude`), no sound, no border colour. At most WAITING_SHOWN, then `외 N`.
+ */
+function WaitingSessions({ model, now }: { model: VillageModel; now: number }) {
+	const list = model.waitingSessions;
+	if (list.length === 0) return null;
+	const shown = list.slice(0, WAITING_SHOWN);
+	return (
+		<section className="hq-wait" aria-label={SESSION_LIST_HEADING}>
+			<h2>{SESSION_LIST_HEADING}</h2>
+			<ol className="incidents">
+				{shown.map((w) => (
+					<li key={w.id} className="inc">
+						<span className="inc-time">{waited(w.since, now)}</span>
+						<span className="inc-project">{projectLabel(w.project_id)}</span>
+						<span className="inc-text">{w.provider_label}</span>
+					</li>
+				))}
+				{list.length > shown.length && (
+					<li className="inc">
+						<span className="inc-text">외 {list.length - shown.length}</span>
+					</li>
+				)}
+			</ol>
+		</section>
 	);
 }
 

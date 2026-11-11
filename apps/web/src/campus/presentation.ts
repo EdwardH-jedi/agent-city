@@ -10,7 +10,7 @@ export type Carry = "folder" | "binder";
 export interface CampusRepo {
 	repo_id: string;
 	label: string;
-	/** Running runs: one lit monitor each. */
+	/** Lit windows: running runs + active sessions, at most 4 (the board caps it). */
 	active_tasks: number;
 	/** The picture on each lit monitor, by the run's phase. */
 	monitors: MonitorKind[];
@@ -58,7 +58,7 @@ export function toCampusModel(v: VillageModel): CampusModel {
 		repos: v.village.shown.map((p) => ({
 			repo_id: p.id,
 			label: p.label,
-			active_tasks: p.running,
+			active_tasks: p.monitors.length,
 			monitors: [...p.monitors],
 			pending_requests: p.waiting + p.stopped,
 			has_stopped: p.stopped > 0,
@@ -69,7 +69,9 @@ export function toCampusModel(v: VillageModel): CampusModel {
 			carry: x.kind === "sign" ? (x.carry ?? "folder") : null,
 			// a lead from a folded building walks in from the campus entrance
 			repo_id: shown.has(x.project_id) ? x.project_id : `~${x.project_id}`,
-			created_at: x.since,
+			// the walk starts when the visit does: a 결재 / waiting visit once its 60 s count is done
+			// (decision D3), restarted after the Mac was back; a report at its event
+			created_at: x.starts,
 		})),
 		owner_present: v.owner.present,
 		still: v.status.dim,

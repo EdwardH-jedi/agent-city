@@ -9,8 +9,23 @@ import {
 	PARTIAL_TEXT,
 	PASSED_TEXT,
 	REVIEW_TEXT,
+	SESSION_WAIT_TEXT,
 	stopPhrase,
 } from "./copy.ts";
+import {
+	beatsOf,
+	DWELL_MS,
+	type Dwell,
+	dwellAt,
+	type LiveSession,
+	livenessOf,
+	type MachineLike,
+	sessionClock,
+	stepDwell,
+	stepWaiting,
+	type Waiting,
+	type WaitingSession,
+} from "./sessions.ts";
 import type { CurrentRun, EventsByRun } from "./types.ts";
 
 export const REPORT_STAY_MS = 5 * 60_000;
@@ -31,16 +46,73 @@ export interface Visit {
 	until: string | null;
 	/** Reports only: the stay is over and the figure is on its way back. */
 	closing: boolean;
+	/**
+	 * When the lead sets off: a sign once its 60 s count is done (decision D3; after the Mac was back, the
+	 * restarted count), a report at its event. The 3D walk is anchored here.
+	 */
+	starts: string;
 }
 
 const SIGN_STATES = new Set(["waiting_owner", "hold", "needs_reconcile"]);
 
-/** One sign per current run that needs the owner. `unverified` is not one (it lands in the incidents). */
-export function signVisits(current: readonly CurrentRun[]): Visit[] {
+// ── decision D3: a 결재 visit, its knock and the border start only once the state has lasted 60 s ──
+
+/** What a run is "in" for the 60 s rule: its state and the code behind it (a new code restarts it). */
+export const condOf = (c: CurrentRun): string =>
+	`${c.state}|${c.run.alert ?? ""}|${c.run.reason ?? ""}`;
+
+/**
+ * When the run's current condition began (epoch ms). Once the screen has watched it, the time it first
+ * saw this condition; otherwise Office's `last_progress_at` (which moves with every ledger change). A
+ * run without one began now: `reported_at` moves with every report and would never let 60 s pass.
+ */
+export function condSince(c: CurrentRun, watch: Watch, now: number): number {
+	const seen = watch.seen[c.key];
+	if (seen && seen.cond === condOf(c)) return seen.since;
+	const t = Date.parse(c.run.last_progress_at ?? "");
+	return Number.isNaN(t) ? now : t;
+}
+
+/**
+ * Has the run been in this condition for 60 s? Before that it makes no visit, sound or border. The count
+ * is the one the watch followed (it stands still while the Mac is not reporting and starts again when it
+ * is back, 07 §7); a model built without a watch counts on the clock that stops with the cockpit.
+ */
+export function settled(
+	c: CurrentRun,
+	watch: Watch,
+	now: number,
+	machines: readonly MachineLike[] = [],
+): boolean {
+	const seen = watch.seen[c.key];
+	if (seen && seen.cond === condOf(c)) return seen.dwell.ok;
+	return dwellAt(
+		condSince(c, watch, now),
+		sessionClock(c.run.machine_id, machines, now),
+	);
+}
+
+/**
+ * One sign per current run that needs the owner and has for 60 s. `unverified` is not one (it lands in
+ * the incidents); `paused` is not one either (decision D2: it has its own quiet list).
+ */
+export function signVisits(
+	current: readonly CurrentRun[],
+	watch: Watch,
+	now: number,
+	machines: readonly MachineLike[] = [],
+): Visit[] {
 	return current
-		.filter((c) => SIGN_STATES.has(c.state))
+		.filter((c) => SIGN_STATES.has(c.state) && settled(c, watch, now, machines))
 		.map((c) => {
 			const p = stopPhrase({ ...c.run, last_display: c.state });
+			const since = new Date(condSince(c, watch, now)).toISOString();
+			const seen = watch.seen[c.key];
+			const from =
+				seen && seen.cond === condOf(c)
+					? seen.dwell.from
+					: condSince(c, watch, now);
+			const starts = new Date(from + DWELL_MS).toISOString();
 			return {
 				id: c.key,
 				kind: "sign" as const,
@@ -51,12 +123,29 @@ export function signVisits(current: readonly CurrentRun[]): Visit[] {
 						: ("binder" as const),
 				text: p.text,
 				code: p.code,
-				since: c.run.last_progress_at ?? c.run.reported_at,
+				since,
 				until: null,
 				closing: false,
+				starts,
 			};
 		})
 		.sort((a, b) => a.since.localeCompare(b.since));
+}
+
+/** A session waiting for input at the HQ (decision D4): it carries a folder, like a run waiting for the owner. */
+export function sessionVisit(w: WaitingSession): Visit {
+	return {
+		id: w.id,
+		kind: "sign",
+		project_id: w.project_id,
+		carry: "folder",
+		text: SESSION_WAIT_TEXT,
+		code: null,
+		since: w.since,
+		until: null,
+		closing: false,
+		starts: w.starts,
+	};
 }
 
 function reportVisit(
@@ -78,6 +167,7 @@ function reportVisit(
 		since: new Date(atMs).toISOString(),
 		until: new Date(until).toISOString(),
 		closing,
+		starts: new Date(atMs).toISOString(),
 	};
 }
 
@@ -123,30 +213,76 @@ function eventReports(
 
 // ── changes only this screen can see (a phase or state change has no event time) ─────────────────
 
-export interface Watch {
-	seen: Readonly<Record<string, { state: string; phase: string }>>;
-	observed: readonly { c: CurrentRun; text: string; at: number }[];
+export interface Seen {
+	state: string;
+	phase: string;
+	/** `condOf` and when this screen takes it to have begun. */
+	cond: string;
+	since: number;
+	/** Its 60 s count (decision D3), held while the Mac is not reporting. */
+	dwell: Dwell;
 }
 
-export const emptyWatch = (): Watch => ({ seen: {}, observed: [] });
+export interface Watch {
+	seen: Readonly<Record<string, Seen>>;
+	observed: readonly { c: CurrentRun; text: string; at: number }[];
+	/** Sessions seen `waiting`, by session id: when the wait began and its 60 s count (decision D4). */
+	waiting: Readonly<Record<string, Waiting>>;
+	/** Each machine's last heartbeat on the last tick (a gap of 90 s+ means the Mac was quiet between). */
+	beats: Readonly<Record<string, number>>;
+}
+
+export const emptyWatch = (): Watch => ({
+	seen: {},
+	observed: [],
+	waiting: {},
+	beats: {},
+});
 
 /**
  * Remember the states seen and note the changes that happen while the screen is open: the run entered
  * Independent Review, or finished (passed/partial). On first sight a run is only remembered, so opening
  * the screen never replays old news. The time of such a report is when this screen saw it.
+ *
+ * Also the start of each run's condition (60 s rule): kept while the condition holds; on first sight
+ * Office's `last_progress_at` (or now without one); a change seen while open began no earlier than now.
+ * And the start of each session's wait (`live`, already re-derived at `now`). Each 60 s count stands
+ * still while the Mac is not reporting (`machines`, re-derived at `now`).
  */
 export function stepWatch(
 	prev: Watch,
 	current: readonly CurrentRun[],
 	now: number,
+	live: readonly LiveSession[] = [],
+	machines: readonly MachineLike[] = [],
 ): Watch {
-	const seen: Record<string, { state: string; phase: string }> = {};
+	const seen: Record<string, Seen> = {};
 	const observed = prev.observed.filter(
 		(o) => now < o.at + REPORT_STAY_MS + REPORT_LEAVE_MS,
 	);
 	for (const c of current) {
-		seen[c.key] = { state: c.state, phase: c.run.phase };
 		const before = prev.seen[c.key];
+		const cond = condOf(c);
+		const data = Date.parse(c.run.last_progress_at ?? "");
+		const since =
+			before?.cond === cond
+				? before.since
+				: before
+					? Math.max(Number.isNaN(data) ? now : data, now)
+					: Number.isNaN(data)
+						? now
+						: data;
+		const live_ = livenessOf(c.run.machine_id, machines, now, prev.beats);
+		// while the Mac is quiet a new code for the same state changes nothing on screen (07 §3: the
+		// border stays as it was): it keeps the count it had
+		const carried =
+			before &&
+			(before.cond === cond ||
+				(live_.held && before.state === c.state && before.dwell.ok))
+				? before.dwell
+				: undefined;
+		const dwell = stepDwell(carried, since, live_, now);
+		seen[c.key] = { state: c.state, phase: c.run.phase, cond, since, dwell };
 		if (!before) continue;
 		let text: string | null = null;
 		if (c.state !== before.state) {
@@ -164,20 +300,31 @@ export function stepWatch(
 			observed.push({ c, text, at: now });
 		}
 	}
-	return { seen, observed };
+	return {
+		seen,
+		observed,
+		waiting: stepWaiting(prev.waiting, live, machines, now, prev.beats),
+		beats: { ...prev.beats, ...beatsOf(machines) },
+	};
 }
 
 /**
- * Everything that is at the HQ now: signs oldest first (they sit in the lobby in arrival order), then
- * at most one report per project (a newer one replaces the older), and none for a run that has a sign.
+ * Everything that is at the HQ now: signs oldest first (they sit in the lobby in arrival order; a
+ * session waiting for input is one of them), then at most one report per project (a newer one replaces
+ * the older), and none for a run that has a sign.
  */
 export function buildVisits(
 	current: readonly CurrentRun[],
 	eventsByRun: EventsByRun,
 	watch: Watch,
 	now: number,
+	sessionWaits: readonly WaitingSession[] = [],
+	machines: readonly MachineLike[] = [],
 ): Visit[] {
-	const signs = signVisits(current);
+	const signs = [
+		...signVisits(current, watch, now, machines),
+		...sessionWaits.map(sessionVisit),
+	].sort((a, b) => a.since.localeCompare(b.since) || a.id.localeCompare(b.id));
 	const signed = new Set(signs.map((s) => s.id));
 	const candidates = [
 		...eventReports(current, eventsByRun, now),

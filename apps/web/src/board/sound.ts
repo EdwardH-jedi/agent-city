@@ -55,9 +55,15 @@ export interface SoundMemory {
 	waiting: readonly string[];
 	stopped: readonly string[];
 	passed: readonly string[];
+	/** Session visits at the HQ last tick (one knock each, never a reminder). */
+	sessions: readonly string[];
 	lastKnockAt: number;
 	/** Until this time only the memory is refreshed: a snapshot may still be on its way. */
 	settleUntil: number;
+	/** Paused run key → the morning (local `YYYY-M-D`) whose knock it has had, or that passed silently. */
+	morning: Readonly<Record<string, string>>;
+	/** Paused run key → when this screen first saw it paused (a morning before that is not its). */
+	pausedSeen: Readonly<Record<string, number>>;
 }
 
 /** After the screen may sound again (first load, reconnect, Mac back), wait for the snapshot to land. */
@@ -67,28 +73,106 @@ export interface Marks {
 	waiting: readonly string[];
 	stopped: readonly string[];
 	passed: readonly string[];
+	/** Decision D4: session visits at the HQ. */
+	sessions?: readonly string[];
+	/** Decision D2: paused runs and when they paused. */
+	paused?: readonly { key: string; since: string }[];
+}
+
+/** The local hour the quiet hours end (the paused runs' morning knock); 8 when quiet hours are off. */
+export const quietEndHour = (prefs: SoundPrefs): number =>
+	(prefs.quiet?.to ?? DEFAULT_QUIET.to) % 24;
+
+const dayKey = (d: Date) =>
+	`${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+
+/**
+ * Decision D2: the paused runs owed today's morning knock. Today's morning is today's quiet-hours end
+ * (local); it is owed to a run that paused before it, once it has come. Pure.
+ */
+export function morningDue(
+	paused: readonly { key: string; since: string }[],
+	now: number,
+	endHour: number,
+): { day: string; end: number; keys: string[] } {
+	const end = new Date(now);
+	end.setHours(endHour, 0, 0, 0);
+	const day = dayKey(end);
+	if (now < end.getTime()) return { day, end: end.getTime(), keys: [] };
+	return {
+		day,
+		end: end.getTime(),
+		keys: paused
+			.filter((p) => {
+				const t = Date.parse(p.since);
+				return !Number.isNaN(t) && t < end.getTime();
+			})
+			.map((p) => p.key),
+	};
 }
 
 /**
  * What to play for the change since `prev`. The first look, and any tick that may not sound, only
  * re-bases the memory: what happened while silent is never played afterwards in a pile (§7).
- * A 결재 that is still open knocks once more every 30 minutes.
+ * A 결재 that is still open knocks once more every 30 minutes; a session waiting for input knocks once
+ * when its visit starts and never again (decision D4). A paused run knocks once on the morning after it
+ * paused, when the quiet hours end; a morning that passes while the screen may not sound (or before it
+ * was opened) is not made up later (decision D2).
  */
 export function planSounds(
 	prev: SoundMemory | null,
 	marks: Marks,
 	now: number,
 	audible: boolean,
+	endHour: number = DEFAULT_QUIET.to,
 ): { memory: SoundMemory; cues: Cue[] } {
+	const base = {
+		waiting: marks.waiting,
+		stopped: marks.stopped,
+		passed: marks.passed,
+		sessions: marks.sessions ?? [],
+	};
+	const due = morningDue(marks.paused ?? [], now, endHour);
+	// only today's morning is remembered; a run no longer paused is forgotten
+	const kept: Record<string, string> = {};
+	for (const [k, d] of Object.entries(prev?.morning ?? {}))
+		if (d === due.day && (marks.paused ?? []).some((p) => p.key === k))
+			kept[k] = d;
+	// first sight of each paused run on this screen; a run first seen after this morning's end (e.g. the
+	// report arrives at noon) is not knocked for that morning — the knock belongs to the morning itself
+	const pausedSeen: Record<string, number> = {};
+	for (const p of marks.paused ?? [])
+		pausedSeen[p.key] = prev?.pausedSeen?.[p.key] ?? now;
+	const owed = due.keys.filter(
+		(k) => kept[k] !== due.day && (pausedSeen[k] ?? now) < due.end,
+	);
+	const spend = () => {
+		for (const k of owed) kept[k] = due.day;
+	};
+
 	if (!prev || !audible) {
+		spend(); // a morning nobody could hear (or before the screen was opened) is not owed later
 		return {
-			memory: { ...marks, lastKnockAt: now, settleUntil: now + SETTLE_MS },
+			memory: {
+				...base,
+				lastKnockAt: now,
+				settleUntil: now + SETTLE_MS,
+				morning: kept,
+				pausedSeen,
+			},
 			cues: [],
 		};
 	}
 	if (now < prev.settleUntil) {
+		// the snapshot may still be landing: keep what is owed for the first settled tick
 		return {
-			memory: { ...marks, lastKnockAt: now, settleUntil: prev.settleUntil },
+			memory: {
+				...base,
+				lastKnockAt: now,
+				settleUntil: prev.settleUntil,
+				morning: kept,
+				pausedSeen,
+			},
 			cues: [],
 		};
 	}
@@ -97,16 +181,29 @@ export function planSounds(
 	const cues: Cue[] = [];
 	if (fresh(marks.stopped, prev.stopped)) cues.push("low");
 	let lastKnockAt = prev.lastKnockAt;
+	let knock = false;
 	if (
 		fresh(marks.waiting, prev.waiting) ||
 		(marks.waiting.length > 0 && now - prev.lastKnockAt >= REMIND_MS)
 	) {
-		cues.push("knock");
+		knock = true;
 		lastKnockAt = now;
 	}
+	if (fresh(base.sessions, prev.sessions)) knock = true;
+	if (owed.length > 0) {
+		knock = true;
+		spend();
+	}
+	if (knock) cues.push("knock");
 	if (fresh(marks.passed, prev.passed)) cues.push("soft");
 	return {
-		memory: { ...marks, lastKnockAt, settleUntil: prev.settleUntil },
+		memory: {
+			...base,
+			lastKnockAt,
+			settleUntil: prev.settleUntil,
+			morning: kept,
+			pausedSeen,
+		},
 		cues,
 	};
 }

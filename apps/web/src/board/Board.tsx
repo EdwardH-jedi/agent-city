@@ -11,11 +11,13 @@ import { DEMO_LABEL } from "./demo-flag.ts";
 import { Hq } from "./Hq.tsx";
 import { toVillageModel, type VillageModel } from "./model.ts";
 import { Now } from "./Now.tsx";
+import { parseSessionWait, recentSessions } from "./sessions.ts";
 import {
 	isAudible,
 	parseSoundPrefs,
 	planSounds,
 	play,
+	quietEndHour,
 	type SoundMemory,
 } from "./sound.ts";
 import { currentRuns } from "./types.ts";
@@ -49,13 +51,25 @@ export function Board({ hub }: { hub: HubData }) {
 	);
 	const eventsByRun = useRunEvents(currentRaw);
 
-	// changes only this screen can see (a phase or a finish has no event time); kept across ticks
+	// changes only this screen can see (a phase or a finish has no event time, when a condition or a
+	// session's wait began); kept across ticks
 	const watchRef = useRef(emptyWatch());
 	const watch = useMemo(() => {
-		watchRef.current = stepWatch(watchRef.current, currentRuns(runs), now);
+		watchRef.current = stepWatch(
+			watchRef.current,
+			currentRuns(runs),
+			now,
+			recentSessions(hub.sessions, now),
+			machines,
+		);
 		return watchRef.current;
-	}, [runs, now]);
+	}, [runs, hub.sessions, machines, now]);
 
+	// `?session_wait=30` (minutes; 0 = no session visit): a URL query, no env variable
+	const sessionWaitMs = useMemo(
+		() => parseSessionWait(window.location.search),
+		[],
+	);
 	const model = useMemo(
 		() =>
 			toVillageModel({
@@ -63,11 +77,23 @@ export function Board({ hub }: { hub: HubData }) {
 				machines,
 				districts: hub.districts,
 				eventsByRun,
+				sessions: hub.sessions,
+				sessionWaitMs,
 				now,
 				conn: hub.conn as Conn,
 				watch,
 			}),
-		[runs, machines, hub.districts, eventsByRun, now, hub.conn, watch],
+		[
+			runs,
+			machines,
+			hub.districts,
+			eventsByRun,
+			hub.sessions,
+			sessionWaitMs,
+			now,
+			hub.conn,
+			watch,
+		],
 	);
 
 	// sound: only while the Mac reports, the screen is connected, it is not quiet; never a pile afterwards
@@ -85,6 +111,7 @@ export function Board({ hub }: { hub: HubData }) {
 			model.marks,
 			now,
 			audible,
+			quietEndHour(prefs),
 		);
 		memory.current = plan.memory;
 		for (const cue of plan.cues) play(cue);

@@ -15,6 +15,8 @@ describe("예시 데이터 (?demo=1 only)", () => {
 	test("every name is made up (demo/…), and the screen labels it 예시 데이터", () => {
 		const d = demoData(Date.UTC(2026, 10, 11, 5));
 		for (const r of d.runs) expect(r.project?.startsWith("demo/")).toBe(true);
+		for (const s of d.sessions)
+			expect(s.repo_id?.startsWith("demo/")).toBe(true);
 		for (const r of Object.values(d.districts).flat())
 			expect(r.id.startsWith("demo/")).toBe(true);
 		expect(DEMO_LABEL).toBe("예시 데이터");
@@ -31,7 +33,12 @@ describe("예시 데이터 (?demo=1 only)", () => {
 			conn: "open",
 		});
 		expect(m.status.border).toBe("red");
-		expect(m.visits.filter((v) => v.kind === "sign")).toHaveLength(2);
+		// two runs that need the owner and one session waiting for input
+		expect(m.visits.filter((v) => v.kind === "sign")).toHaveLength(3);
+		expect(m.visits.some((v) => v.id.startsWith("session:"))).toBe(true);
+		expect(m.paused).toHaveLength(1);
+		expect(m.waitingSessions).toHaveLength(1);
+		expect(m.now.some((n) => n.kind === "session")).toBe(true);
 		expect(m.now.length).toBeGreaterThan(2);
 		expect(m.door?.kind).toBe("report");
 		expect(m.village.shown).toHaveLength(8);

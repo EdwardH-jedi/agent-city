@@ -1,8 +1,16 @@
 // The one model both the 2D grid and (later) the 3D scene draw from (design doc §8). A pure function
 // of what the hub reported and this screen's clock; no React, no DOM.
-import type { MachineView, RunView } from "@agent-city/schema";
+import type { MachineView, RunView, Session } from "@agent-city/schema";
 import type { Conn, Districts } from "../useHub.ts";
+import { PROVIDER_NAME } from "./copy.ts";
 import { buildIncidents, INCIDENT_LIMIT, type Incident } from "./incidents.ts";
+import {
+	type LiveSession,
+	recentSessions,
+	SESSION_WAIT_DEFAULT_MIN,
+	splitWaiting,
+	type WaitingSession,
+} from "./sessions.ts";
 import {
 	type CurrentRun,
 	currentRuns,
@@ -11,12 +19,21 @@ import {
 	projectLabel,
 	UNASSIGNED,
 } from "./types.ts";
-import { buildVisits, emptyWatch, type Visit, type Watch } from "./visits.ts";
+import {
+	buildVisits,
+	condSince,
+	emptyWatch,
+	settled,
+	type Visit,
+	type Watch,
+} from "./visits.ts";
 
 export const PARTIAL_RED_MS = 24 * 3_600_000;
 export const REPO_RECENT_MS = 7 * 24 * 3_600_000;
 /** At most this many project buildings stand in the village; the rest fold into one sign. */
 export const BUILDING_CAP = 8;
+/** Lit windows per building: running runs + active sessions, never more than this. */
+export const WINDOW_CAP = 4;
 
 export type Border = "red" | "yellow" | "none";
 export type MonitorKind = "code" | "checks" | "review" | "other";
@@ -27,14 +44,18 @@ export interface VillageProject {
 	running: number;
 	waiting: number;
 	stopped: number;
+	/** `active` sessions in this repo (decision D4). */
+	sessions: number;
 	/** No run and no activity in the last 7 days: folded into "조용함 N곳". */
 	quiet: boolean;
 	last_activity_at: string | null;
-	/** One lit monitor per running run. */
+	/** One lit monitor per running run, then one per active session: at most WINDOW_CAP. */
 	monitors: MonitorKind[];
 }
 
 export interface NowItem {
+	/** A dispatcher run (two lines, the phase bar) or a Claude / Codex session (one line, `N초 전`). */
+	kind: "run" | "session";
 	key: string;
 	project_id: string;
 	workflow_id: string;
@@ -49,6 +70,22 @@ export interface NowItem {
 	usage_unknown: boolean;
 	/** "마지막 보고: running (N분 전)" instead of "cockpit 보고 · N초 전". */
 	stale: boolean;
+}
+
+/** A run resting between loops (decision D2): listed quietly under HQ 대기. */
+export interface PausedItem {
+	key: string;
+	project_id: string;
+	/** When it paused (its last progress). The next morning's knock is for runs paused before it. */
+	since: string;
+}
+
+/** A session in the quiet 기다리는 세션 list (its HQ visit is over, or `?session_wait=0`). */
+export interface WaitingItem {
+	id: string;
+	project_id: string;
+	provider_label: string;
+	since: string;
 }
 
 export interface VillageModel {
@@ -77,10 +114,24 @@ export interface VillageModel {
 	/** The one speech bubble at the HQ door: the newest report. Signs speak through the HQ 대기 cards. */
 	door: Visit | null;
 	now: NowItem[];
+	/** Decision D2: runs resting between loops (no visit, no sound, no border). */
+	paused: PausedItem[];
+	/** Decision D4: sessions still waiting for input after their HQ visit (no sound, no border). */
+	waitingSessions: WaitingItem[];
 	incidents: Incident[];
 	today: { completed: number; running: number };
-	/** Current run keys by the kind of attention they need; the sound planner compares these between ticks. */
-	marks: { waiting: string[]; stopped: string[]; passed: string[] };
+	/**
+	 * What the sound planner compares between ticks: current run keys by the kind of attention they
+	 * need (each only once its state has lasted 60 s), the session visits at the HQ (one knock each, no
+	 * reminder), and the paused runs (one knock the next morning).
+	 */
+	marks: {
+		waiting: string[];
+		stopped: string[];
+		passed: string[];
+		sessions: string[];
+		paused: { key: string; since: string }[];
+	};
 	conn: "open" | "reconnecting";
 }
 
@@ -89,10 +140,14 @@ export interface ModelInput {
 	machines: readonly MachineView[];
 	districts: Districts;
 	eventsByRun: EventsByRun;
+	/** Claude Code / Codex sessions as the hub sent them (decision D4). */
+	sessions?: readonly Session[];
+	/** `?session_wait=` in ms: how long a waiting session stays at the HQ; 0 = never visits. */
+	sessionWaitMs?: number;
 	/** Epoch ms of this screen's clock. */
 	now: number;
 	conn: Conn;
-	/** Changes seen while the screen is open (phase / finish). */
+	/** Changes seen while the screen is open (phase / finish, when a condition or a wait began). */
 	watch?: Watch;
 }
 
@@ -206,10 +261,26 @@ export function pickBuildings(
 
 export function toVillageModel(input: ModelInput): VillageModel {
 	const { runs, machines, districts, eventsByRun, now } = input;
+	const watch = input.watch ?? emptyWatch();
 	const current = currentRuns(runs);
-	const stopped = current.filter((c) => isStopped(c, now));
-	const waiting = current.filter((c) => c.state === "waiting_owner");
+	// decision D3: 결재 and 멈춤 count (visit, knock, border, flag, sentence) once they have lasted 60 s
+	const stopped = current.filter(
+		(c) => isStopped(c, now) && settled(c, watch, now, machines),
+	);
+	const waiting = current.filter(
+		(c) => c.state === "waiting_owner" && settled(c, watch, now, machines),
+	);
 	const running = current.filter((c) => RUNNING.has(c.state));
+	const paused = current.filter((c) => c.state === "paused");
+
+	const live = recentSessions(input.sessions ?? [], now);
+	const waits = splitWaiting(
+		live,
+		watch.waiting,
+		machines,
+		now,
+		input.sessionWaitMs ?? SESSION_WAIT_DEFAULT_MIN * 60_000,
+	);
 
 	const cockpit = machines.find((m) => m.id === "cockpit");
 	const cockpitStatus = cockpit?.status ?? "unobserved";
@@ -217,10 +288,15 @@ export function toVillageModel(input: ModelInput): VillageModel {
 
 	// border: red > yellow > none. The cockpit going quiet changes neither; it dims instead (§7).
 	const border: Border =
-		stopped.length > 0 ? "red" : waiting.length > 0 ? "yellow" : "none";
+		stopped.length > 0
+			? "red"
+			: waiting.length > 0 || waits.visits.length > 0
+				? "yellow"
+				: "none";
 	const parts: string[] = [];
 	if (stopped.length) parts.push(`멈춤 ${stopped.length}건`);
 	if (waiting.length) parts.push(`결재 ${waiting.length}건`);
+	if (waits.visits.length) parts.push(`입력 대기 ${waits.visits.length}건`);
 	const sentence = down
 		? cockpit?.heartbeat_at
 			? `Mac 보고 끊김 (${agoKo(cockpit.heartbeat_at, now)})`
@@ -232,11 +308,14 @@ export function toVillageModel(input: ModelInput): VillageModel {
 	const visits = buildVisits(
 		current,
 		eventsByRun,
-		input.watch ?? emptyWatch(),
+		watch,
 		now,
+		waits.visits,
+		machines,
 	);
 	const nowItems: NowItem[] = running
 		.map((c) => ({
+			kind: "run" as const,
 			key: c.key,
 			project_id: c.project_id,
 			workflow_id: c.run.workflow_id,
@@ -254,6 +333,8 @@ export function toVillageModel(input: ModelInput): VillageModel {
 			(a, b) =>
 				a.project_id.localeCompare(b.project_id) || a.key.localeCompare(b.key),
 		);
+	// then the active sessions, most recent first: one line each, no phase bar (decision D4)
+	nowItems.push(...nowSessions(live));
 
 	let completed = 0;
 	const today = new Date(now).toDateString();
@@ -269,7 +350,7 @@ export function toVillageModel(input: ModelInput): VillageModel {
 		}
 	}
 
-	const projects = buildProjects(runs, current, districts, now, {
+	const projects = buildProjects(runs, current, districts, now, live, {
 		stopped,
 		waiting,
 		running,
@@ -308,15 +389,67 @@ export function toVillageModel(input: ModelInput): VillageModel {
 		visits,
 		door,
 		now: nowItems,
+		paused: paused
+			.map((c) => ({
+				key: c.key,
+				project_id: c.project_id,
+				since: new Date(condSince(c, watch, now)).toISOString(),
+			}))
+			.sort(
+				(a, b) =>
+					a.project_id.localeCompare(b.project_id) ||
+					a.key.localeCompare(b.key),
+			),
+		waitingSessions: waits.list.map(waitingItem),
 		incidents,
 		today: { completed, running: nowItems.length },
 		marks: {
 			waiting: waiting.map((c) => c.key),
 			stopped: stopped.map((c) => c.key),
 			passed: current.filter((c) => c.state === "passed").map((c) => c.key),
+			sessions: waits.visits.map((w) => w.id),
+			paused: paused.map((c) => ({
+				key: c.key,
+				since: new Date(condSince(c, watch, now)).toISOString(),
+			})),
 		},
 		conn,
 	};
+}
+
+const providerLabel = (p: string): string => PROVIDER_NAME[p] ?? p;
+
+const waitingItem = (w: WaitingSession): WaitingItem => ({
+	id: w.id,
+	project_id: w.project_id,
+	provider_label: providerLabel(w.provider),
+	since: w.since,
+});
+
+/** 지금 진행 rows for the `active` sessions: `프로젝트 · Claude` and the age of the last event. */
+function nowSessions(live: readonly LiveSession[]): NowItem[] {
+	return live
+		.filter((s) => s.status === "active")
+		.sort(
+			(a, b) =>
+				b.last_event_at.localeCompare(a.last_event_at) ||
+				a.id.localeCompare(b.id),
+		)
+		.map((s) => ({
+			kind: "session" as const,
+			key: `session:${s.id}`,
+			project_id: s.project_id,
+			workflow_id: "",
+			phase: "",
+			phase_label: providerLabel(s.provider),
+			phase_index: -1,
+			display: "running" as const,
+			reported_at: s.last_event_at,
+			machine_id: s.machine_id,
+			tokens_today: null,
+			usage_unknown: false,
+			stale: false,
+		}));
 }
 
 function buildProjects(
@@ -324,6 +457,7 @@ function buildProjects(
 	current: readonly CurrentRun[],
 	districts: Districts,
 	now: number,
+	live: readonly LiveSession[],
 	groups: {
 		stopped: CurrentRun[];
 		waiting: CurrentRun[];
@@ -341,6 +475,7 @@ function buildProjects(
 				running: 0,
 				waiting: 0,
 				stopped: 0,
+				sessions: 0,
 				quiet: true,
 				last_activity_at: null,
 				monitors: [],
@@ -376,6 +511,20 @@ function buildProjects(
 			p.quiet = false;
 		}
 	}
+
+	// decision D4: a session active in the last 7 days makes its repo a building; an `active` one lights a
+	// window (idle / stale / ended / waiting light nothing). `live` holds only the last 7 days.
+	for (const s of live) {
+		if (!s.has_repo) continue; // D4 counts the repo; a session outside a checkout raises no building
+		const p = slot(s.project_id);
+		p.quiet = false;
+		later(p, s.last_event_at);
+		if (s.status === "active") {
+			p.sessions++;
+			p.monitors.push("code");
+		}
+	}
+	for (const p of byId.values()) p.monitors = p.monitors.slice(0, WINDOW_CAP);
 
 	return [...byId.values()].sort(
 		(a, b) =>
