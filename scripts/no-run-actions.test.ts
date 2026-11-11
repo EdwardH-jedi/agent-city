@@ -127,6 +127,33 @@ describe("the main screen cannot act on a run", () => {
 		}
 	});
 
+	test("the 3D scene listens to no input: no pointer, mouse, key, wheel or touch listener", () => {
+		const campus = FILES.filter((f) => f.includes("/campus/"));
+		expect(campus.some((f) => f.endsWith("campus/engine.ts"))).toBe(true);
+		for (const f of campus) {
+			const hit =
+				/addEventListener\(\s*["'](pointer\w*|mouse\w*|click|dblclick|key\w*|wheel|touch\w*|contextmenu)["']/.exec(
+					code(f),
+				)?.[0];
+			expect({ f, hit }).toEqual({ f, hit: undefined });
+		}
+	});
+
+	test("the scene is a lazy chunk and imports no hub, store or transport", () => {
+		const view = code("apps/web/src/campus/CampusView.tsx");
+		expect(view).toMatch(/lazy\(\(\) => import\("\.\/CampusScene\.tsx"\)\)/);
+		expect(view).not.toMatch(/from "\.\/(CampusScene|engine|world)\.tsx?"/);
+		for (const f of FILES.filter((x) => x.includes("/campus/"))) {
+			expect({
+				f,
+				hub: /useHub|workspace-m1|store\.ts|transport/.exec(code(f))?.[0],
+			}).toEqual({
+				f,
+				hub: undefined,
+			});
+		}
+	});
+
 	test("the data comes through useHub: the board only imports its hooks and pure modules", () => {
 		const board = code("apps/web/src/board/Board.tsx");
 		expect(board).toMatch(/from "\.\.\/useHub\.ts"/);

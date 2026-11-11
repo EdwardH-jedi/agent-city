@@ -74,8 +74,7 @@ events; an unset token disables ingest. Keep the hub on loopback. Read the
 
 `/` is the **board**, made for a monitor watched from 1.5–2 m: one status sentence (`전부 정상` ·
 `결재 N건` · `멈춤 N건` · `Mac 보고 끊김 (N분 전)`), an 8 px frame (red > yellow > none), the **HQ 대기** cards
-and **자리 비운 사이** list on the left, the project village in the middle (2D cards; the 3D scene is a
-later step) and **지금 진행** on the right. `#/detail` (key `D` flips between the two) is the table view
+and **자리 비운 사이** list on the left, the project village in the middle (a 3D campus when WebGL works, the 2D grid otherwise) and **지금 진행** on the right. `#/detail` (key `D` flips between the two) is the table view
 with Needs owner, Runs, Repos, Live sessions and Events.
 
 The board only reads: it draws what the hub reports through `useHub` (GET + `/ws`, plus
@@ -97,6 +96,12 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
   flag, the lead at the door). One speech bubble at the HQ door says the newest report; 결재 speak through
   the HQ 대기 cards. The village dims and every figure stops when the cockpit or this screen's hub
   connection goes quiet.
+- **The 3D campus** (`apps/web/src/campus/`, a lazy chunk with `three`) draws the same model: a fixed
+  panorama camera (it never moves or follows anything), building names only, the lead walking to the HQ
+  for a 결재 (folder = 승인 대기, binder = 멈춤) or a report and walking back when it ends, the owner at the
+  HQ desk while the cockpit is `online` (an empty chair otherwise), the one bubble at the HQ door, and
+  evening colours (a little darker during the `?quiet=` hours). It has no pointer or keyboard input. Without
+  WebGL, or if the GPU context is lost, the 2D grid is shown instead.
 - **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`)
   so it can be looked at without a running Office. It opens no hub connection, plays no sound and says
   `예시 데이터` in the top band. Without `?demo=1` only hub data is ever shown.
