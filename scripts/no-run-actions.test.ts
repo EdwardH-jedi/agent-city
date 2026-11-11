@@ -166,6 +166,19 @@ describe("the main screen cannot act on a run", () => {
 		expect(hub).toMatch(/await fetch\(path\)/);
 	});
 
+	test("sessions (decision D4) come from useHub too, and the board never reads a session's folder or branch (D5)", () => {
+		expect(FILES.some((f) => f.endsWith("board/sessions.ts"))).toBe(true);
+		const sessions = code("apps/web/src/board/sessions.ts");
+		expect(sessions).not.toMatch(/useHub|fetch\(|WebSocket/);
+		expect(code("apps/web/src/board/Board.tsx")).toMatch(/hub\.sessions/);
+		for (const f of FILES) {
+			expect({ f, hit: /\.(cwd|branch)\b/.exec(code(f))?.[0] }).toEqual({
+				f,
+				hit: undefined,
+			});
+		}
+	});
+
 	test("nothing on screen is smaller than 16px", () => {
 		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
 		const board = css.slice(css.indexOf("/* ── board"));
