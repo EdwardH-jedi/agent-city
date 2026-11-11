@@ -26,6 +26,7 @@ import {
 	resolveWebDist,
 	staticSegments,
 } from "./static.ts";
+import { CAN_FILE_SYMLINK } from "./test-fs.ts";
 
 const HOST = "127.0.0.1:4317";
 const OUTSIDE_MARKER = "outside-dist-marker";
@@ -63,14 +64,19 @@ beforeAll(() => {
 	writeFileSync(join(dist, "assets", "app.js.map"), SOURCE_MAP);
 	writeFileSync(join(dist, "assets", "app.js.map.json"), SOURCE_MAP);
 	writeFileSync(join(dist, "app.css.MAP"), SOURCE_MAP);
-	symlinkSync(
-		join(dist, "assets", "app.js.map"),
-		join(dist, "assets", "alias.js"),
-	);
 	writeFileSync(join(dist, ".secret"), OUTSIDE_MARKER);
-	symlinkSync(join(root, "package.json"), join(dist, "escape.json"));
-	symlinkSync(join(root, "package.json"), join(dist, "assets", "escape.js"));
-	symlinkSync(root, join(dist, "rootlink"));
+	// File symlinks need a privilege on Windows; the tests that rely on them are skipped there
+	// (CAN_FILE_SYMLINK) instead of passing trivially against a link that was never created.
+	if (CAN_FILE_SYMLINK) {
+		symlinkSync(
+			join(dist, "assets", "app.js.map"),
+			join(dist, "assets", "alias.js"),
+		);
+		symlinkSync(join(root, "package.json"), join(dist, "escape.json"));
+		symlinkSync(join(root, "package.json"), join(dist, "assets", "escape.js"));
+	}
+	// "junction" is ignored on POSIX; on Windows it is the directory link that needs no privilege
+	symlinkSync(root, join(dist, "rootlink"), "junction");
 });
 
 afterAll(() => {
@@ -205,7 +211,6 @@ describe("web UI from the hub: serving", () => {
 			"/assets/app.js.map.json",
 			"/app.css.MAP",
 			"/assets/app.js%2Emap",
-			"/assets/alias.js",
 		]) {
 			for (const accept of ["*/*", "text/html", "application/json"]) {
 				const res = await get(app, path, { accept });
@@ -220,6 +225,21 @@ describe("web UI from the hub: serving", () => {
 			(await get(app, "/assets/index-abc123.js", { accept: "*/*" })).status,
 		).toBe(200);
 	});
+
+	// needs a file symlink (a privilege on Windows): skipped there rather than passing against a link that doesn't exist
+	test.skipIf(!CAN_FILE_SYMLINK)(
+		"a symlink named like a script that points at a source map is not served",
+		async () => {
+			const app = appWith(dist);
+			for (const accept of ["*/*", "text/html", "application/json"]) {
+				const res = await get(app, "/assets/alias.js", { accept });
+				expect(res.status).toBe(404);
+				const body = await res.text();
+				expect(body).not.toContain("secret-source");
+				expect(body).not.toContain("<title>");
+			}
+		},
+	);
 
 	test("disguised hub prefixes (//api, %2F, %2e, any case) 404 like the plain hub", async () => {
 		const app = appWith(dist);
@@ -307,14 +327,23 @@ describe("web UI from the hub: path safety", () => {
 		"/index.html%00.js",
 		"/%E0%A4%A",
 		"/.secret",
-		"/escape.json",
-		"/assets/escape.js",
-		"/rootlink/package.json",
+		"/rootlink/package.json", // directory link (a junction on Windows)
 	])("%p → 404, nothing outside dist leaks", async (path) => {
 		const res = await get(appWith(dist), path, { accept: "*/*" });
 		expect(res.status).toBe(404);
 		expect(await res.text()).not.toContain(OUTSIDE_MARKER);
 	});
+
+	// file symlinks pointing outside dist; need a symlink privilege on Windows (see beforeAll)
+	for (const path of ["/escape.json", "/assets/escape.js"])
+		test.skipIf(!CAN_FILE_SYMLINK)(
+			`${path} (file symlink out of dist) → 404, nothing outside dist leaks`,
+			async () => {
+				const res = await get(appWith(dist), path, { accept: "*/*" });
+				expect(res.status).toBe(404);
+				expect(await res.text()).not.toContain(OUTSIDE_MARKER);
+			},
+		);
 
 	test("raw request lines with traversal never reach outside dist", async () => {
 		const hub = startHub({

@@ -6,6 +6,7 @@ import {
 	chmodSync,
 	copyFileSync,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -27,10 +28,15 @@ import {
 	verifyCopy,
 } from "./db-backup.ts";
 import { listSessions } from "./store.ts";
+import { CAN_FILE_SYMLINK, WIN } from "./test-fs.ts";
 
 const NOW = new Date("2026-11-11T01:02:03.999Z");
 const at = (iso: string) => new Date(iso);
 const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), "acbk-")));
+
+// WIN: Windows has no POSIX permission bits (NTFS ACLs inherited from the data dir), so the
+// 0700/0600 assertions only make sense elsewhere; everything else in those tests still runs there.
+// CAN_FILE_SYMLINK: file symlinks need a privilege on Windows; directory junctions do not.
 
 const count = (db: Database, table: string) =>
 	db.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${table}`).get()?.n;
@@ -90,10 +96,10 @@ describe("db:backup", () => {
 		expect(r.file).toBe("backups/agentcity.db-20261111-010203.db");
 		expect(r.pruned).toEqual([]);
 		const bdir = join(dataDir, "backups");
-		expect(statSync(bdir).mode & 0o777).toBe(0o700);
+		if (!WIN) expect(statSync(bdir).mode & 0o777).toBe(0o700);
 		expect(backups(bdir)).toEqual(["agentcity.db-20261111-010203.db"]); // no staging dir, no sidecars
 		const file = join(dataDir, r.file);
-		expect(statSync(file).mode & 0o777).toBe(0o600);
+		if (!WIN) expect(statSync(file).mode & 0o777).toBe(0o600);
 
 		const copy = new Database(file, { readonly: true });
 		expect(count(copy, "sessions")).toBe(3);
@@ -152,7 +158,8 @@ describe("db:backup", () => {
 		const { dataDir, dbPath, hub } = seeded();
 		hub.close();
 		const outside = tmp();
-		symlinkSync(outside, join(dataDir, "backups"));
+		// "junction" is ignored on POSIX; on Windows it is the link kind that needs no privilege
+		symlinkSync(outside, join(dataDir, "backups"), "junction");
 		expect(() => backupDb({ dbPath, now: NOW })).toThrow(
 			/outside the data dir/,
 		);
@@ -167,7 +174,7 @@ describe("db:backup", () => {
 		// a dangling backups link is refused too
 		const d2 = seeded();
 		d2.hub.close();
-		symlinkSync(join(outside, "gone"), join(d2.dataDir, "backups"));
+		symlinkSync(join(outside, "gone"), join(d2.dataDir, "backups"), "junction");
 		expect(() => backupDb({ dbPath: d2.dbPath, now: NOW })).toThrow(/refusing/);
 		expect(existsSync(join(outside, "gone"))).toBe(false);
 	});
@@ -298,14 +305,15 @@ describe("db:backup", () => {
 			},
 		});
 		hub.close();
-		expect(seen).toEqual([0o600, 0o700]); // staged copy and its dir, mid-run
-		expect(mode(bdir)).toBe(0o700);
+		expect(seen).toHaveLength(2); // the verify hook ran on the staged copy and its dir
+		if (!WIN) expect(seen).toEqual([0o600, 0o700]); // staged copy and its dir, mid-run
+		if (!WIN) expect(mode(bdir)).toBe(0o700);
 		expect(readFileSync(theirs, "utf8")).toBe("not ours");
 		expect(backups(bdir)).toEqual([
 			"agentcity.db-20261111-010203.db",
 			"agentcity.db-20261111-010203.db.tmp",
 		]); // staging dir removed
-		expect(mode(join(dataDir, r.file))).toBe(0o600);
+		if (!WIN) expect(mode(join(dataDir, r.file))).toBe(0o600);
 	});
 
 	test("--keep never touches backups of a differently named source", () => {
@@ -328,46 +336,73 @@ describe("db:backup", () => {
 		]);
 	});
 
-	test("--keep never deletes the live DB when DB_PATH is a symlink to a matching file in backups/", () => {
-		const dataDir = tmp();
-		const bdir = join(dataDir, "backups");
-		mkdirSync(bdir, { mode: 0o700 });
-		const live = join(bdir, "agentcity.db-20261101-000000.db");
-		const db = openDb(live);
-		db.run("INSERT INTO machines (id) VALUES ('cockpit')");
-		const dbPath = join(dataDir, "agentcity.db");
-		symlinkSync(live, dbPath);
-		const r = backupDb({ dbPath, keep: 1, now: NOW });
-		db.close();
-		expect(r.pruned).toEqual([]);
-		expect(existsSync(live)).toBe(true);
-		const check = new Database(live, { readonly: true });
-		expect(count(check, "machines")).toBe(1);
-		check.close();
-	});
+	// DB_PATH is a link to a file inside backups/ whose name matches the --keep pattern: it is the
+	// live DB and must survive pruning. Hard links work everywhere; file symlinks need a privilege on
+	// Windows (CAN_FILE_SYMLINK probes for it), so that variant is skipped only where it cannot be made.
+	for (const kind of ["symlink", "hard link"] as const)
+		test.skipIf(kind === "symlink" && !CAN_FILE_SYMLINK)(
+			`--keep never deletes the live DB when DB_PATH is a ${kind} to a matching file in backups/`,
+			() => {
+				const dataDir = tmp();
+				const bdir = join(dataDir, "backups");
+				mkdirSync(bdir, { mode: 0o700 });
+				const live = join(bdir, "agentcity.db-20261101-000000.db");
+				const db = openDb(live);
+				db.run("INSERT INTO machines (id) VALUES ('cockpit')");
+				const dbPath = join(dataDir, "agentcity.db");
+				if (kind === "symlink") symlinkSync(live, dbPath);
+				else linkSync(live, dbPath);
+				const r = backupDb({ dbPath, keep: 1, now: NOW });
+				db.close();
+				expect(r.pruned).toEqual([]);
+				expect(existsSync(live)).toBe(true);
+				const check = new Database(live, { readonly: true });
+				expect(count(check, "machines")).toBe(1);
+				check.close();
+			},
+		);
 
 	test("refuses a DB name with surrounding whitespace or control characters; nothing written", () => {
 		const { dataDir, dbPath, hub } = seeded();
 		hub.close();
-		copyFileSync(dbPath, join(dataDir, "agentcity.db ")); // Bun would open agentcity.db
+		// Bun would open agentcity.db. (Windows strips trailing spaces from names, so the copy is meaningless there.)
+		if (!WIN) copyFileSync(dbPath, join(dataDir, "agentcity.db "));
 		for (const name of [
 			"agentcity.db ",
 			" agentcity.db",
 			"agentcity.db\t",
 			"agentcity.db\n",
+			"agentcity.db　", // ideographic space: \s, and a legal file name on Windows too
 			`agent${String.fromCharCode(1)}city.db`,
 		])
 			expect(() => backupDb({ dbPath: join(dataDir, name), now: NOW })).toThrow(
 				/whitespace or a control character/,
 			);
-		symlinkSync(join(dataDir, "agentcity.db "), join(dataDir, "clean.db"));
-		expect(() =>
-			backupDb({ dbPath: join(dataDir, "clean.db"), now: NOW }),
-		).toThrow(/whitespace or a control character/);
 		const bad = cli(dataDir, "--db", join(dataDir, "agentcity.db "));
 		expect(bad.code).not.toBe(0);
 		expect(existsSync(join(dataDir, "backups"))).toBe(false);
 	});
+
+	// A clean-named symlink to a whitespace-named file is refused too. Needs a file symlink (a
+	// privilege on Windows). The trailing-ASCII-space name additionally cannot exist on Windows
+	// (it strips trailing spaces); the U+3000 name can, so it runs wherever symlinks can be made.
+	for (const [label, name, impossible] of [
+		["trailing space", "agentcity.db ", WIN],
+		["trailing U+3000", "agentcity.db　", false],
+	] as const)
+		test.skipIf(!CAN_FILE_SYMLINK || impossible)(
+			`refuses a clean-named symlink whose target has a ${label} name; nothing written`,
+			() => {
+				const { dataDir, dbPath, hub } = seeded();
+				hub.close();
+				copyFileSync(dbPath, join(dataDir, name));
+				symlinkSync(join(dataDir, name), join(dataDir, "clean.db"));
+				expect(() =>
+					backupDb({ dbPath: join(dataDir, "clean.db"), now: NOW }),
+				).toThrow(/whitespace or a control character/);
+				expect(existsSync(join(dataDir, "backups"))).toBe(false);
+			},
+		);
 
 	test("a token-shaped DB name never appears in output or error messages", () => {
 		const dataDir = tmp();
