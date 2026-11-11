@@ -12,7 +12,6 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	rmSync,
 	statSync,
 	symlinkSync,
 	unlinkSync,
@@ -29,27 +28,15 @@ import {
 	verifyCopy,
 } from "./db-backup.ts";
 import { listSessions } from "./store.ts";
+import { CAN_FILE_SYMLINK, WIN } from "./test-fs.ts";
 
 const NOW = new Date("2026-11-11T01:02:03.999Z");
 const at = (iso: string) => new Date(iso);
 const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), "acbk-")));
 
-// Windows has no POSIX permission bits (access is NTFS ACLs inherited from the data dir), so the
+// WIN: Windows has no POSIX permission bits (NTFS ACLs inherited from the data dir), so the
 // 0700/0600 assertions only make sense elsewhere; everything else in those tests still runs there.
-const WIN = process.platform === "win32";
-// File symlinks need a privilege on Windows (Developer Mode / admin); directory junctions do not.
-const CAN_FILE_SYMLINK = (() => {
-	const d = mkdtempSync(join(tmpdir(), "acbk-probe-"));
-	try {
-		writeFileSync(join(d, "t"), "");
-		symlinkSync(join(d, "t"), join(d, "l"));
-		return true;
-	} catch {
-		return false;
-	} finally {
-		rmSync(d, { recursive: true, force: true });
-	}
-})();
+// CAN_FILE_SYMLINK: file symlinks need a privilege on Windows; directory junctions do not.
 
 const count = (db: Database, table: string) =>
 	db.query<{ n: number }, []>(`SELECT count(*) AS n FROM ${table}`).get()?.n;
