@@ -372,6 +372,7 @@ describe("db:backup", () => {
 			" agentcity.db",
 			"agentcity.db\t",
 			"agentcity.db\n",
+			"agentcity.db　", // ideographic space: \s, and a legal file name on Windows too
 			`agent${String.fromCharCode(1)}city.db`,
 		])
 			expect(() => backupDb({ dbPath: join(dataDir, name), now: NOW })).toThrow(
@@ -382,21 +383,26 @@ describe("db:backup", () => {
 		expect(existsSync(join(dataDir, "backups"))).toBe(false);
 	});
 
-	// POSIX only: Windows cannot have a file whose name ends in a space, so there is nothing for a
-	// clean-named link to point at (and file symlinks need a privilege there anyway).
-	test.skipIf(WIN)(
-		"refuses a clean-named symlink whose target has a whitespace name; nothing written",
-		() => {
-			const { dataDir, dbPath, hub } = seeded();
-			hub.close();
-			copyFileSync(dbPath, join(dataDir, "agentcity.db "));
-			symlinkSync(join(dataDir, "agentcity.db "), join(dataDir, "clean.db"));
-			expect(() =>
-				backupDb({ dbPath: join(dataDir, "clean.db"), now: NOW }),
-			).toThrow(/whitespace or a control character/);
-			expect(existsSync(join(dataDir, "backups"))).toBe(false);
-		},
-	);
+	// A clean-named symlink to a whitespace-named file is refused too. Needs a file symlink (a
+	// privilege on Windows). The trailing-ASCII-space name additionally cannot exist on Windows
+	// (it strips trailing spaces); the U+3000 name can, so it runs wherever symlinks can be made.
+	for (const [label, name, impossible] of [
+		["trailing space", "agentcity.db ", WIN],
+		["trailing U+3000", "agentcity.db　", false],
+	] as const)
+		test.skipIf(!CAN_FILE_SYMLINK || impossible)(
+			`refuses a clean-named symlink whose target has a ${label} name; nothing written`,
+			() => {
+				const { dataDir, dbPath, hub } = seeded();
+				hub.close();
+				copyFileSync(dbPath, join(dataDir, name));
+				symlinkSync(join(dataDir, name), join(dataDir, "clean.db"));
+				expect(() =>
+					backupDb({ dbPath: join(dataDir, "clean.db"), now: NOW }),
+				).toThrow(/whitespace or a control character/);
+				expect(existsSync(join(dataDir, "backups"))).toBe(false);
+			},
+		);
 
 	test("a token-shaped DB name never appears in output or error messages", () => {
 		const dataDir = tmp();
