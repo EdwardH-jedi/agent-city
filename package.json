@@ -20,6 +20,7 @@
 		"districts:draft": "bun apps/hub/src/github/districts-draft.ts",
 		"collector:codex": "bun --no-env-file apps/collector/src/codex-tail.ts",
 		"collector:hooks": "bun --no-env-file apps/collector/src/install-hooks.ts",
+		"collector:launchd": "bun --no-env-file apps/collector/src/install-launchd.ts",
 		"collector:heartbeat": "bun --no-env-file apps/collector/src/heartbeat.ts",
 		"check:secrets": "bun scripts/check-secrets.ts"
 	},

@@ -214,6 +214,7 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `collector:hooks`             | Print-only merge of the Claude hook into `~/.claude/settings.json`.              |
 | `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s).                     |
 | `collector:heartbeat`         | Resident machine heartbeat: one beat every 30 s to `POST /ingest/heartbeat`.     |
+| `collector:launchd`           | Print-only: launchd job files for the Mac's resident processes → `~/.agentcity/launchd/`. See [Mac login jobs](#mac-login-jobs-launchd). |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
 
 **Machine heartbeat.** `collector:heartbeat` (run on each machine with `AGENTCITY_MACHINE` =
@@ -359,11 +360,46 @@ Each machine runs its own collectors from its own checkout of this repo; only th
 3. The hub binds to cockpit's loopback, so give the machine a path to it. The Phase 0 recommendation is
    an SSH tunnel (keeps the hub off the network; the Host header stays `127.0.0.1`):
    ```sh
-   ssh -N -L 4317:127.0.0.1:4317 cockpit     # run on forge/spine; autossh / launchd to keep it up
+   ssh -N -L 4317:127.0.0.1:4317 cockpit     # run on forge/spine; autossh / launchd to keep it up (Mac: see Mac login jobs)
    ```
 4. `bun run collector:hooks` **on that machine** (the hook path is absolute and per-checkout), review,
    back up, apply; `bun run collector:codex` if Codex runs there.
 5. While the tunnel is down, events land in `~/.agentcity/spool.jsonl` and are sent in order later.
+
+## Mac login jobs (launchd)
+
+The cockpit Mac runs four resident processes: the SSH tunnel to the hub, `collector:heartbeat`,
+`collector:codex` and the Agent Office run exporter. `collector:launchd` makes them start at login. It is
+**print-only**, like `collector:hooks`: it writes one job file per process into `~/.agentcity/launchd/`
+and prints the commands; copying the files into `~/Library/LaunchAgents` and loading them is yours to do.
+
+```sh
+# from the main checkout (the checkout path is baked into the files)
+bun run collector:launchd -- --tunnel-target <user@host-or-ssh-alias> \
+                              --office-dir <Agent Office checkout that has scripts/city-export.mjs>
+```
+
+| Flag | Meaning |
+| ---- | ------- |
+| `--tunnel-target` | SSH target of the hub host. Without it the tunnel job is skipped. Never committed anywhere. |
+| `--ports` | Forwarded loopback ports, default `4317,5173` (what the running tunnel forwards). |
+| `--office-dir` | Checkout whose `scripts/city-export.mjs` is the exporter. Without it the exporter job is skipped. |
+| `--office-env` | File with `OFFICE_PROJECTION_TOKEN=…`, default `~/.agentcity/office-projection.env`. |
+| `--hub` | Hub URL the exporter posts to, default `http://127.0.0.1:4317`. |
+| `--out-dir` | Must be inside `~/.agentcity`; `~/Library/LaunchAgents` and `~/.claude` are refused. |
+
+- **No secret is written.** The heartbeat and the tailer read this checkout's own `.env` when they start. The
+  exporter job runs `sh -c '. <env file>; exec node scripts/city-export.mjs …'`, so the token is read when the
+  job starts; the generator never opens that file.
+- **Stop the terminal copies first** (the printed list says which). Two tunnels fight over the port, two Codex
+  tailers share one offsets file, two heartbeats flap `boot_id`.
+- **The tunnel runs with `BatchMode=yes`**, so it needs a key that works without a prompt. On the cockpit Mac the
+  only key is `~/.ssh/id_ed25519` with no passphrase and the GUI session has an `SSH_AUTH_SOCK`, so launchd can use it;
+  the first `launchctl bootstrap` is what confirms the host accepts it. `ExitOnForwardFailure=yes` makes a failed
+  forward end the job so launchd restarts it.
+- **Stopping the tunnel on purpose** (for example to test a disconnect): `launchctl bootout gui/$(id -u)/local.agentcity.tunnel`;
+  `launchctl kill` would just be restarted (`KeepAlive`). Start it again with `launchctl bootstrap …`.
+- Logs: `~/.agentcity/logs/<job>.log`. Jobs restart at most every 10 s (`ThrottleInterval`).
 
 ## Spine as hub host (draft — not deployed)
 

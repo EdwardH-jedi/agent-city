@@ -60,6 +60,7 @@ bun run db:backup        # hub may run: consistent copy → <data dir>/backups/<
 bun run collector:hooks  # print-only merge of the Claude hook into ~/.claude/settings.json
 bun run collector:codex  # resident Codex log tailer
 bun run collector:heartbeat # resident machine heartbeat → hub (cockpit / forge / spine online · stale · offline)
+bun run collector:launchd # print-only: launchd job files (tunnel, heartbeat, codex, run exporter) → ~/.agentcity/launchd/; the owner loads them
 bun run check:secrets    # scan tracked/untracked files for token patterns
 ```
 
