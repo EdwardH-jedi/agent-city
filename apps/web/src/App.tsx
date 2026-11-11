@@ -8,7 +8,8 @@ import type {
 	SessionStatus,
 } from "@agent-city/schema";
 import { useEffect, useMemo, useState } from "react";
-import { liveCountByRepo, machinesAt } from "./merge.ts";
+import { liveCountByRepo, machinesAt, runsAt } from "./merge.ts";
+import { NeedsOwner, Runs } from "./Runs.tsx";
 import {
 	type Conn,
 	EVENT_LIMIT,
@@ -44,8 +45,18 @@ export function App() {
 		repo: null,
 		provider: null,
 	});
-	const { districts, sessions, events, machines, conn, error } = useHub(filter);
+	const { districts, sessions, events, machines, runs, conn, error } =
+		useHub(filter);
 	const now = useNow(5_000);
+	// machine and run states are re-derived from this screen's clock every tick (no message needed)
+	const shownMachines = useMemo(
+		() => machinesAt(machines, now),
+		[machines, now],
+	);
+	const shownRuns = useMemo(
+		() => runsAt(runs, shownMachines, now),
+		[runs, shownMachines, now],
+	);
 
 	// live session counts per repo, computed from the session list so they update in real time
 	const liveByRepo = useMemo(() => liveCountByRepo(sessions), [sessions]);
@@ -66,7 +77,13 @@ export function App() {
 				<ConnBadge conn={conn} />
 				{error && <span className="err">{error}</span>}
 			</header>
-			<Machines machines={machinesAt(machines, now)} now={now} />
+			<Machines machines={shownMachines} now={now} />
+			{shownRuns.length > 0 && (
+				<div className="runs-area">
+					<NeedsOwner runs={shownRuns} now={now} />
+					<Runs runs={shownRuns} now={now} />
+				</div>
+			)}
 			<div className="grid">
 				<Repos districts={districts} liveByRepo={liveByRepo} />
 				<Sessions sessions={sessions} now={now} />

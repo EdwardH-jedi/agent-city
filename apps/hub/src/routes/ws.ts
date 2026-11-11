@@ -9,6 +9,7 @@ export type BroadcastKind =
 	| "session"
 	| "repo"
 	| "machine"
+	| "run"
 	| "invalidate";
 export type InvalidateScope = "sessions" | "events" | "repos";
 export type Publish = (kind: BroadcastKind, data: unknown) => void;

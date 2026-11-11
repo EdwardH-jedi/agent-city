@@ -117,6 +117,7 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `HUB_ALLOWED_ORIGINS`      | hub            | Extra exact browser origins for CORS and `/ws`. Loopback origins are always allowed.     |
 | `DB_PATH`                  | hub            | SQLite file (default `./data/agentcity.db`, gitignored).                                 |
 | `INGEST_TOKEN`             | hub, collector | Shared secret for `POST /ingest`. Unset on the hub → ingest disabled (503).              |
+| `OFFICE_PROJECTION_TOKEN`  | hub            | Separate secret for `POST /ingest/runs`, held only by the cockpit. Unset or equal to `INGEST_TOKEN` → disabled (503). |
 | `HUB_URL`                  | collector, web | Where collectors POST and the Vite proxy points.                                         |
 | `AGENTCITY_MACHINE`        | collector, hub | `cockpit` \| `forge` \| `spine`.                                                         |
 | `AGENTCITY_HOME`           | collector      | Spool / offsets / debug log dir (default `~/.agentcity`).                                |
@@ -191,6 +192,50 @@ boot is taken as a restart (a sender needs the ingest token either way); while `
 strip keeps ageing its last snapshot toward `offline` even if the hub still receives beats; after
 `db:reset` reload the page, because a fresh `unobserved` row never overwrites a machine already seen.
 
+**Runs (Agent Office → City, read-only).** The cockpit's Agent Office exporter pushes a picture of its
+runs to `POST /ingest/runs` every 30 s; the *Runs* and *Needs owner* sections show them, each with
+"`<machine>` report · N s ago". City **stores and shows what it was told**; it never approves, launches
+or retries anything (there is no such route or control, and a test fails if one appears). Office's
+values are kept verbatim; the only thing City adds is the receive time and `snapshot_stale`:
+
+| Shown                   | When (decided by Office unless noted)                                            |
+| ----------------------- | -------------------------------------------------------------------------------- |
+| `running`               | `RUNNING`, no alert                                                              |
+| `no progress suspected` | alert `STALE_OR_IDLE` — an alert, **not** a failure                              |
+| `needs reconcile`       | alert `FAILED_PROCESS_RECONCILE` or `MISSION_RECONCILIATION_REQUIRED`            |
+| `waiting for owner`     | `READY` with `AWAITING_PLAN_APPROVAL`, `AWAITING_OWNER_INTEGRATION`, `DRAFT_REQUIRES_OWNER_COMMIT` or `PLAN_APPROVED` |
+| `hold` + reason         | `HOLD`                                                                           |
+| `passed` / `partial`    | `PASS` / `PARTIAL`                                                               |
+| `unverified`            | evidence not verified — wins over everything                                     |
+| `unknown`               | a combination not in this table (never guessed)                                  |
+| `snapshot stale` (City) | no report for 90 s (three missed sends) **or** the cockpit machine is `offline`; shown as "last report: running (N min ago)". A finished run stays as reported. |
+
+`POST /ingest/runs` takes `Bearer $OFFICE_PROJECTION_TOKEN` (not the collector `INGEST_TOKEN`: that one
+is refused with 401), a strict snake_case JSON body of at most 256 KiB, and only from `machine_id:
+"cockpit"` (any other machine → 403). Every string is an allowlisted short code: `status` / `reason` /
+`alert` are UPPER_SNAKE, ids and event codes start with a letter or digit and hold no `/`, `\`, space,
+`..` or drive letter, `phase` is exactly one of Office's nine pipeline phases (Goal, Plan, Approval,
+Implementation, QA, Independent Review, Integration, Cleanup, Report), `project` is a GitHub
+`owner/repo` (repo may start with `.` as in `.github`; not `.`/`..`, no `.git` suffix, no second `/`);
+anything secret- or opaque-token-shaped (a known token prefix, `Bearer …`, a long random-looking run)
+is refused (`project` gets the token-prefix checks only: long ordinary repo names are valid).
+So a goal text, a path, a session key or a token has no field and is a 400 (the value is never echoed).
+Reports are ordered by `(ledger_revision, last_event_sequence)`; at the same position only a strictly
+newer `observed_at` applies (compared exactly: below the millisecond, offsets applied). An older or
+equal report — a resend or a replay — is ignored and does not refresh the receive time.
+
+Known limits of the run projection (by design, not bugs):
+- Input is snake_case only; a camelCase key is an unknown key (400).
+- A value City cannot represent safely (a path, prose, a token-shaped or opaque string) is rejected,
+  and so is the whole report, rather than stored truncated or masked.
+- `commit_on_remote` (joining a passed run to the GitHub sync) is not implemented.
+- A holder of the Office token can assert PASS/evidence_verified; City mirrors the cockpit's report and does not verify signatures.
+- Hub clock moving backwards can make elapsed time briefly wrong.
+- `phase` is a closed list mirrored from Office: a phase Office adds needs a City release, and until
+  then every report carrying it is rejected.
+- A two-part name like `ssh/id_rsa` as `project` has a legitimate `owner/repo` shape and cannot be
+  told apart from a real repository.
+
 **Ids.** Sessions are `claude:<session_id>` / `codex:<session_id>`; the main agent shares the session
 id; a subagent is `<session id>/sub:<tool_use_id>` (one function set in `packages/schema/src/ids.ts`,
 used by both collectors and the hub — the hub also upgrades events spooled by an older collector).
@@ -242,6 +287,10 @@ Goal: an always-on hub + GitHub sync on spine; cockpit only views.
   (DNS-rebinding guard). `/ws` also rejects foreign `Origin`s; CORS echoes allowlisted origins only.
 - `/ingest` needs `Bearer $INGEST_TOKEN` (constant-time compare). `/api` and `/ws` are read-only and
   unauthenticated — fine on loopback, not for a network bind.
+- `/ingest/runs` needs a **different** token, `Bearer $OFFICE_PROJECTION_TOKEN`, held only by the
+  cockpit, and accepts only `machine_id: "cockpit"`. A forge or spine collector (which has
+  `INGEST_TOKEN`) therefore cannot post a forged `passed`. City cannot verify Office's signatures, so
+  every run is shown as *reported* with its age.
 - `/ingest` takes at most 500 events per request (`MAX_INGEST_BATCH`; more → 413) inside a 5 MiB
   body; collectors send in chunks of exactly that size.
 - Collectors redact before spooling/sending: prompt text is never stored (length only); `tool_input`

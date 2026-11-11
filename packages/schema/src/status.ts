@@ -3,8 +3,9 @@
 import {
 	HEARTBEAT_OFFLINE_FROM_MS,
 	HEARTBEAT_ONLINE_BELOW_MS,
+	RUN_SNAPSHOT_STALE_MS,
 } from "./limits.ts";
-import type { MachineLiveness, SessionStatus } from "./types.ts";
+import type { MachineLiveness, RunDisplay, SessionStatus } from "./types.ts";
 
 export const STALE_AFTER_MS = 15 * 60 * 1000;
 
@@ -25,6 +26,105 @@ export function machineStatus(
 	if (age < HEARTBEAT_ONLINE_BELOW_MS) return "online";
 	if (age < HEARTBEAT_OFFLINE_FROM_MS) return "stale";
 	return "offline";
+}
+
+/** READY states in which Office is waiting for the owner (02 §6). */
+const WAITING_OWNER_REASONS: ReadonlySet<string> = new Set([
+	"AWAITING_PLAN_APPROVAL",
+	"AWAITING_OWNER_INTEGRATION",
+	"DRAFT_REQUIRES_OWNER_COMMIT",
+	"PLAN_APPROVED",
+]);
+
+/** Displays that put a run in the "Needs owner" list. */
+const NEEDS_OWNER: ReadonlySet<RunDisplay> = new Set([
+	"waiting_owner",
+	"hold",
+	"needs_reconcile",
+	"unverified",
+]);
+
+/**
+ * The state Office reported, mapped by the 02 §6 table. City never reinterprets: a combination the
+ * table does not list is `unknown` rather than a guess. Unverified evidence wins over everything, so
+ * a run with unchecked evidence can never read as passed.
+ */
+export function reportedRunState(run: {
+	status: string;
+	reason: string | null;
+	alert: string | null;
+	evidence_verified: boolean;
+}): RunDisplay {
+	if (!run.evidence_verified || run.alert === "EVIDENCE_UNVERIFIED") {
+		return "unverified";
+	}
+	if (
+		run.alert === "FAILED_PROCESS_RECONCILE" ||
+		run.alert === "MISSION_RECONCILIATION_REQUIRED"
+	) {
+		return "needs_reconcile";
+	}
+	if (run.alert === "STALE_OR_IDLE") return "no_progress_suspected";
+	// Office's watchdog puts a HOLD run's own reason into `alert` (alert = run.reason), so a HOLD is a
+	// hold whatever its alert says; only a non-HOLD run with an alert we do not know is `unknown`.
+	if (run.status === "HOLD") return "hold";
+	if (run.alert !== null) return "unknown";
+	switch (run.status) {
+		case "RUNNING":
+			return "running";
+		case "READY":
+			return run.reason !== null && WAITING_OWNER_REASONS.has(run.reason)
+				? "waiting_owner"
+				: "unknown";
+		case "HOLD":
+			return "hold";
+		case "PASS":
+			return "passed";
+		case "PARTIAL":
+			return "partial";
+		default:
+			return "unknown";
+	}
+}
+
+export interface RunState {
+	/** What to show now. */
+	display: RunDisplay;
+	/** What the last report said. */
+	last_display: RunDisplay;
+	needs_owner: boolean;
+}
+
+/**
+ * Display state of a reported run at `now`. A report that is 90 s old (three missed sends), or whose
+ * machine is offline, becomes `snapshot_stale`: the screen then says "last report: <last_display>
+ * (N min ago)" so a closed laptop never leaves a run looking alive. A finished run (passed/partial)
+ * stays as reported. Pure: the web view calls it again with its own clock.
+ */
+export function runStateAt(
+	run: {
+		status: string;
+		reason: string | null;
+		alert: string | null;
+		evidence_verified: boolean;
+	},
+	reportedAt: string,
+	machine: MachineLiveness,
+	now: Date,
+): RunState {
+	const last = reportedRunState(run);
+	const finished = last === "passed" || last === "partial";
+	const age = now.getTime() - Date.parse(reportedAt);
+	const stale =
+		!finished &&
+		(Number.isNaN(age) ||
+			age >= RUN_SNAPSHOT_STALE_MS ||
+			machine === "offline");
+	return {
+		display: stale ? "snapshot_stale" : last,
+		last_display: last,
+		needs_owner: NEEDS_OWNER.has(last),
+	};
 }
 
 /**
