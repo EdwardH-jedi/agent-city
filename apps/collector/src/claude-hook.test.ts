@@ -3,9 +3,10 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { posixOnly } from "./posix-only.ts";
 
-const HOOK = `${import.meta.dir}/claude-hook.ts`;
-const BIN = `${import.meta.dir}/../bin/claude-hook`;
+const HOOK = join(import.meta.dir, "claude-hook.ts");
+const BIN = join(import.meta.dir, "..", "bin", "claude-hook");
 /** Isolated env: temp AGENTCITY_HOME, and HUB_URL/INGEST_TOKEN set so the repo .env is never used. */
 const isolated = (hubUrl = "http://127.0.0.1:9") => ({
 	...process.env,
@@ -58,53 +59,60 @@ test("stdin over the 1MB cap → still exit 0, no output", async () => {
 	expect(await new Response(proc.stdout).text()).toBe("");
 });
 
-test("bin/claude-hook → hub receives a whitelisted event with the bearer token", async () => {
-	const got: { auth: string | null; body: unknown }[] = [];
-	const hub = Bun.serve({
-		hostname: "127.0.0.1",
-		port: 0,
-		async fetch(req) {
-			got.push({
-				auth: req.headers.get("authorization"),
-				body: await req.json(),
+// POSIX-only: spawns bin/claude-hook, a `#!/bin/sh` launcher Windows cannot execute.
+posixOnly(
+	"bin/claude-hook → hub receives a whitelisted event with the bearer token",
+	async () => {
+		const got: { auth: string | null; body: unknown }[] = [];
+		const hub = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			async fetch(req) {
+				got.push({
+					auth: req.headers.get("authorization"),
+					body: await req.json(),
+				});
+				return Response.json({ accepted: 1, duplicates: 0 });
+			},
+		});
+		try {
+			const env = isolated(`http://127.0.0.1:${hub.port}`);
+			const proc = Bun.spawn([BIN], {
+				env,
+				stdin: new TextEncoder().encode(
+					JSON.stringify({
+						session_id: "s-e2e",
+						cwd: import.meta.dir,
+						hook_event_name: "UserPromptSubmit",
+						prompt: "PROMPT-MARKER",
+					}),
+				),
+				stdout: "pipe",
+				stderr: "pipe",
 			});
-			return Response.json({ accepted: 1, duplicates: 0 });
-		},
-	});
-	try {
-		const env = isolated(`http://127.0.0.1:${hub.port}`);
-		const proc = Bun.spawn([BIN], {
-			env,
-			stdin: new TextEncoder().encode(
-				JSON.stringify({
-					session_id: "s-e2e",
-					cwd: import.meta.dir,
-					hook_event_name: "UserPromptSubmit",
-					prompt: "PROMPT-MARKER",
-				}),
-			),
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		expect(await proc.exited).toBe(0);
-		expect(await new Response(proc.stdout).text()).toBe("");
-		expect(got).toHaveLength(1);
-		expect(got[0]?.auth).toBe("Bearer hook-test-token");
-		const event = (got[0]?.body as Record<string, unknown>[] | undefined)?.[0];
-		expect(event).toMatchObject({
-			session_id: "claude:s-e2e",
-			type: "UserPromptSubmit",
-			provider: "claude",
-			summary: "prompt (13 chars)",
-		});
-		expect(typeof event?.repo_id).toBe("string"); // computed from this checkout's .git
-		expect(JSON.stringify(got)).not.toContain("PROMPT-MARKER");
-	} finally {
-		hub.stop(true);
-	}
-});
+			expect(await proc.exited).toBe(0);
+			expect(await new Response(proc.stdout).text()).toBe("");
+			expect(got).toHaveLength(1);
+			expect(got[0]?.auth).toBe("Bearer hook-test-token");
+			const event = (
+				got[0]?.body as Record<string, unknown>[] | undefined
+			)?.[0];
+			expect(event).toMatchObject({
+				session_id: "claude:s-e2e",
+				type: "UserPromptSubmit",
+				provider: "claude",
+				summary: "prompt (13 chars)",
+			});
+			expect(typeof event?.repo_id).toBe("string"); // computed from this checkout's .git
+			expect(JSON.stringify(got)).not.toContain("PROMPT-MARKER");
+		} finally {
+			hub.stop(true);
+		}
+	},
+);
 
-test("hub unreachable → event lands in the spool, exit 0", async () => {
+// POSIX-only: spawns bin/claude-hook, a `#!/bin/sh` launcher Windows cannot execute.
+posixOnly("hub unreachable → event lands in the spool, exit 0", async () => {
 	const env = isolated("http://127.0.0.1:9");
 	const proc = Bun.spawn([BIN], {
 		env,

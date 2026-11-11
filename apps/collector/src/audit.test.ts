@@ -23,12 +23,13 @@ import {
 import { mapClaudeHook } from "./claude-map.ts";
 import { type CodexFileContext, mapCodexLine } from "./codex-map.ts";
 import { GIT_FILE_MAX, gitInfo } from "./git-info.ts";
+import { posixOnly } from "./posix-only.ts";
 import { deliver, Spool, type Transport } from "./spool.ts";
 
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), `agentcity-audit-${p}-`));
 const GH = `ghp_${"Q".repeat(36)}`; // audit's synthetic token shape
 const MARK = "auditSyntheticCredential42";
-const BIN = `${import.meta.dir}/../bin/claude-hook`;
+const BIN = join(import.meta.dir, "..", "bin", "claude-hook");
 const ctx = {
 	machine: "audit",
 	hostname: "test",
@@ -93,72 +94,84 @@ describe("F01 hook is bounded", () => {
 		expect(s.command).not.toContain("ghp_");
 	});
 
-	test("FIFO .git/config, symlinked .git, oversized HEAD → no block, no git info from them", () => {
-		const root = tmp("git");
-		const fifo = join(root, "fifo");
-		mkdirSync(join(fifo, ".git"), { recursive: true });
-		writeFileSync(join(fifo, ".git", "HEAD"), "ref: refs/heads/main\n");
-		Bun.spawnSync(["mkfifo", join(fifo, ".git", "config")]);
-		const t0 = performance.now();
-		expect(gitInfo(fifo)).toMatchObject({
-			repo_id: "local/fifo",
-			branch: "main",
-		});
-		expect(performance.now() - t0).toBeLessThan(100);
+	// POSIX-only: needs `mkfifo` and an unprivileged directory symlink (the oversized-HEAD check rides along).
+	posixOnly(
+		"FIFO .git/config, symlinked .git, oversized HEAD → no block, no git info from them",
+		() => {
+			const root = tmp("git");
+			const fifo = join(root, "fifo");
+			mkdirSync(join(fifo, ".git"), { recursive: true });
+			writeFileSync(join(fifo, ".git", "HEAD"), "ref: refs/heads/main\n");
+			Bun.spawnSync(["mkfifo", join(fifo, ".git", "config")]);
+			const t0 = performance.now();
+			expect(gitInfo(fifo)).toMatchObject({
+				repo_id: "local/fifo",
+				branch: "main",
+			});
+			expect(performance.now() - t0).toBeLessThan(100);
 
-		const real = join(root, "real");
-		mkdirSync(join(real, ".git"), { recursive: true });
-		const linked = join(root, "linked");
-		mkdirSync(linked);
-		symlinkSync(join(real, ".git"), join(linked, ".git"));
-		expect(gitInfo(linked)).toBeNull();
+			const real = join(root, "real");
+			mkdirSync(join(real, ".git"), { recursive: true });
+			const linked = join(root, "linked");
+			mkdirSync(linked);
+			symlinkSync(join(real, ".git"), join(linked, ".git"));
+			expect(gitInfo(linked)).toBeNull();
 
-		const big = join(root, "big");
-		mkdirSync(join(big, ".git"), { recursive: true });
-		writeFileSync(
-			join(big, ".git", "HEAD"),
-			`ref: refs/heads/${"x".repeat(GIT_FILE_MAX)}\n`,
-		);
-		expect(gitInfo(big)?.branch).toBeNull();
-	});
+			const big = join(root, "big");
+			mkdirSync(join(big, ".git"), { recursive: true });
+			writeFileSync(
+				join(big, ".git", "HEAD"),
+				`ref: refs/heads/${"x".repeat(GIT_FILE_MAX)}\n`,
+			);
+			expect(gitInfo(big)?.branch).toBeNull();
+		},
+	);
 
-	test("launcher kills a stalled hook: fifo-config and 900K command exit 0 under 700ms", async () => {
-		const home = tmp("bin-home");
-		const env = {
-			AGENTCITY_HOME: home,
-			HUB_URL: "http://127.0.0.1:9",
-			INGEST_TOKEN: "audit-test-only",
-		};
-		const fifo = join(tmp("bin-fifo"), "p");
-		mkdirSync(join(fifo, ".git"), { recursive: true });
-		writeFileSync(join(fifo, ".git", "HEAD"), "ref: refs/heads/main\n");
-		Bun.spawnSync(["mkfifo", join(fifo, ".git", "config")]);
+	// POSIX-only: spawns the `#!/bin/sh` launcher (sleep + kill -9) and needs `mkfifo`.
+	posixOnly(
+		"launcher kills a stalled hook: fifo-config and 900K command exit 0 under 700ms",
+		async () => {
+			const home = tmp("bin-home");
+			const env = {
+				AGENTCITY_HOME: home,
+				HUB_URL: "http://127.0.0.1:9",
+				INGEST_TOKEN: "audit-test-only",
+			};
+			const fifo = join(tmp("bin-fifo"), "p");
+			mkdirSync(join(fifo, ".git"), { recursive: true });
+			writeFileSync(join(fifo, ".git", "HEAD"), "ref: refs/heads/main\n");
+			Bun.spawnSync(["mkfifo", join(fifo, ".git", "config")]);
 
-		const cases = [
-			JSON.stringify({ session_id: "s", hook_event_name: "Stop", cwd: fifo }),
-			JSON.stringify({
-				session_id: "s",
-				hook_event_name: "PreToolUse",
-				tool_name: "Bash",
-				cwd: "/",
-				tool_input: { command: "a".repeat(900_000) },
-			}),
-		];
-		for (const payload of cases) {
-			const r = await runBin(payload, env, { cwd: fifo });
+			const cases = [
+				JSON.stringify({ session_id: "s", hook_event_name: "Stop", cwd: fifo }),
+				JSON.stringify({
+					session_id: "s",
+					hook_event_name: "PreToolUse",
+					tool_name: "Bash",
+					cwd: "/",
+					tool_input: { command: "a".repeat(900_000) },
+				}),
+			];
+			for (const payload of cases) {
+				const r = await runBin(payload, env, { cwd: fifo });
+				expect(r.code).toBe(0);
+				expect(r.stdout).toBe(0);
+				expect(r.ms).toBeLessThan(700);
+			}
+		},
+	);
+
+	// POSIX-only: spawns the `#!/bin/sh` launcher with a fake `#!/bin/sh` bun made executable by mode bits.
+	posixOnly(
+		"even a synchronously stuck process is killed by the launcher (<700ms)",
+		async () => {
+			const fake = join(tmp("fakebun"), "bun");
+			writeFileSync(fake, "#!/bin/sh\nwhile :; do :; done\n", { mode: 0o755 });
+			const r = await runBin("{}", { AGENTCITY_BUN: fake });
 			expect(r.code).toBe(0);
-			expect(r.stdout).toBe(0);
 			expect(r.ms).toBeLessThan(700);
-		}
-	});
-
-	test("even a synchronously stuck process is killed by the launcher (<700ms)", async () => {
-		const fake = join(tmp("fakebun"), "bun");
-		writeFileSync(fake, "#!/bin/sh\nwhile :; do :; done\n", { mode: 0o755 });
-		const r = await runBin("{}", { AGENTCITY_BUN: fake });
-		expect(r.code).toBe(0);
-		expect(r.ms).toBeLessThan(700);
-	});
+		},
+	);
 });
 
 // ── F02 ────────────────────────────────────────────────────────────────────
@@ -282,34 +295,38 @@ describe("F04 spool before POST", () => {
 		expect(onDiskDuringPost).toBe(true);
 	});
 
-	test("stdin held open + hub hanging: exit 0 under 700ms and the event is spooled", async () => {
-		const hang = Bun.serve({
-			hostname: "127.0.0.1",
-			port: 0,
-			fetch: () => new Promise<Response>(() => {}),
-		});
-		try {
-			const home = tmp("hang");
-			const r = await runBin(
-				JSON.stringify({
-					session_id: "s-hang",
-					hook_event_name: "Stop",
-					cwd: "/",
-				}),
-				{
-					AGENTCITY_HOME: home,
-					HUB_URL: `http://127.0.0.1:${hang.port}`,
-					INGEST_TOKEN: "audit-only",
-				},
-				{ keepStdinOpen: true },
-			);
-			expect(r.code).toBe(0);
-			expect(r.ms).toBeLessThan(700);
-			expect(spoolText(home)).toContain('"claude:s-hang"');
-		} finally {
-			hang.stop(true);
-		}
-	});
+	// POSIX-only: spawns the `#!/bin/sh` launcher; its SIGKILL deadline is what bounds the run.
+	posixOnly(
+		"stdin held open + hub hanging: exit 0 under 700ms and the event is spooled",
+		async () => {
+			const hang = Bun.serve({
+				hostname: "127.0.0.1",
+				port: 0,
+				fetch: () => new Promise<Response>(() => {}),
+			});
+			try {
+				const home = tmp("hang");
+				const r = await runBin(
+					JSON.stringify({
+						session_id: "s-hang",
+						hook_event_name: "Stop",
+						cwd: "/",
+					}),
+					{
+						AGENTCITY_HOME: home,
+						HUB_URL: `http://127.0.0.1:${hang.port}`,
+						INGEST_TOKEN: "audit-only",
+					},
+					{ keepStdinOpen: true },
+				);
+				expect(r.code).toBe(0);
+				expect(r.ms).toBeLessThan(700);
+				expect(spoolText(home)).toContain('"claude:s-hang"');
+			} finally {
+				hang.stop(true);
+			}
+		},
+	);
 });
 
 // ── F05 ────────────────────────────────────────────────────────────────────
