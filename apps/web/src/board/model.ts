@@ -2,7 +2,6 @@
 // of what the hub reported and this screen's clock; no React, no DOM.
 import type { MachineView, RunView } from "@agent-city/schema";
 import type { Conn, Districts } from "../useHub.ts";
-import { firstSentence } from "./copy.ts";
 import { buildIncidents, INCIDENT_LIMIT, type Incident } from "./incidents.ts";
 import {
 	type CurrentRun,
@@ -40,6 +39,8 @@ export interface NowItem {
 	project_id: string;
 	workflow_id: string;
 	phase: string;
+	/** The phase in the screen's language (구현, 검사 …); Office's name when unknown. */
+	phase_label: string;
 	phase_index: number;
 	display: RunView["display"];
 	reported_at: string;
@@ -67,7 +68,10 @@ export interface VillageModel {
 		heartbeat_at: string | null;
 	}[];
 	projects: VillageProject[];
-	/** The buildings that stand (at most BUILDING_CAP, most urgent first) and how many fold into one sign. */
+	/**
+	 * The buildings that stand (at most BUILDING_CAP, most recent activity first; one with a flag is
+	 * never left out) and how many fold into the one "조용함 N곳" sign.
+	 */
 	village: { shown: VillageProject[]; folded: number };
 	visits: Visit[];
 	/** The one speech bubble at the HQ door: the newest report. Signs speak through the HQ 대기 cards. */
@@ -169,6 +173,37 @@ export function signCards(visits: readonly Visit[]): SignCard[] {
 	);
 }
 
+const PHASE_LABEL: Readonly<Record<string, string>> = {
+	Goal: "목표",
+	Plan: "계획",
+	Approval: "승인",
+	Implementation: "구현",
+	QA: "검사",
+	"Independent Review": "리뷰",
+	Integration: "통합",
+	Cleanup: "정리",
+	Report: "보고",
+};
+
+const recent = (a: VillageProject, b: VillageProject) =>
+	(b.last_activity_at ?? "").localeCompare(a.last_activity_at ?? "") ||
+	a.label.localeCompare(b.label);
+
+/**
+ * §13: at most BUILDING_CAP buildings, chosen by recent activity. A building with a flag (결재 or
+ * 멈춤) always stands, even when its activity is old, so a red or yellow one is never folded away.
+ */
+export function pickBuildings(
+	active: readonly VillageProject[],
+): VillageProject[] {
+	const flagged = active.filter((p) => p.waiting + p.stopped > 0).sort(recent);
+	const rest = active.filter((p) => p.waiting + p.stopped === 0).sort(recent);
+	const picked = new Set(
+		[...flagged, ...rest].slice(0, BUILDING_CAP).map((p) => p.id),
+	);
+	return active.filter((p) => picked.has(p.id)).sort(recent);
+}
+
 export function toVillageModel(input: ModelInput): VillageModel {
 	const { runs, machines, districts, eventsByRun, now } = input;
 	const current = currentRuns(runs);
@@ -206,6 +241,7 @@ export function toVillageModel(input: ModelInput): VillageModel {
 			project_id: c.project_id,
 			workflow_id: c.run.workflow_id,
 			phase: c.run.phase,
+			phase_label: PHASE_LABEL[c.run.phase] ?? c.run.phase,
 			phase_index: (PHASES as readonly string[]).indexOf(c.run.phase),
 			display: c.state,
 			reported_at: c.run.reported_at,
@@ -239,7 +275,7 @@ export function toVillageModel(input: ModelInput): VillageModel {
 		running,
 	});
 	const active = projects.filter((p) => !p.quiet);
-	const shown = active.slice(0, BUILDING_CAP);
+	const shown = pickBuildings(active);
 	const reports = visits.filter((v) => v.kind === "report");
 	const conn = input.conn === "open" ? "open" : "reconnecting";
 	const door = reports.reduce<Visit | null>(
@@ -247,11 +283,13 @@ export function toVillageModel(input: ModelInput): VillageModel {
 		null,
 	);
 	// the bubble already says it: the history list does not say it again (same project, time, sentence)
-	const said = door
-		? `${door.project_id}|${Date.parse(door.since)}|${firstSentence(door.text)}`
-		: null;
+	// the bubble already says the newest report: its event is not listed again in 자리 비운 사이
+	const said = door ? `${door.project_id}|${Date.parse(door.since)}` : null;
 	const incidents = buildIncidents(current, eventsByRun, INCIDENT_LIMIT + 1)
-		.filter((i) => `${i.project_id}|${Date.parse(i.at)}|${i.text}` !== said)
+		.filter(
+			(i) =>
+				i.source !== "event" || `${i.project_id}|${Date.parse(i.at)}` !== said,
+		)
 		.slice(0, INCIDENT_LIMIT);
 
 	return {

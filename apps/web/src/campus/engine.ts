@@ -23,7 +23,7 @@ import {
 } from "three";
 import { figurePose, sceneKey, walkMsFor } from "./choreography.ts";
 import { type CampusLayout, campusLayout, HQ_BOX } from "./layout.ts";
-import { LIGHT, SCENE } from "./palette.ts";
+import { GLOW, LIGHT, SCENE } from "./palette.ts";
 import type { CampusModel } from "./presentation.ts";
 import { DisposalRegistry } from "./resources.ts";
 import {
@@ -87,6 +87,8 @@ interface Visitor {
 interface Pin {
 	root: HTMLDivElement;
 	anchor: Vector3;
+	/** The bubble hangs above its anchor; a tag sits below it. */
+	above: boolean;
 }
 
 /**
@@ -291,15 +293,11 @@ function initializeCampusEngine(
 		const h = host.clientHeight || 500;
 		camera.aspect = w / h;
 		camera.updateProjectionMatrix();
+		// the buildings themselves fill the stage (tags and the bubble are kept inside by placePins)
 		const pts: Vector3[] = [];
 		if (world) {
-			pts.push(...footprint(world.hq, 0.5));
-			// room above the HQ for the bubble
-			pts.push(new Vector3(HQ_BOX.x, 9, HQ_BOX.z + HQ_BOX.d / 2));
-			for (const b of world.buildings.values()) {
-				pts.push(...footprint(b, 0.5));
-				pts.push(new Vector3(b.label.x, 0, b.label.z + 2.6));
-			}
+			pts.push(...footprint(world.hq, 0.2));
+			for (const b of world.buildings.values()) pts.push(...footprint(b, 0.2));
 		} else pts.push(new Vector3());
 		const midZ = (layout.bounds.minZ + layout.bounds.maxZ) / 2;
 		const s: Cam = {
@@ -308,9 +306,9 @@ function initializeCampusEngine(
 			el: EL,
 			dist: 60,
 		};
-		const padX = 0.94;
-		const padTop = 0.86;
-		const padBot = 0.9;
+		const padX = 0.97;
+		const padTop = 0.84;
+		const padBot = 0.97;
 		for (let pass = 0; pass < 3; pass += 1) {
 			let lo = 4;
 			let hi = 900;
@@ -360,7 +358,7 @@ function initializeCampusEngine(
 		root.className = className;
 		root.dataset.pin = id;
 		pinLayer.append(root);
-		return { root, anchor };
+		return { root, anchor, above: className === "cmp-bubble" };
 	}
 
 	function clearPins() {
@@ -398,8 +396,13 @@ function initializeCampusEngine(
 			const y = (-v.y * 0.5 + 0.5) * h;
 			const out = v.z > 1 || x < -20 || x > w + 20 || y < -10 || y > h + 10;
 			p.root.style.display = out ? "none" : "";
-			if (!out)
-				p.root.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+			if (out) continue;
+			// centred on its anchor, but never past an edge of the stage (long names, the bubble)
+			const pw = p.root.offsetWidth;
+			const ph = p.root.offsetHeight;
+			const left = Math.max(4, Math.min(w - pw - 4, x - pw / 2));
+			const top = Math.max(4, Math.min(h - ph - 4, p.above ? y - ph : y));
+			p.root.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
 		}
 	}
 
@@ -506,12 +509,25 @@ function initializeCampusEngine(
 					? w.screenMats[s.kind].lit
 					: w.screenMats[s.kind].dim;
 			});
-			if (b.flag)
-				b.flag.material = r.has_stopped
-					? w.flagMats.danger
-					: r.pending_requests > 0
-						? w.flagMats.attention
-						: w.flagMats.none;
+			const tone = r.has_stopped
+				? w.flagMats.danger
+				: r.pending_requests > 0
+					? w.flagMats.attention
+					: null;
+			if (b.flag) b.flag.material = tone ?? w.flagMats.none;
+			if (b.marker) b.marker.visible = tone !== null;
+			if (b.cloth && tone) b.cloth.material = tone;
+			// "불 켜진 건물 = 일하는 중": warm floor and glass while a run is going, dark otherwise
+			const on = r.active_tasks > 0;
+			if (b.glow) {
+				b.glow.emissive.set(on ? GLOW.on : "#000000");
+				b.glow.emissiveIntensity = on ? GLOW.onIntensity : 0;
+			}
+			const glass = b.cutMats.glass;
+			glass.color.set(on ? GLOW.glassOn : GLOW.glassOff);
+			glass.emissive.set(on ? GLOW.on : "#000000");
+			glass.emissiveIntensity = on ? 1.1 : 0;
+			glass.opacity = on ? 0.55 : 0.7;
 		}
 		const docs = model.visitors.filter((v) => v.carry !== null).length;
 		const n = Math.min(docs, w.hq.sheets.length);
@@ -534,7 +550,14 @@ function initializeCampusEngine(
 		if (!world || nextLayout.key !== layout.key) rebuildWorld(nextLayout);
 		// forget leads already home (also while the tab was hidden and no frame ran), then reconcile
 		book = settleVisits(book, now(), walkMsOf, reduced);
-		book = reconcileVisits(book, model.visitors, now(), walkMsOf, reduced);
+		book = reconcileVisits(
+			book,
+			model.visitors,
+			now(),
+			walkMsOf,
+			reduced,
+			model.still,
+		);
 		syncVisitors();
 		applyActivity();
 		pinTexts();

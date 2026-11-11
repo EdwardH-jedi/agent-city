@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { eventPhrase, STOP_PHRASES, stopPhrase, UNKNOWN_TEXT } from "./copy.ts";
+import {
+	codeShort,
+	eventPhrase,
+	eventShort,
+	STOP_PHRASES,
+	stopPhrase,
+	UNKNOWN_TEXT,
+} from "./copy.ts";
 
 const run = (over: Partial<Parameters<typeof stopPhrase>[0]> = {}) => ({
 	status: "READY",
@@ -27,18 +34,16 @@ describe("stopPhrase (§6 文구表)", () => {
 		expect(p.known).toBe(false);
 	});
 
-	test("PRESERVED_ON_HOLD has no sentence yet (owner decides, doc §12.4)", () => {
-		const p = stopPhrase(run({ reason: "PRESERVED_ON_HOLD" }));
-		expect(p.text).toBe(UNKNOWN_TEXT);
-		expect(p.code).toBe("PRESERVED_ON_HOLD");
-	});
-
-	test("DISPATCH_STOPPED (seen on the real data, not in the table) is unknown", () => {
-		const p = stopPhrase(run({ reason: "DISPATCH_STOPPED" }));
-		expect(p).toEqual({
-			text: UNKNOWN_TEXT,
+	test("PRESERVED_ON_HOLD and DISPATCH_STOPPED: sentences confirmed in Agent Office lifecycle.mjs", () => {
+		expect(stopPhrase(run({ reason: "PRESERVED_ON_HOLD" }))).toEqual({
+			text: "끝까지 가기 전에 닫았습니다. 작업 폴더는 남겨 두었습니다.",
+			code: "PRESERVED_ON_HOLD",
+			known: true,
+		});
+		expect(stopPhrase(run({ reason: "DISPATCH_STOPPED" }))).toEqual({
+			text: "계획한 작업을 다 끝내기 전에 멈췄습니다.",
 			code: "DISPATCH_STOPPED",
-			known: false,
+			known: true,
 		});
 	});
 
@@ -125,5 +130,29 @@ describe("eventPhrase (보고: already happened, never asking)", () => {
 		]) {
 			expect(eventPhrase({ transition: t, task_id: "T1" })).toBeNull();
 		}
+	});
+});
+
+describe("short words for 자리 비운 사이 (§13.4)", () => {
+	test("events: T3 통과 / opus로 올림 / nothing else", () => {
+		expect(eventShort({ transition: "task.completed", task_id: "T3" })).toBe(
+			"T3 통과",
+		);
+		expect(
+			eventShort({
+				transition: "task.escalated",
+				task_id: "T1",
+				to_model: "opus",
+			}),
+		).toBe("opus로 올림");
+		expect(
+			eventShort({ transition: "task.started", task_id: "T1" }),
+		).toBeNull();
+	});
+
+	test("codes: only the confirmed ones have a short word, and no short word holds a code", () => {
+		expect(codeShort("DISPATCH_STOPPED")).toBe("중간에 멈춤");
+		expect(codeShort("SOMETHING_NEW")).toBeNull();
+		expect(codeShort(null)).toBeNull();
 	});
 });

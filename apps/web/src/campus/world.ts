@@ -289,6 +289,11 @@ export interface BuildingParts {
 	/** 1 = closed, 0 = cut away (animated by the engine). */
 	cutValue: number;
 	homeCeo: Figure | null;
+	/** Floor light inside a repository building: warm while a run is going. */
+	glow: MeshStandardMaterial | null;
+	/** The tall flag over a repository building (결재 / 멈춤) and its cloth. */
+	marker: Group | null;
+	cloth: Mesh | null;
 }
 
 export interface CampusWorld {
@@ -353,6 +358,7 @@ export function buildCampusWorld(
 		walnut: kit.mat(P.walnut),
 		floorWalnut: kit.mat(mixHex(P.walnut, "#c4c2bb", 0.7)),
 		white: kit.mat("#f3f2ee"),
+		glowFloor: kit.mat("#141419", { roughness: 1 }),
 		paper: kit.mat("#fbfaf6"),
 		dark: kit.mat("#2a3033"),
 		chair: kit.mat("#3f474b"),
@@ -403,8 +409,17 @@ export function buildCampusWorld(
 	}
 	const flagMats = {
 		none: M.concrete,
-		attention: kit.mat(P.attention, { roughness: 0.6 }),
-		danger: kit.mat(P.danger, { roughness: 0.6 }),
+		// emissive: a flag must read at dusk from across the room
+		attention: kit.mat(P.attention, {
+			roughness: 0.6,
+			emissive: P.attention,
+			emissiveIntensity: 0.6,
+		}),
+		danger: kit.mat(P.danger, {
+			roughness: 0.6,
+			emissive: P.danger,
+			emissiveIntensity: 0.6,
+		}),
 	};
 
 	const root = new Group();
@@ -1023,6 +1038,31 @@ export function buildCampusWorld(
 		const flag = kit.box(sign, 0.36, 0.14, 0.4, flagMats.none, 0.55, 1.14, 0, {
 			cast: false,
 		});
+		// lit from inside while a run is going (the engine sets the emissive); dark otherwise
+		const glow = kit.clone(M.glowFloor);
+		// just above the floor and rugs (FLOOR + 0.02 … 0.04): it IS the floor the camera sees
+		kit.box(g, RW - 0.4, 0.01, RD - 0.4, glow, 0, FLOOR + 0.045, 0, {
+			cast: false,
+		});
+		// a big flag over the building for 결재 (yellow) / 멈춤 (red); hidden otherwise
+		const marker = new Group();
+		marker.position.set(slot.x + RW / 2 - 0.8, 0, slot.z + RD / 2 - 0.8);
+		marker.visible = false;
+		root.add(marker);
+		kit.cyl(marker, 0.16, 0.16, 11, 8, M.metal, 0, 0, 0, { cast: false });
+		const cloth = kit.box(
+			marker,
+			5.2,
+			3.2,
+			0.18,
+			flagMats.attention,
+			-2.6,
+			7.6,
+			0,
+			{
+				cast: false,
+			},
+		);
 		const hit = addHit(g, RW, RD, RH, { kind: "repo", id: slot.repo_id });
 		// staff, seated; the CEO at home in the office while no document is out
 		const palette: [string, string][] = [
@@ -1080,6 +1120,9 @@ export function buildCampusWorld(
 			},
 			cutValue: 1,
 			homeCeo: ceo,
+			glow,
+			marker,
+			cloth,
 		};
 		parts.edges = [...collectEdges(g), ...collectEdges(sign)];
 		return parts;
@@ -1188,6 +1231,9 @@ export function buildCampusWorld(
 			label: { x: hx + 9, y: 1.2, z: hz + HD / 2 + 2.6 },
 			cutValue: 1,
 			homeCeo: null,
+			glow: null,
+			marker: null,
+			cloth: null,
 		};
 		return parts;
 	};

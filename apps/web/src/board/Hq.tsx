@@ -1,9 +1,10 @@
 // Left column: the 결재 cards waiting at the HQ, and what happened while the owner was away.
 // Text only — the owner acts in Agent Office on the Mac, never here ("Mac에서 처리" is said once, in
 // the heading). The column never clips a card or a line in half: at most SIGN_SHOWN cards stand (the
-// rest are counted), and history lines that do not fit drop out whole (CSS column wrap).
-import type { Incident } from "./incidents.ts";
-import { agoKo, signCards, type VillageModel } from "./model.ts";
+// rest are counted), and history lines are one short line each (§13.4) with a divider where the
+// date changes; lines that do not fit drop out whole (CSS column wrap).
+import { type Incident, incidentRows } from "./incidents.ts";
+import { signCards, type VillageModel } from "./model.ts";
 import { projectLabel } from "./types.ts";
 
 export const SIGN_SHOWN = 3;
@@ -64,13 +65,18 @@ export function Hq({ model, now }: { model: VillageModel; now: number }) {
 					<p className="hq-empty">없음</p>
 				) : (
 					<ol className="incidents">
-						{model.incidents.map((i) => (
-							<IncidentRow
-								key={`${i.at}|${i.project_id}|${i.text}`}
-								i={i}
-								now={now}
-							/>
-						))}
+						{incidentRows(model.incidents, now).map((row) =>
+							row.kind === "day" ? (
+								<li key={`day|${row.label}`} className="inc-day">
+									{row.label}
+								</li>
+							) : (
+								<IncidentRow
+									key={`${row.incident.at}|${row.incident.project_id}|${row.incident.text}`}
+									i={row.incident}
+								/>
+							),
+						)}
 					</ol>
 				)}
 			</section>
@@ -78,15 +84,13 @@ export function Hq({ model, now }: { model: VillageModel; now: number }) {
 	);
 }
 
-function IncidentRow({ i, now }: { i: Incident; now: number }) {
+/** One line: `17:03 docs T3 통과`. No code string (the detail view has it). */
+function IncidentRow({ i }: { i: Incident }) {
 	return (
-		<li title={`${i.at} · ${agoKo(i.at, now)}`}>
+		<li className="inc">
 			<span className="inc-time">{hhmm(i.at)}</span>
 			<span className="inc-project">{projectLabel(i.project_id)}</span>
-			<span className="inc-text">
-				{i.text}
-				{i.code && <code className="inc-code"> {i.code}</code>}
-			</span>
+			<span className="inc-text">{i.text}</span>
 		</li>
 	);
 }

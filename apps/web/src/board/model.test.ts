@@ -369,7 +369,8 @@ describe("§13 (as given in the task): one screen, said once", () => {
 			},
 		});
 		expect(m.village.shown).toHaveLength(8);
-		expect(m.village.shown[0]?.id).toBe("acme/p10"); // the 결재 building is never folded away
+		// the 결재 building is never folded away, even with the oldest activity
+		expect(m.village.shown.some((p) => p.id === "acme/p10")).toBe(true);
 		expect(m.village.folded).toBe(12 - 8); // 3 more active + 1 quiet repo
 		expect(model([runIn("running")]).village).toMatchObject({ folded: 0 });
 	});
@@ -415,7 +416,7 @@ describe("§13 (as given in the task): one screen, said once", () => {
 			]),
 		});
 		expect(m.door?.text).toBe("T2 통과했습니다. 다음으로 넘어갑니다.");
-		expect(m.incidents.map((i) => i.text)).toEqual(["T1 통과했습니다."]);
+		expect(m.incidents.map((i) => i.text)).toEqual(["T1 통과"]);
 	});
 
 	test("a different line at the same moment stays (only the bubble's own sentence is dropped)", () => {
@@ -429,7 +430,7 @@ describe("§13 (as given in the task): one screen, said once", () => {
 			]),
 		});
 		expect(m.door?.text).toBe("T3 통과했습니다. 다음으로 넘어갑니다.");
-		expect(m.incidents.map((i) => i.text)).toEqual(["전부 끝났습니다."]);
+		expect(m.incidents.map((i) => i.text)).toEqual(["전부 끝남"]);
 	});
 
 	test("the village dims when this screen loses the hub too, not only when the Mac stops", () => {
@@ -462,5 +463,39 @@ describe("cockpit offline: figures stop and nothing sounds (§10 V1)", () => {
 				conn: m.conn,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("§13 building choice and 지금 진행 labels", () => {
+	test("buildings by recent activity; a flagged one with old activity still stands", () => {
+		const runs = Array.from({ length: 10 }, (_, i) =>
+			runIn("passed", {
+				project: `acme/p${i}`,
+				workflow_id: `w${i}`,
+				run_id: `w${i}-1`,
+				last_progress_at: iso(-(i + 1) * 60_000),
+			}),
+		);
+		runs.push(
+			runIn("hold", {
+				project: "acme/old",
+				workflow_id: "old",
+				run_id: "old-1",
+				reason: "MODEL_CHAIN_EXHAUSTED",
+				last_progress_at: iso(-30 * 86_400_000),
+			}),
+		);
+		const m = model(runs);
+		const ids = m.village.shown.map((p) => p.id);
+		expect(ids).toHaveLength(8);
+		expect(ids).toContain("acme/old");
+		expect(ids.slice(0, 3)).toEqual(["acme/p0", "acme/p1", "acme/p2"]);
+		expect(ids).not.toContain("acme/p9");
+		expect(m.village.folded).toBe(3);
+	});
+
+	test("the phase is named in Korean on the 지금 진행 line", () => {
+		const m = model([runIn("running", { phase: "Independent Review" })]);
+		expect(m.now[0]).toMatchObject({ phase_label: "리뷰", phase_index: 5 });
 	});
 });

@@ -1,12 +1,13 @@
 // The main screen (design doc §3): a status sentence, the HQ queue, the project village and what is
 // running now. It only reads (useHub, GET + /ws) and draws; there is nothing to click and no way to act.
-// `?demo=1` draws the same screen from made-up data instead (DemoBoard): no request, no sound, and the
-// screen says "예시 데이터".
+// `?demo=1` draws the same screen from made-up data instead (DemoBoard.tsx, a lazy chunk): no request,
+// no sound, and the screen says "예시 데이터".
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CampusView } from "../campus/CampusView.tsx";
 import { machinesAt, runsAt } from "../merge.ts";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
-import { DEMO_LABEL, demoData } from "./demo.ts";
+import { burnInShift } from "./burnin.ts";
+import { DEMO_LABEL } from "./demo-flag.ts";
 import { Hq } from "./Hq.tsx";
 import { toVillageModel, type VillageModel } from "./model.ts";
 import { Now } from "./Now.tsx";
@@ -22,7 +23,7 @@ import { emptyWatch, stepWatch } from "./visits.ts";
 
 export type HubData = ReturnType<typeof useHub>;
 
-function useClock(ms: number): number {
+export function useClock(ms: number): number {
 	const [now, setNow] = useState(() => Date.now());
 	useEffect(() => {
 		const t = setInterval(() => setNow(Date.now()), ms);
@@ -100,26 +101,6 @@ export function Board({ hub }: { hub: HubData }) {
 	);
 }
 
-/** `?demo=1`: the same screen over made-up data. Nothing is fetched and nothing sounds. */
-export function DemoBoard() {
-	const now = useClock(1_000);
-	const [t0] = useState(() => Date.now());
-	const data = useMemo(() => demoData(t0), [t0]);
-	const model = useMemo(
-		() => toVillageModel({ ...data, now, conn: "open" }),
-		[data, now],
-	);
-	return (
-		<BoardView
-			model={model}
-			now={now}
-			reconnecting={false}
-			error={null}
-			demo={true}
-		/>
-	);
-}
-
 const MACHINE_WORD: Record<VillageModel["machines"][number]["status"], string> =
 	{
 		online: "켜짐",
@@ -143,7 +124,12 @@ export function BoardView({
 }) {
 	return (
 		<div className={`board border-${model.status.border}`}>
-			<header className="board-top">
+			<header
+				className="board-top"
+				style={{
+					transform: `translate(${burnInShift(now).x}px, ${burnInShift(now).y}px)`,
+				}}
+			>
 				<div className="board-sentence">{model.status.sentence}</div>
 				<ul className="board-machines" aria-label="머신">
 					{model.machines.map((m) => (

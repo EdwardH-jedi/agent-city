@@ -7,9 +7,9 @@ import type {
 	Session,
 	SessionStatus,
 } from "@agent-city/schema";
-import { useEffect, useMemo, useState } from "react";
-import { Board, DemoBoard } from "./board/Board.tsx";
-import { isDemo } from "./board/demo.ts";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { Board } from "./board/Board.tsx";
+import { isDemo } from "./board/demo-flag.ts";
 import { liveCountByRepo, machinesAt, runsAt } from "./merge.ts";
 import { NeedsOwner, Runs } from "./Runs.tsx";
 import {
@@ -68,9 +68,18 @@ function useRoute(): Route {
 	return route;
 }
 
+// the made-up data is a separate chunk: the live path never downloads it (§13.9)
+const DemoBoard = lazy(() => import("./board/DemoBoard.tsx"));
+
 /** `?demo=1` draws the board from made-up data and never opens the hub connection. */
 export function App() {
-	return isDemo(window.location.search) ? <DemoBoard /> : <LiveApp />;
+	return isDemo(window.location.search) ? (
+		<Suspense fallback={null}>
+			<DemoBoard />
+		</Suspense>
+	) : (
+		<LiveApp />
+	);
 }
 
 function LiveApp() {

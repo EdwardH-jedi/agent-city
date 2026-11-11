@@ -5,6 +5,8 @@
 //   sight, so a reload mid-walk resumes and an old visit is already arrived;
 // - a visit that leaves the list is not dropped: its lead walks back from where it stands and the
 //   visit is gone only once home (`settleVisits` prunes it);
+// - while the scene is still (reports stopped) an ending visit is dropped at once, so frozen figures
+//   never pile up;
 // - reduced motion → arrival and return are immediate;
 // - arrival and return are poses, nothing else: this module emits nothing.
 import type { CampusVisitor, Carry } from "./presentation.ts";
@@ -96,6 +98,11 @@ export function reconcileVisits(
 	now: number,
 	walkMsOf: WalkMsOf,
 	reducedMotion = false,
+	/**
+	 * Reports are stopped and the scene clock stands: a visit that ends now cannot walk back, so it is
+	 * forgotten at once instead of standing frozen (nothing piles up during a long outage).
+	 */
+	still = false,
 ): VisitBook {
 	const wanted = new Map<string, VisitorLike>();
 	for (const p of visitors)
@@ -106,6 +113,10 @@ export function reconcileVisits(
 	for (const v of book.visits) {
 		const p = wanted.get(v.visit_id);
 		if (!p) {
+			if (still) {
+				changed = true; // dropped: no frozen figure is left behind
+				continue;
+			}
 			if (v.left_at === null) {
 				// ended (resolved, or the report's 5 minutes are over): turn back from where it stands
 				changed = true;

@@ -302,24 +302,26 @@ tr.st-waiting td {
 }
 
 /* ── board ──────────────────────────────────────────────────────────────────
-   Main screen for a monitor seen from 1.5–2 m (design doc §3). Dark on purpose: it stays on all night.
-   Nothing below 16px. Reading size: status sentence 44px+, cards 22px+. */
+   Main screen for a monitor seen from 1.5–2 m (design doc §3, §13). Dark on purpose: it stays on all
+   night. One background colour; yellow / red / green only for state. Three text sizes only: the status
+   sentence 48px, 결재 cards and the bubble 24–28px, everything else 16–18px. Two weights (400, 700). */
 .board {
 	--b-bg: #0e1013;
-	--b-panel: #171a20;
 	--b-line: #2a2f38;
 	--b-fg: #f1f2f4;
-	--b-muted: #aab0bb;
+	--b-muted: #9aa1ac;
+	--b-dim: #5b616c;
 	--b-yellow: #f5c518;
 	--b-red: #ff4d4f;
 	--b-ok: #4ade80;
 	position: fixed;
 	inset: 0;
 	display: grid;
-	grid-template-rows: 72px 1fr;
+	grid-template-rows: 80px 1fr;
 	background: var(--b-bg);
 	color: var(--b-fg);
 	font-size: 16px;
+	font-weight: 400;
 	line-height: 1.35;
 	overflow: hidden;
 }
@@ -338,14 +340,13 @@ tr.st-waiting td {
 	border-color: var(--b-yellow);
 }
 .board h2 {
-	font-size: 20px;
+	font-size: 18px;
+	font-weight: 700;
 	margin: 0 0 10px;
 	color: var(--b-muted);
-	letter-spacing: 0.02em;
 }
-.board code {
-	font-size: 16px;
-	color: var(--b-muted);
+.board b {
+	font-weight: 700;
 }
 .board-top {
 	display: flex;
@@ -353,11 +354,12 @@ tr.st-waiting td {
 	gap: 28px;
 	padding: 0 28px;
 	border-bottom: 1px solid var(--b-line);
+	transition: transform 1s;
 }
 .board-sentence {
-	font-size: 44px;
+	font-size: 48px;
 	font-weight: 700;
-	line-height: 72px;
+	line-height: 80px;
 	white-space: nowrap;
 }
 .border-red .board-sentence {
@@ -398,28 +400,37 @@ tr.st-waiting td {
 	color: var(--b-red);
 }
 .board-counts {
-	font-size: 22px;
+	font-size: 18px;
 	display: flex;
 	align-items: baseline;
 	gap: 8px;
 	white-space: nowrap;
 }
 .board-link {
-	margin-left: 20px;
 	font-size: 16px;
 	color: var(--b-muted);
 }
+.demo-band {
+	padding: 4px 14px;
+	white-space: nowrap;
+	border: 1px solid var(--b-muted);
+	border-radius: 6px;
+	color: var(--b-fg);
+	font-size: 18px;
+	font-weight: 700;
+}
 .conn-band {
 	position: fixed;
-	top: 72px;
+	top: 80px;
 	left: 50%;
 	transform: translateX(-50%);
 	z-index: 5;
 	padding: 6px 24px;
-	background: #3b2a00;
-	border: 1px solid var(--b-yellow);
+	background: var(--b-bg);
+	border: 2px solid var(--b-yellow);
 	border-radius: 0 0 10px 10px;
-	font-size: 20px;
+	font-size: 18px;
+	font-weight: 700;
 }
 .board-error {
 	position: fixed;
@@ -428,23 +439,11 @@ tr.st-waiting td {
 	color: var(--b-muted);
 	font-size: 16px;
 }
+/* §13.7: left 320, right 300, the village takes the rest */
 .board-body {
 	display: grid;
-	grid-template-columns: clamp(300px, 19vw, 380px) minmax(0, 1fr) clamp(
-			300px,
-			19vw,
-			380px
-		);
+	grid-template-columns: 320px minmax(0, 1fr) 300px;
 	min-height: 0;
-}
-.demo-band {
-	padding: 4px 14px;
-	white-space: nowrap;
-	border-radius: 6px;
-	background: #3a2d5c;
-	color: #e9e1ff;
-	font-size: 20px;
-	font-weight: 700;
 }
 .hq,
 .now {
@@ -478,7 +477,8 @@ tr.st-waiting td {
 }
 /* a list that never cuts a row in half: what does not fit wraps into a second column out of sight */
 .cards,
-.incidents {
+.incidents,
+.now-list {
 	list-style: none;
 	margin: 0;
 	padding: 0;
@@ -487,23 +487,19 @@ tr.st-waiting td {
 	flex-wrap: wrap;
 	align-content: flex-start;
 	column-gap: 64px;
-	row-gap: 12px;
+	row-gap: 14px;
 	overflow: hidden;
 	min-height: 0;
 }
 .cards > li,
-.incidents > li {
+.incidents > li,
+.now-list > li {
 	width: 100%;
 	flex: none;
 }
-.now .cards {
-	flex: 1;
-}
 .card {
-	background: var(--b-panel);
 	border-left: 6px solid var(--b-line);
-	border-radius: 6px;
-	padding: 12px 14px;
+	padding: 4px 0 4px 14px;
 	display: grid;
 	gap: 4px;
 }
@@ -514,7 +510,7 @@ tr.st-waiting td {
 	border-left-color: var(--b-red);
 }
 .card-project {
-	font-size: 22px;
+	font-size: 24px;
 	font-weight: 700;
 	display: flex;
 	justify-content: space-between;
@@ -533,18 +529,13 @@ tr.st-waiting td {
 	color: var(--b-muted);
 }
 .card-text {
-	font-size: 24px;
+	font-size: 26px;
 	overflow-wrap: anywhere;
 }
 .card code {
-	overflow-wrap: anywhere;
-}
-.card-meta {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	color: var(--b-muted);
 	font-size: 16px;
+	color: var(--b-muted);
+	overflow-wrap: anywhere;
 }
 .hq-away {
 	flex: 1;
@@ -554,51 +545,55 @@ tr.st-waiting td {
 }
 .incidents {
 	flex: 1;
-	row-gap: 8px;
+	row-gap: 6px;
 }
-.incidents li {
-	display: grid;
-	grid-template-columns: 52px auto minmax(0, 1fr);
-	column-gap: 10px;
-	align-items: baseline;
+/* §13.4: one dim line each, `17:03 docs T3 통과`, ellipsis when long */
+.inc {
+	display: flex;
+	gap: 10px;
+	color: var(--b-muted);
 	font-size: 16px;
-	padding-bottom: 6px;
-	border-bottom: 1px solid var(--b-line);
+	white-space: nowrap;
+	overflow: hidden;
 }
 .inc-time {
-	color: var(--b-muted);
+	flex: none;
 }
 .inc-project {
-	font-weight: 700;
+	flex: none;
 	max-width: 110px;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 .inc-text {
-	font-size: 18px;
+	min-width: 0;
 	overflow: hidden;
-	overflow-wrap: anywhere;
-	display: -webkit-box;
-	-webkit-box-orient: vertical;
-	-webkit-line-clamp: 2;
-	line-clamp: 2;
+	text-overflow: ellipsis;
 }
-.now-shared {
-	display: block;
+.inc-day {
 	margin-top: 4px;
+	padding-top: 4px;
+	border-top: 1px solid var(--b-line);
+	color: var(--b-dim);
 	font-size: 16px;
-	font-weight: 400;
 }
-.now-workflow {
-	color: var(--b-muted);
+/* §13.5: two lines per run */
+.now-line {
 	font-size: 18px;
+	font-weight: 700;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.now-age {
+	font-weight: 400;
+	color: var(--b-muted);
 }
 .phases {
 	display: grid;
 	grid-template-columns: repeat(9, 1fr);
 	gap: 3px;
-	margin: 6px 0 2px;
+	margin-top: 6px;
 }
 .phase {
 	height: 12px;
@@ -611,25 +606,15 @@ tr.st-waiting td {
 .phase-now {
 	background: var(--b-ok);
 }
-.now-phase {
-	font-size: 22px;
-}
-.now-flag {
-	color: var(--b-yellow);
+.now-slow .phase-now {
+	background: var(--b-yellow);
 }
 .now-stale {
-	opacity: 0.7;
+	opacity: 0.6;
 }
 
-/* ── the village (2D): evening tones, names and pictures only ─────────────── */
+/* ── the village (2D tile grid, §13.10) ───────────────────────────────────── */
 .village {
-	--v-sky: #1c2036;
-	--v-ground: #141622;
-	--v-wall: #2b2838;
-	--v-roof: #4a3d52;
-	--v-window: #1b1d27;
-	--v-lit: #ffcf70;
-	--v-figure: #d9d4c7;
 	position: relative;
 	padding: 22px 28px;
 	display: flex;
@@ -638,46 +623,40 @@ tr.st-waiting td {
 	gap: 14px;
 	overflow: hidden;
 	min-height: 0;
-	background: linear-gradient(var(--v-sky), var(--v-ground) 55%);
 	transition: filter 0.6s;
 }
 /* reports stopped (Mac or this screen): dim the village. Nothing in it moves. */
 .village-dim {
 	filter: saturate(0.35) brightness(0.6);
 }
-.village .building-name {
-	font-size: 22px;
+.tile-name {
+	font-size: 18px;
 	font-weight: 700;
-	color: var(--b-fg);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	max-width: 100%;
 }
-.hq-building {
+.hq-tile {
 	flex: none;
-	width: min(520px, 100%);
-	padding: 12px 24px 14px;
+	width: min(420px, 100%);
+	padding: 12px 20px;
 	display: flex;
 	align-items: center;
 	gap: 24px;
-	background: var(--v-wall);
-	border-top: 10px solid var(--v-roof);
-	border-radius: 6px;
-}
-.hq-building .building-name {
-	font-size: 28px;
+	border: 2px solid var(--b-muted);
+	border-radius: 8px;
 }
 .hq-rooms {
 	display: flex;
 	align-items: flex-end;
 	gap: 28px;
-	min-height: 44px;
+	min-height: 40px;
 	min-width: 0;
 }
 .lobby {
 	display: flex;
-	gap: 10px;
+	gap: 12px;
 	flex-wrap: wrap;
 	min-width: 0;
 }
@@ -685,32 +664,30 @@ tr.st-waiting td {
 .fig {
 	position: relative;
 	display: inline-block;
-	width: 16px;
-	height: 24px;
+	width: 14px;
+	height: 22px;
 	margin-top: 14px;
 	border-radius: 7px 7px 3px 3px;
-	background: var(--v-figure);
+	background: var(--b-muted);
 	flex: none;
 }
 .fig::before {
 	content: "";
 	position: absolute;
-	left: 2px;
-	top: -14px;
+	left: 1px;
+	top: -13px;
 	width: 12px;
 	height: 12px;
 	border-radius: 50%;
 	background: inherit;
 }
 .fig-owner {
-	background: #f0e2c0;
-	box-shadow: 0 6px 0 -1px #6b5a45;
+	background: var(--b-fg);
 }
 .fig-chair {
 	background: transparent;
-	border: 3px solid #6b5a45;
+	border: 3px solid var(--b-dim);
 	border-top-width: 10px;
-	box-shadow: none;
 }
 .fig-chair::before {
 	display: none;
@@ -722,7 +699,7 @@ tr.st-waiting td {
 	content: "";
 	position: absolute;
 	right: -9px;
-	top: 8px;
+	top: 7px;
 	width: 10px;
 	height: 13px;
 	border-radius: 2px;
@@ -734,7 +711,7 @@ tr.st-waiting td {
 	background: var(--b-red);
 }
 .fig-report {
-	background: #8fb8ff;
+	background: var(--b-fg);
 }
 .fig-report::after {
 	display: none;
@@ -744,13 +721,6 @@ tr.st-waiting td {
 		transform: translateY(-3px);
 	}
 }
-.fig-gone {
-	background: transparent;
-	outline: 2px dashed #3b3a48;
-}
-.fig-gone::before {
-	display: none;
-}
 .door {
 	flex: none;
 	min-height: 52px;
@@ -759,92 +729,71 @@ tr.st-waiting td {
 	width: 100%;
 }
 .bubble {
-	position: relative;
 	margin: 0;
-	max-width: min(640px, 100%);
-	padding: 8px 16px;
-	border-radius: 12px;
-	background: #f4efe4;
-	color: #1d1b22;
-	font-size: 22px;
+	max-width: min(720px, 100%);
+	padding: 6px 16px;
+	border: 2px solid var(--b-fg);
+	border-radius: 14px;
+	font-size: 24px;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
-.bubble::before {
-	content: "";
-	position: absolute;
-	top: -8px;
-	left: calc(50% - 8px);
-	border: 8px solid transparent;
-	border-top: 0;
-	border-bottom-color: #f4efe4;
-}
-.buildings {
+.tiles {
 	list-style: none;
 	margin: 0;
 	padding: 0;
 	width: 100%;
 	display: grid;
 	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 18px;
+	gap: 16px;
 	align-content: start;
 }
-.building {
+.tile {
 	position: relative;
 	min-width: 0;
-	padding: 10px 12px 12px;
+	padding: 12px 14px;
 	display: grid;
+	gap: 12px;
+	border: 1px solid var(--b-line);
+	border-radius: 8px;
+}
+.tile-on {
+	border-color: #2f7d4f;
+}
+.tile .tile-name {
+	padding-right: 34px;
+}
+.dots {
+	display: flex;
 	gap: 10px;
-	background: var(--v-wall);
-	border-top: 8px solid var(--v-roof);
-	border-radius: 6px;
 }
-.building .building-name {
-	padding-right: 22px;
-}
-.windows {
-	display: grid;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 6px;
-	padding-right: 24px;
-}
-.win {
-	height: 30px;
+.dot {
+	width: 16px;
+	height: 16px;
 	border-radius: 3px;
-	background: var(--v-window);
-	font-style: normal;
-	font-size: 16px;
-	line-height: 30px;
-	text-align: center;
-	color: #3d2a05;
-	font-weight: 700;
+	background: var(--b-line);
 }
-.win-on {
-	background: var(--v-lit);
-	box-shadow: 0 0 10px #ffcf7055;
+.dot-on {
+	background: var(--b-ok);
+	box-shadow: 0 0 12px var(--b-ok);
 }
-.building .fig-lead {
-	position: absolute;
-	right: 10px;
-	bottom: 12px;
-	margin: 0;
-}
+/* a flag big enough to see from 2 m */
 .flag {
 	position: absolute;
-	top: 6px;
-	right: 14px;
-	width: 3px;
-	height: 26px;
-	background: #ccc;
+	top: 8px;
+	right: 12px;
+	width: 4px;
+	height: 40px;
+	background: var(--b-muted);
 }
 .flag::after {
 	content: "";
 	position: absolute;
-	left: 3px;
+	left: 4px;
 	top: 0;
 	border-style: solid;
-	border-width: 8px 0 8px 18px;
+	border-width: 12px 0 12px 26px;
 	border-color: transparent;
 }
 .flag-yellow::after {
@@ -853,16 +802,19 @@ tr.st-waiting td {
 .flag-red::after {
 	border-left-color: var(--b-red);
 }
-/* reports stopped: every figure stands where it is */
-.village-dim .fig {
-	animation: none;
+.tile:has(.flag) {
+	min-height: 64px;
+}
+/* nothing running: clearly dark (the flag keeps full strength) */
+.tile-off .tile-name,
+.tile-off .dots {
+	opacity: 0.35;
 }
 
 /* ── the campus (3D, lazy): canvas, name tags, the one bubble at the HQ door ─ */
 .campus {
 	padding: 0;
 	position: relative;
-	background: #1f2438;
 }
 .campus-night {
 	filter: brightness(0.82);
@@ -891,29 +843,28 @@ tr.st-waiting td {
 	white-space: nowrap;
 	will-change: transform;
 }
+/* name tags: names only; long ones end in an ellipsis and are kept inside the stage (engine) */
 .cmp-pin {
-	translate: -50% 0;
+	max-width: 200px;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	padding: 2px 10px;
 	border-radius: 6px;
-	background: #14161fcc;
+	background: #0e1013cc;
 	color: var(--b-fg);
 	font-size: 18px;
 	font-weight: 700;
 }
-.cmp-pin-hq {
-	font-size: 22px;
-	color: #f0d9a0;
-}
 .cmp-bubble {
-	translate: -50% -100%;
 	max-width: 70%;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	padding: 8px 16px;
-	border-radius: 12px;
-	background: #f4efe4;
-	color: #1d1b22;
-	font-size: 22px;
+	padding: 6px 16px;
+	border: 2px solid var(--b-fg);
+	border-radius: 14px;
+	background: #0e1013e6;
+	color: var(--b-fg);
+	font-size: 24px;
 }
 .cmp-bubble[hidden] {
 	display: none;
@@ -922,4 +873,8 @@ tr.st-waiting td {
 	position: absolute;
 	right: 20px;
 	bottom: 16px;
+}
+/* reports stopped: every figure stands where it is */
+.village-dim .fig {
+	animation: none;
 }

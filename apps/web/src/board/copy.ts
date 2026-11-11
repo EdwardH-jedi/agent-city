@@ -49,8 +49,49 @@ export const STOP_PHRASES: Readonly<Record<string, string>> = {
 	MISSION_RECONCILIATION_REQUIRED: RECONCILE,
 	PLANNER_INTERRUPTED: RECONCILE,
 	EVENT_LOG_TORN: RECONCILE,
-	// PRESERVED_ON_HOLD is deliberately absent: its sentence is the owner's call (doc §12.4).
+	// Confirmed in Agent Office server/pipeline/lifecycle.mjs (read only):
+	// a dispatch ended before every planned task was complete (status READY or HOLD)
+	DISPATCH_STOPPED: "계획한 작업을 다 끝내기 전에 멈췄습니다.",
+	// the run was closed before Report; it is recorded PARTIAL and the worktree is kept
+	PRESERVED_ON_HOLD:
+		"끝까지 가기 전에 닫았습니다. 작업 폴더는 남겨 두었습니다.",
 };
+
+/**
+ * The short words of 자리 비운 사이 (§13.4: one line, `시각 · 프로젝트 · 짧은 말`). Never a code string;
+ * the code stays in the detail view.
+ */
+export const SHORT = {
+	sign: "결재 요청",
+	stopped: "멈춤",
+	passed: "전부 끝남",
+	partial: "일부만 끝냄",
+	unknown: "확인 필요",
+} as const;
+
+/** Short words for the codes the table knows, where the state alone says less. */
+const CODE_SHORT: Readonly<Record<string, string>> = {
+	DISPATCH_STOPPED: "중간에 멈춤",
+	PRESERVED_ON_HOLD: "일부만 끝냄 · 폴더 보존",
+};
+
+export const codeShort = (code: string | null): string | null =>
+	code ? (CODE_SHORT[code] ?? null) : null;
+
+/** `T3 통과`, `opus로 올림`; null when the table has nothing for the transition. */
+export function eventShort(
+	e: Pick<RunEventView, "transition" | "task_id"> &
+		Partial<Pick<RunEventView, "to_model">>,
+): string | null {
+	switch (e.transition) {
+		case "task.completed":
+			return `${e.task_id ?? "작업"} 통과`;
+		case "task.escalated":
+			return e.to_model ? `${e.to_model}로 올림` : "모델 올림";
+		default:
+			return null;
+	}
+}
 
 /**
  * The sentence for a run that needs the owner (or is stopped). A HOLD run's own reason is also in

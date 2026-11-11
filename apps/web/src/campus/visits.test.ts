@@ -146,6 +146,23 @@ describe("visit scheduler", () => {
 	});
 });
 
+describe("while still, nothing piles up (Codex P1)", () => {
+	test("a visit that ends while the scene is still is dropped at once, also one already walking back", () => {
+		let book = EMPTY_BOOK;
+		// a long outage: 50 visits come and go while the clock stands
+		for (let i = 0; i < 50; i += 1) {
+			book = reconcileVisits(book, [visitor(i)], T0, walk, false, true);
+			expect(book.visits.length).toBeLessThanOrEqual(1);
+		}
+		const b1 = reconcileVisits(EMPTY_BOOK, [visitor(1)], T0, walk);
+		const leaving = reconcileVisits(b1, [], T0 + 1_000, walk);
+		expect(leaving.visits).toHaveLength(1);
+		expect(
+			reconcileVisits(leaving, [], T0 + 2_000, walk, false, true).visits,
+		).toEqual([]);
+	});
+});
+
 describe("the still clock (reports stopped: every figure stops where it is)", () => {
 	test("time stands while still and resumes without a jump", () => {
 		let c = START_CLOCK;

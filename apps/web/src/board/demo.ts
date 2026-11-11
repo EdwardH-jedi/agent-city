@@ -10,10 +10,7 @@ import type {
 import type { Districts, RepoView } from "../useHub.ts";
 import { type EventsByRun, runKey } from "./types.ts";
 
-export const isDemo = (search: string): boolean =>
-	new URLSearchParams(search).get("demo") === "1";
-
-export const DEMO_LABEL = "예시 데이터";
+export { DEMO_LABEL, isDemo } from "./demo-flag.ts";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;

@@ -90,20 +90,27 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
   in the page URL: `?quiet=22-7`, `?quiet=off`, `?sound=off`. No environment variable. Browsers refuse
   sound until the page has been interacted with, unless the kiosk browser allows autoplay.
 - A run code that is not in the phrase table (`apps/web/src/board/copy.ts`) is shown as
-  `확인이 필요합니다` plus the code; the board never guesses what it means.
-- **The village** stands at most 8 project buildings (most urgent first); the rest fold into one
-  `외 N곳` sign. A building holds its name and pictures only (lit windows = running runs, a yellow / red
-  flag, the lead at the door). One speech bubble at the HQ door says the newest report; 결재 speak through
-  the HQ 대기 cards. The village dims and every figure stops when the cockpit or this screen's hub
-  connection goes quiet.
+  `확인이 필요합니다` plus the code on its card (`확인 필요` in 자리 비운 사이); the board never guesses what it
+  means. `DISPATCH_STOPPED` and `PRESERVED_ON_HOLD` were checked against Agent Office's
+  `server/pipeline/lifecycle.mjs` and have sentences.
+- **Screen rules (design doc 07 §13).** One fact, one place: a 결재 sentence only on its HQ 대기 card, the
+  newest report only in the one bubble at the HQ door. Three text sizes (48 · 24–28 · 16–18 px). 자리 비운
+  사이 is one short dim line per item (`17:03 docs T3 통과`, at most 6, a `어제` divider where the date
+  changes, no code strings). 지금 진행 is two lines per run (`프로젝트 · 단계`, the nine-phase bar; at most 5,
+  then `+N`). Columns are 320 px / village / 300 px.
+- **The village** stands at most 8 project buildings, by recent activity (a flagged one always stands);
+  the rest fold into one `조용함 N곳` sign. A building holds its name and pictures only: lit windows for
+  running runs (dark when nothing runs), a big yellow (결재) or red (멈춤) flag. The village dims and every
+  figure stops when the cockpit or this screen's hub connection goes quiet.
 - **The 3D campus** (`apps/web/src/campus/`, a lazy chunk with `three`) draws the same model: a fixed
   panorama camera (it never moves or follows anything), building names only, the lead walking to the HQ
   for a 결재 (folder = 승인 대기, binder = 멈춤) or a report and walking back when it ends, the owner at the
   HQ desk while the cockpit is `online` (an empty chair otherwise), the one bubble at the HQ door, and
-  evening colours (a little darker during the `?quiet=` hours). It has no pointer or keyboard input. Without
-  WebGL, or if the GPU context is lost, the 2D grid is shown instead.
-- **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`)
-  so it can be looked at without a running Office. It opens no hub connection, plays no sound and says
+  evening colours (a little darker during the `?quiet=` hours), working buildings lit warm from inside. It
+  has no pointer or keyboard input. Without WebGL, if the scene chunk cannot load, or if the GPU context is
+  lost, the 2D tile grid is shown instead.
+- **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`, in
+  its own lazy chunk that the live page never loads) so it can be looked at without a running Office. It opens no hub connection, plays no sound and says
   `예시 데이터` in the top band. Without `?demo=1` only hub data is ever shown.
 
 ### Serving the web UI from the hub
@@ -439,8 +446,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\kiosk\install-board.
   doc 07 §12.1); the scripts never enable it.
 - **Sound.** Whether Edge/Chrome on spine actually plays the knock with the autoplay flag is not yet
   confirmed (doc 07 §5). Quiet hours and muting stay in the URL: `-Url "http://127.0.0.1:4317/?quiet=23-8"`.
-- **Burn-in.** Moving the top band a pixel or two every few minutes is part of V3 but is web code, not
-  a script; it is not done yet.
+- **Burn-in.** The board itself moves its top band by 1–2 px every 3 minutes (a slow loop, never more
+  than 2 px from where it started; `apps/web/src/board/burnin.ts`).
 
 ## Security model
 

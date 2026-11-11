@@ -3,16 +3,7 @@
 // every word the owner needs is in the side columns (design doc §2.4).
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { type CampusEngine, createCampusEngine } from "./engine.ts";
-import type { CampusModel } from "./presentation.ts";
-
-export interface CampusSceneProps {
-	model: CampusModel;
-	/** prefers-reduced-motion: leads are already where they go. */
-	reducedMotion: boolean;
-	/** Called once if WebGL cannot start or the context is lost (the 2D grid takes over). */
-	onUnavailable(reason: "context_lost" | "init_failed"): void;
-	onReady?(): void;
-}
+import type { CampusSceneProps } from "./presentation.ts";
 
 export default function CampusScene(props: CampusSceneProps) {
 	const host = useRef<HTMLDivElement>(null);
