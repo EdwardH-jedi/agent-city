@@ -6,6 +6,7 @@ import type {
 	MachineView,
 	Provider,
 	Repo,
+	RunEventView,
 	RunView,
 	Session,
 } from "@agent-city/schema";
@@ -168,4 +169,58 @@ export function useHub(filter: EventFilter) {
 	}, [loadSnapshot, loadSessions, loadEvents]);
 
 	return { districts, sessions, events, machines, runs, conn, error };
+}
+
+/** What the board needs to know changed about a run before its events are fetched again. */
+const eventsSignature = (r: RunView) =>
+	`${r.ledger_revision}:${r.last_event_sequence ?? "-"}`;
+
+/**
+ * Recent events (newest first) of the given runs, keyed `${machine_id}:${run_id}`. GET only. There is no
+ * websocket message for run events, so a run's events are fetched again whenever its ledger revision or
+ * last event sequence changes. A failed fetch keeps what was there.
+ */
+export function useRunEvents(
+	runs: readonly RunView[],
+): ReadonlyMap<string, readonly RunEventView[]> {
+	const [byRun, setByRun] = useState<
+		ReadonlyMap<string, readonly RunEventView[]>
+	>(new Map());
+	const fetched = useRef(new Map<string, string>());
+	// per hook, not per effect run: a fetch started for an earlier set of runs must still land
+	const alive = useRef(true);
+	useEffect(() => {
+		alive.current = true;
+		return () => {
+			alive.current = false;
+		};
+	}, []);
+	// a stable string, so a new array of identical runs does not refetch
+	const wanted = runs
+		.map((r) => `${r.machine_id}\u0000${r.run_id}\u0000${eventsSignature(r)}`)
+		.sort()
+		.join("\u0001");
+
+	useEffect(() => {
+		for (const item of wanted ? wanted.split("\u0001") : []) {
+			const [machine = "", id = "", sig = ""] = item.split("\u0000");
+			const key = `${machine}:${id}`;
+			if (fetched.current.get(key) === sig) continue;
+			fetched.current.set(key, sig);
+			getJson<{ events: RunEventView[] }>(
+				`/api/runs/${encodeURIComponent(machine)}/${encodeURIComponent(id)}/events?limit=100`,
+			)
+				.then((r) => {
+					// a reply to an older request never replaces a newer one
+					if (!alive.current || fetched.current.get(key) !== sig) return;
+					setByRun((cur) => new Map(cur).set(key, r.events));
+				})
+				.catch(() => {
+					// try again on the next change; the board keeps showing the last events it had
+					if (fetched.current.get(key) === sig) fetched.current.delete(key);
+				});
+		}
+	}, [wanted]);
+
+	return byRun;
 }

@@ -1,5 +1,5 @@
-// Phase 0 2D view: repos by district · live sessions (waiting pinned) · event stream.
-// Data validation only — the 3D city comes in Phase 1.
+// Two screens over one hub connection: the board (default: status, HQ queue, project village, what is
+// running now) and the detail tables (#/detail, key D) — the Phase 0 view, unchanged.
 import type {
 	Event,
 	MachineView,
@@ -8,6 +8,8 @@ import type {
 	SessionStatus,
 } from "@agent-city/schema";
 import { useEffect, useMemo, useState } from "react";
+import { Board, DemoBoard } from "./board/Board.tsx";
+import { isDemo } from "./board/demo.ts";
 import { liveCountByRepo, machinesAt, runsAt } from "./merge.ts";
 import { NeedsOwner, Runs } from "./Runs.tsx";
 import {
@@ -40,13 +42,61 @@ function ago(iso: string | null, now: number): string {
 
 const repoName = (id: string | null) => (id ? (id.split("/")[1] ?? id) : "—");
 
+type Route = "board" | "detail";
+const routeOf = (): Route =>
+	window.location.hash === "#/detail" ? "detail" : "board";
+
+// The hash picks the screen; the D key flips it (not while typing in a filter).
+function useRoute(): Route {
+	const [route, setRoute] = useState<Route>(routeOf);
+	useEffect(() => {
+		const onHash = () => setRoute(routeOf());
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key.toLowerCase() !== "d" || e.ctrlKey || e.metaKey || e.altKey)
+				return;
+			const tag = (e.target as HTMLElement | null)?.tagName;
+			if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+			window.location.hash = routeOf() === "detail" ? "#/" : "#/detail";
+		};
+		window.addEventListener("hashchange", onHash);
+		window.addEventListener("keydown", onKey);
+		return () => {
+			window.removeEventListener("hashchange", onHash);
+			window.removeEventListener("keydown", onKey);
+		};
+	}, []);
+	return route;
+}
+
+/** `?demo=1` draws the board from made-up data and never opens the hub connection. */
 export function App() {
+	return isDemo(window.location.search) ? <DemoBoard /> : <LiveApp />;
+}
+
+function LiveApp() {
 	const [filter, setFilter] = useState<EventFilter>({
 		repo: null,
 		provider: null,
 	});
-	const { districts, sessions, events, machines, runs, conn, error } =
-		useHub(filter);
+	const hub = useHub(filter);
+	const route = useRoute();
+	return route === "detail" ? (
+		<Detail hub={hub} filter={filter} setFilter={setFilter} />
+	) : (
+		<Board hub={hub} />
+	);
+}
+
+function Detail({
+	hub,
+	filter,
+	setFilter,
+}: {
+	hub: ReturnType<typeof useHub>;
+	filter: EventFilter;
+	setFilter: (f: EventFilter) => void;
+}) {
+	const { districts, sessions, events, machines, runs, conn, error } = hub;
 	const now = useNow(5_000);
 	// machine and run states are re-derived from this screen's clock every tick (no message needed)
 	const shownMachines = useMemo(
@@ -75,6 +125,7 @@ export function App() {
 			<header>
 				<h1>Agent City</h1>
 				<ConnBadge conn={conn} />
+				<a href="#/">보드로 (D)</a>
 				{error && <span className="err">{error}</span>}
 			</header>
 			<Machines machines={shownMachines} now={now} />
