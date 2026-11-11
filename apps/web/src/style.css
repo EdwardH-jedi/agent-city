@@ -531,6 +531,10 @@ tr.st-waiting td {
 }
 .card-text {
 	font-size: 24px;
+	overflow-wrap: anywhere;
+}
+.card code {
+	overflow-wrap: anywhere;
 }
 .card-meta {
 	display: flex;
@@ -571,6 +575,7 @@ tr.st-waiting td {
 .inc-text {
 	font-size: 18px;
 	overflow: hidden;
+	overflow-wrap: anywhere;
 	display: -webkit-box;
 	-webkit-box-orient: vertical;
 	-webkit-line-clamp: 2;
