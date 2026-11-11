@@ -120,8 +120,8 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
   only once the Mac is back, and a 60 s count that had not finished starts again from zero then.
 - **Paused runs (decision D2).** `paused` (Office's loop ended for the day with tasks left) is not a 결재:
   no visit, no border, no sound, its building dark with the lead inside. It is listed under HQ 대기 as
-  `쉬는 중 · 이어서 실행 필요` with `오늘 몫은 끝났습니다. 남은 작업이 있습니다.` The morning after it paused,
-  when the quiet hours end (08:00 by default, the `?quiet=` end hour), the board knocks once — once per
+  `쉬는 중 · 이어서 실행 필요` with `오늘 몫은 끝났습니다. 남은 작업이 있습니다.` The first time the quiet hours end
+  after it paused (08:00 by default, the `?quiet=` end hour), the board knocks once — once per
   paused run per day. A morning that passes while the board may not sound (cockpit offline, `?sound=off`)
   or before the page was opened is not made up later.
 - **Sessions (decision D4).** Claude Code / Codex sessions from `GET /api/sessions` and ws `session` (no
@@ -560,18 +560,35 @@ The following work is planned, not implemented by the telemetry layer above.
   exposing a hub beyond loopback
 - Service units for the hub, Codex tailer, and SSH tunnels remain to be added
 - Old token-scoped `github_etags` rows are not automatically pruned
-- Board, session wait: the start of a wait lives only in screen memory, so after a reload a second
-  `Notification` (a later `last_event_at`) becomes the start. A wait at 0 min, a knock at 1 min, a
-  second `Notification` at 20 min and a reload give a second knock at 21 min, and the move to the
-  waiting list at 50 min instead of 30 (`sessions.ts`, `splitWaiting`)
-- Board, knock: a visit that starts inside the 5 s settle window gets no knock, then or later (wait
-  starts 07:59:02, visit 08:00:02 during settle) (`sound.ts`)
-- Board, runs: a run seen for the first time is timed from `last_progress_at`, so a run whose last
-  progress is 10 min old and that has just raised `FAILED_PROCESS_RECONCILE` shows its visit and red
-  border at once when the screen opens, instead of after 60 s (`visits.ts`)
-- Board, offline: a model built without the watch cannot restart the 60 s count when the cockpit
-  returns, so a wait of 100 s, stale at 140 s and a model built online at 1000 s shows the visit at
-  once. The Board always passes a watch, so the screen is not affected today (`visits.ts`)
-- Board, paused runs: the morning knock compares `pausedSeen < due.end`, which leaves out the exact
-  boundary; a run paused since the day before and first received at exactly 08:00:00 gets no knock
-  that morning (`sound.ts`)
+- Board known limits: open P2s from the Codex reviews of `feat/board-sessions` (line numbers as of
+  `0855f2b`). Accepted for now; if the kiosk shows a real miss, the dwell logic is to be reworked as
+  one function rather than patched piece by piece.
+  - P2-1 `sessions.ts:282`: a wait's start is kept only in screen memory, so after a reload a later
+    `Notification` becomes the start (a second knock, and the list move at 50 min instead of 30).
+  - P2-2 `sound.ts:166`: a visit that starts inside the 5 s settle window gets no knock, then or later.
+  - P2-3 `visits.ts:266`: a run seen for the first time is timed from `last_progress_at`, so a
+    long-stuck run shows its visit and border at once instead of after 60 s.
+  - P2-4 `visits.ts:89`: a model built without the watch cannot restart the 60 s count on return (the
+    Board always passes one, so the screen is not affected).
+  - P2-5 `sound.ts:147`: the morning knock leaves out the exact boundary (`pausedSeen < due.end`), so a
+    run first received at exactly 08:00:00 gets none that morning.
+  - #1 `sessions.ts:157`: heartbeats the screen missed (skipped ticks) are taken for an outage and
+    restart the count, so a visit that is already due waits up to 120 s more.
+  - #2 `sessions.ts:209`: an outage that falls between two skipped ticks resets a count that had
+    already finished.
+  - #3 `sessions.ts:211`: elapsed time is a wall-clock difference, so a clock set back delays the
+    60 s rule.
+  - #4 `sessions.ts:259`: without a reload, the 30 min move is counted from the first wait, not from a
+    later last activity.
+  - #5 `sessions.ts:212`: a visit that was unfinished at the last tick before stale can start while
+    stale.
+  - #6 `model.ts:270`: while stale, a new run state is applied as it comes, which removes an existing
+    결재 visit and border.
+  - #7 `visits.ts:330`: report visits do not go through the offline gate, so one can appear or expire
+    while stale.
+  - #8 `sessions.ts:61`: the 7-day cutoff is applied while offline and can remove a standing session
+    visit.
+  - #9 `sound.ts:153`: if the screen misses every tick of an outage in a background tab, a morning
+    knock that fell due during it sounds as soon as the cockpit returns.
+  - #12 `App.tsx:325` (the detail screen, older than this branch): the tooltip of a session row without
+    `repo_id` shows its `cwd`.
