@@ -5,6 +5,7 @@ import {
 	parseSoundPrefs,
 	planSounds,
 	REMIND_MS,
+	SETTLE_MS,
 	type SoundMemory,
 } from "./sound.ts";
 
@@ -140,5 +141,55 @@ describe("planSounds", () => {
 			false,
 		);
 		expect(during.memory.lastKnockAt).toBe(T);
+	});
+});
+
+describe("the sequence the board produces (no sound on load or reconnect)", () => {
+	const T = 50_000_000;
+	const full = { waiting: ["a"], stopped: ["b"], passed: ["c", "d"] };
+	test("empty while the snapshot is loading, then everything arrives: silent", () => {
+		let r = planSounds(null, none, T, false); // not loaded yet
+		r = planSounds(r.memory, none, T + 1000, false);
+		// the screen is now connected and loaded; the data lands in the same tick
+		const landed = planSounds(r.memory, full, T + 2000, true);
+		expect(landed.cues).toEqual([]);
+		// the window runs from the last silent tick (T+1000): later arrivals inside it are absorbed too
+		const more = planSounds(
+			landed.memory,
+			{ ...full, passed: ["c", "d", "e"] },
+			T + 1000 + SETTLE_MS - 1,
+			true,
+		);
+		expect(more.cues).toEqual([]);
+	});
+	test("after settling, a genuinely new 결재 knocks", () => {
+		const r0 = planSounds(null, none, T, false);
+		const r1 = planSounds(r0.memory, full, T + 1000, true);
+		const later = T + 1000 + SETTLE_MS + 1;
+		const r2 = planSounds(r1.memory, full, later, true);
+		expect(r2.cues).toEqual([]);
+		const r3 = planSounds(
+			r2.memory,
+			{ ...full, waiting: ["a", "z"] },
+			later + 1000,
+			true,
+		);
+		expect(r3.cues).toEqual(["knock"]);
+	});
+	test("a reconnect (conn open before the snapshot lands) does not sound what was missed", () => {
+		const live = planSounds(
+			mem({ settleUntil: 0, lastKnockAt: T }),
+			none,
+			T,
+			true,
+		);
+		const down = planSounds(live.memory, none, T + 10_000, false);
+		const open = planSounds(
+			down.memory,
+			{ ...none, stopped: ["x"], passed: ["y"] },
+			T + 11_000,
+			true,
+		);
+		expect(open.cues).toEqual([]);
 	});
 });

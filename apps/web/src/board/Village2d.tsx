@@ -32,6 +32,10 @@ function whereIsTheLead(model: VillageModel, p: VillageProject): string {
 
 function Building({ p, model }: { p: VillageProject; model: VillageModel }) {
 	const visiting = model.visits.some((x) => x.project_id === p.id);
+	// what Office already did, said by the lead who walked to the HQ (reports only; signs are in HQ 대기)
+	const report = model.visits.find(
+		(x) => x.project_id === p.id && x.kind === "report",
+	);
 	return (
 		<li className="building">
 			<div className="building-head">
@@ -59,6 +63,7 @@ function Building({ p, model }: { p: VillageProject; model: VillageModel }) {
 					))
 				)}
 			</div>
+			{report && <div className="bubble">{report.text}</div>}
 			<div className={`lead${visiting ? " lead-away" : ""}`}>
 				{whereIsTheLead(model, p)}
 			</div>

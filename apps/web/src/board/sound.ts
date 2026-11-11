@@ -56,7 +56,12 @@ export interface SoundMemory {
 	stopped: readonly string[];
 	passed: readonly string[];
 	lastKnockAt: number;
+	/** Until this time only the memory is refreshed: a snapshot may still be on its way. */
+	settleUntil: number;
 }
+
+/** After the screen may sound again (first load, reconnect, Mac back), wait for the snapshot to land. */
+export const SETTLE_MS = 5_000;
 
 export interface Marks {
 	waiting: readonly string[];
@@ -75,8 +80,18 @@ export function planSounds(
 	now: number,
 	audible: boolean,
 ): { memory: SoundMemory; cues: Cue[] } {
-	const base: SoundMemory = { ...marks, lastKnockAt: now };
-	if (!prev || !audible) return { memory: base, cues: [] };
+	if (!prev || !audible) {
+		return {
+			memory: { ...marks, lastKnockAt: now, settleUntil: now + SETTLE_MS },
+			cues: [],
+		};
+	}
+	if (now < prev.settleUntil) {
+		return {
+			memory: { ...marks, lastKnockAt: now, settleUntil: prev.settleUntil },
+			cues: [],
+		};
+	}
 	const fresh = (now_: readonly string[], was: readonly string[]) =>
 		now_.some((k) => !was.includes(k));
 	const cues: Cue[] = [];

@@ -654,3 +654,10 @@ tr.st-waiting td {
 .village-dim .lead-away {
 	animation: none;
 }
+.bubble {
+	padding: 6px 12px;
+	border-radius: 10px;
+	background: #1d2a3a;
+	border: 1px solid #35557a;
+	font-size: 22px;
+}
