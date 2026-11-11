@@ -11,6 +11,7 @@
 // - `idle`, `stale`, `ended` light nothing and visit nobody
 import {
 	applyStale,
+	HEARTBEAT_ONLINE_BELOW_MS,
 	type MachineView,
 	type Session,
 	type SessionStatus,
@@ -71,20 +72,39 @@ export function recentSessions(
 	return out;
 }
 
+type MachineLike = Pick<MachineView, "id" | "status" | "heartbeat_at">;
+
 /**
- * The clock a session's visit runs on. While its machine is not reporting (stale / offline), it stops
- * at that machine's last heartbeat: no new visit starts, none ends by time, nothing moves that was not
- * reported (§7). An unobserved machine (no heartbeat yet) runs on the screen's clock.
+ * When a machine stopped reporting: the moment it stopped counting as online (last heartbeat + 90 s),
+ * so the clock never runs backwards as it turns stale. `now` while it is online or never observed.
  */
-export function sessionClock(
+function machineClock(
 	machineId: string,
-	machines: readonly Pick<MachineView, "id" | "status" | "heartbeat_at">[],
+	machines: readonly MachineLike[],
 	now: number,
 ): number {
 	const m = machines.find((x) => x.id === machineId);
 	if (!m || m.status === "online" || m.status === "unobserved") return now;
 	const beat = m.heartbeat_at ? Date.parse(m.heartbeat_at) : Number.NaN;
-	return Number.isNaN(beat) ? now : Math.min(now, beat);
+	return Number.isNaN(beat)
+		? now
+		: Math.min(now, beat + HEARTBEAT_ONLINE_BELOW_MS);
+}
+
+/**
+ * The clock the 60 s rule and a session's visit run on (§7, Q4: cockpit offline stops session visits).
+ * It stops when the cockpit stops reporting, and also when the item's own machine does: no new visit
+ * starts, none ends by time, nothing moves that was not reported. Never later than `now`.
+ */
+export function sessionClock(
+	machineId: string,
+	machines: readonly MachineLike[],
+	now: number,
+): number {
+	return Math.min(
+		machineClock(machineId, machines, now),
+		machineClock("cockpit", machines, now),
+	);
 }
 
 /** The visit id of a session (decision D4): stable for the whole wait, so the walk never restarts. */
@@ -108,7 +128,7 @@ export interface WaitingSession {
 export function splitWaiting(
 	live: readonly LiveSession[],
 	waitingSince: Readonly<Record<string, number>>,
-	machines: readonly Pick<MachineView, "id" | "status" | "heartbeat_at">[],
+	machines: readonly MachineLike[],
 	now: number,
 	waitMs: number,
 ): { visits: WaitingSession[]; list: WaitingSession[] } {

@@ -62,6 +62,8 @@ export interface SoundMemory {
 	settleUntil: number;
 	/** Paused run key → the morning (local `YYYY-M-D`) whose knock it has had, or that passed silently. */
 	morning: Readonly<Record<string, string>>;
+	/** Paused run key → when this screen first saw it paused (a morning before that is not its). */
+	pausedSeen: Readonly<Record<string, number>>;
 }
 
 /** After the screen may sound again (first load, reconnect, Mac back), wait for the snapshot to land. */
@@ -92,13 +94,14 @@ export function morningDue(
 	paused: readonly { key: string; since: string }[],
 	now: number,
 	endHour: number,
-): { day: string; keys: string[] } {
+): { day: string; end: number; keys: string[] } {
 	const end = new Date(now);
 	end.setHours(endHour, 0, 0, 0);
 	const day = dayKey(end);
-	if (now < end.getTime()) return { day, keys: [] };
+	if (now < end.getTime()) return { day, end: end.getTime(), keys: [] };
 	return {
 		day,
+		end: end.getTime(),
 		keys: paused
 			.filter((p) => {
 				const t = Date.parse(p.since);
@@ -135,7 +138,14 @@ export function planSounds(
 	for (const [k, d] of Object.entries(prev?.morning ?? {}))
 		if (d === due.day && (marks.paused ?? []).some((p) => p.key === k))
 			kept[k] = d;
-	const owed = due.keys.filter((k) => kept[k] !== due.day);
+	// first sight of each paused run on this screen; a run first seen after this morning's end (e.g. the
+	// report arrives at noon) is not knocked for that morning — the knock belongs to the morning itself
+	const pausedSeen: Record<string, number> = {};
+	for (const p of marks.paused ?? [])
+		pausedSeen[p.key] = prev?.pausedSeen?.[p.key] ?? now;
+	const owed = due.keys.filter(
+		(k) => kept[k] !== due.day && (pausedSeen[k] ?? now) < due.end,
+	);
 	const spend = () => {
 		for (const k of owed) kept[k] = due.day;
 	};
@@ -148,6 +158,7 @@ export function planSounds(
 				lastKnockAt: now,
 				settleUntil: now + SETTLE_MS,
 				morning: kept,
+				pausedSeen,
 			},
 			cues: [],
 		};
@@ -160,6 +171,7 @@ export function planSounds(
 				lastKnockAt: now,
 				settleUntil: prev.settleUntil,
 				morning: kept,
+				pausedSeen,
 			},
 			cues: [],
 		};
@@ -190,6 +202,7 @@ export function planSounds(
 			lastKnockAt,
 			settleUntil: prev.settleUntil,
 			morning: kept,
+			pausedSeen,
 		},
 		cues,
 	};

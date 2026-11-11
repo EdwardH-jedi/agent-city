@@ -172,9 +172,13 @@ describe("D4 · a session waiting for input visits the HQ", () => {
 				heartbeat_at: new Date(beat).toISOString(),
 			},
 		];
-		// one visiting at the last heartbeat, one that began waiting 30 s before it
+		// the clock stops when the cockpit stops counting as online (last beat + 90 s = T0 + 160 s): one
+		// session visiting by then, one that began waiting only 30 s before it
 		const a = waitingAt(0, { id: "claude:fake-a" });
-		const b = waitingAt(40 * S, { id: "claude:fake-b", repo_id: "acme/gears" });
+		const b = waitingAt(130 * S, {
+			id: "claude:fake-b",
+			repo_id: "acme/gears",
+		});
 		s.step(T0, { ...base, sessions: [a] });
 		const cues: string[] = [];
 		for (const t of [5 * 60, 20 * 60, 45 * 60, 3 * 60 * 60]) {
@@ -191,9 +195,29 @@ describe("D4 · a session waiting for input visits the HQ", () => {
 			expect(r.model.waitingSessions).toEqual([]);
 		}
 		expect(cues).toEqual([]);
-		expect(sessionClock("cockpit", off, T0 + 3_600 * S)).toBe(beat);
+		expect(sessionClock("cockpit", off, T0 + 3_600 * S)).toBe(beat + 90 * S);
+		// never backwards: as the machine turns stale the clock is still `now` up to beat + 90 s
+		const stale = [{ ...off[0], status: "stale" as const }];
+		expect(sessionClock("cockpit", stale, beat + 80 * S)).toBe(beat + 80 * S);
+		// a forge session stops too while the cockpit is offline (Q4: cockpit offline stops session visits)
+		expect(
+			sessionClock(
+				"forge",
+				[...off, machine("online", "forge")],
+				T0 + 3_600 * S,
+			),
+		).toBe(beat + 90 * S);
 		expect(sessionClock("cockpit", machines, T0)).toBe(T0);
 		expect(sessionClock("cockpit", [machine("unobserved")], T0)).toBe(T0);
+	});
+});
+
+describe("D3 · the 3D lead sets off when the visit starts, not when the wait began", () => {
+	test("a sign's walk is anchored 60 s after its state began; a report's at its event", () => {
+		const m = model([waitingAt(-5 * MIN)]);
+		const scene = toCampusModel(m);
+		expect(m.visits[0]?.since).toBe(iso(-5 * MIN));
+		expect(scene.visitors[0]?.created_at).toBe(iso(-5 * MIN + 60 * S));
 	});
 });
 

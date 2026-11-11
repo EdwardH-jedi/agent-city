@@ -2,6 +2,7 @@
 // types only: the scene never sees the hub, a store or any way to act. It draws buildings, the
 // leads walking to the HQ and back, the owner at the HQ desk, and one speech bubble at the HQ door.
 import type { MonitorKind, VillageModel } from "../board/model.ts";
+import { DWELL_MS } from "../board/sessions.ts";
 import { projectLabel } from "../board/types.ts";
 
 /** What a lead carries to the HQ: a folder (승인 대기) or a binder (멈춤). Reports carry nothing. */
@@ -51,6 +52,12 @@ export interface CampusSceneProps {
 	onReady?(): void;
 }
 
+/** When a 결재 lead set off: 60 s after the state began. An unreadable time is kept as it is. */
+function arrivalOf(since: string): string {
+	const t = Date.parse(since);
+	return Number.isNaN(t) ? since : new Date(t + DWELL_MS).toISOString();
+}
+
 /** Pure: the village model → the scene model. Only the buildings that stand in the 2D grid (≤ 8). */
 export function toCampusModel(v: VillageModel): CampusModel {
 	const shown = new Set(v.village.shown.map((p) => p.id));
@@ -69,7 +76,8 @@ export function toCampusModel(v: VillageModel): CampusModel {
 			carry: x.kind === "sign" ? (x.carry ?? "folder") : null,
 			// a lead from a folded building walks in from the campus entrance
 			repo_id: shown.has(x.project_id) ? x.project_id : `~${x.project_id}`,
-			created_at: x.since,
+			// a 결재 / waiting visit starts 60 s after its state began (decision D3): the walk starts then
+			created_at: x.kind === "sign" ? arrivalOf(x.since) : x.since,
 		})),
 		owner_present: v.owner.present,
 		still: v.status.dim,

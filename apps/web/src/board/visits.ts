@@ -60,7 +60,11 @@ export function condSince(c: CurrentRun, watch: Watch, now: number): number {
 	return Number.isNaN(t) ? now : t;
 }
 
-/** Has the run been in this condition for 60 s? Before that it makes no visit, sound or border. */
+/**
+ * Has the run been in this condition for 60 s? Before that it makes no visit, sound or border. Runs
+ * count on the screen's clock: the run reports come from the exporter, a separate process from the
+ * heartbeat, so a silent heartbeat says nothing about whether a run's state is current.
+ */
 export const settled = (c: CurrentRun, watch: Watch, now: number): boolean =>
 	now - condSince(c, watch, now) >= DWELL_MS;
 

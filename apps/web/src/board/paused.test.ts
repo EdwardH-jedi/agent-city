@@ -148,6 +148,16 @@ describe("D2 · the morning knock (quiet hours end, once per run per day)", () =
 		]);
 	});
 
+	test("first seen at noon (paused yesterday): no knock at noon; the knock belongs to the next morning", () => {
+		const s = screen();
+		s.step(at(12, 11, 59), input([], at(12, 11, 59)));
+		const r = [paused(at(11, 19))];
+		expect(run(s, r, at(12, 12), at(12, 23), 30)).toEqual([]);
+		expect(run(s, r, at(12, 23), at(13, 8, 1), 5).map((c) => c[1])).toEqual([
+			"knock",
+		]);
+	});
+
 	test("two paused runs: one knock for both", () => {
 		const s = screen();
 		const r = [
