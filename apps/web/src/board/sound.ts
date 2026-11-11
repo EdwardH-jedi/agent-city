@@ -105,7 +105,10 @@ export function planSounds(
 		lastKnockAt = now;
 	}
 	if (fresh(marks.passed, prev.passed)) cues.push("soft");
-	return { memory: { ...marks, lastKnockAt }, cues };
+	return {
+		memory: { ...marks, lastKnockAt, settleUntil: prev.settleUntil },
+		cues,
+	};
 }
 
 let ctx: AudioContext | null = null;
