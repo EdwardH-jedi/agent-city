@@ -254,9 +254,10 @@ values are kept verbatim; the only thing City adds is the receive time and `snap
 | `no progress suspected` | alert `STALE_OR_IDLE` — an alert, **not** a failure                              |
 | `needs reconcile`       | alert `FAILED_PROCESS_RECONCILE` or `MISSION_RECONCILIATION_REQUIRED`            |
 | `waiting for owner`     | `READY` with `AWAITING_PLAN_APPROVAL`, `AWAITING_OWNER_INTEGRATION`, `DRAFT_REQUIRES_OWNER_COMMIT` or `PLAN_APPROVED` |
+| `paused`                | `READY` with `DISPATCH_STOPPED` — Office's loop stopped **without a failure** and tasks are left. Not in *Needs owner*. The same reason after a failed loop arrives as `HOLD` and stays `hold` |
 | `hold` + reason         | `HOLD`                                                                           |
 | `passed` / `partial`    | `PASS` / `PARTIAL`                                                               |
-| `unverified`            | evidence not verified — wins over everything                                     |
+| `unverified`            | evidence not verified **and the run reads as `passed` / `partial`** — such a run is never shown as passed. A run still in progress (running, waiting, paused, hold…) keeps its own state |
 | `unknown`               | a combination not in this table (never guessed)                                  |
 | `snapshot stale` (City) | no report for 90 s (three missed sends) **or** the cockpit machine is `offline`; shown as "last report: running (N min ago)". A finished run stays as reported. |
 

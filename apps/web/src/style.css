@@ -232,6 +232,9 @@ tr.has-live td {
 .run-unverified .run-state {
 	color: var(--waiting-fg);
 }
+.run-paused .run-state {
+	color: var(--muted);
+}
 .run-no_progress_suspected .run-state,
 .run-snapshot_stale .run-state,
 .run-partial .run-state,

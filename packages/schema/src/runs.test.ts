@@ -406,18 +406,90 @@ describe("reportedRunState — the 02 §6 table, row by row", () => {
 			"partial",
 		);
 	});
-	test("unverified wins over everything, so unchecked evidence never reads as passed", () => {
+	test("unverified: a finished run (passed / partial) with unchecked evidence never reads as passed", () => {
 		expect(s({ status: "PASS", evidence_verified: false })).toBe("unverified");
 		expect(s({ status: "PASS", alert: "EVIDENCE_UNVERIFIED" })).toBe(
 			"unverified",
 		);
-		expect(s({ alert: "STALE_OR_IDLE", evidence_verified: false })).toBe(
+		expect(s({ status: "PARTIAL", evidence_verified: false })).toBe(
 			"unverified",
 		);
+		expect(
+			s({
+				status: "PARTIAL",
+				alert: "EVIDENCE_UNVERIFIED",
+				evidence_verified: false,
+			}),
+		).toBe("unverified");
+	});
+	test("a run in progress keeps its own state when evidence is unchecked", () => {
+		for (const over of [
+			{ evidence_verified: false },
+			{ alert: "EVIDENCE_UNVERIFIED" }, // Office sends both together
+			{ alert: "EVIDENCE_UNVERIFIED", evidence_verified: false },
+		]) {
+			expect(s({ status: "RUNNING", ...over })).toBe("running");
+			expect(
+				s({ status: "READY", reason: "AWAITING_PLAN_APPROVAL", ...over }),
+			).toBe("waiting_owner");
+			expect(s({ status: "READY", reason: "DISPATCH_STOPPED", ...over })).toBe(
+				"paused",
+			);
+			expect(
+				s({ status: "HOLD", reason: "MODEL_CHAIN_EXHAUSTED", ...over }),
+			).toBe("hold");
+		}
+	});
+	test("an alert other than the evidence one still decides, and is never turned into passed", () => {
+		expect(s({ alert: "STALE_OR_IDLE", evidence_verified: false })).toBe(
+			"no_progress_suspected",
+		);
+		expect(
+			s({
+				status: "PASS",
+				alert: "MISSION_RECONCILIATION_REQUIRED",
+				evidence_verified: false,
+			}),
+		).toBe("needs_reconcile");
+		expect(
+			s({ status: "PASS", alert: "A_NEW_ALERT", evidence_verified: false }),
+		).toBe("unknown");
+	});
+	test("paused: READY with DISPATCH_STOPPED (loop stopped without a failure, tasks left)", () => {
+		expect(s({ status: "READY", reason: "DISPATCH_STOPPED" })).toBe("paused");
+	});
+	test("DISPATCH_STOPPED after a failed loop is HOLD in Office and stays hold, never paused", () => {
+		expect(s({ status: "HOLD", reason: "DISPATCH_STOPPED" })).toBe("hold");
+		expect(
+			s({
+				status: "HOLD",
+				reason: "DISPATCH_STOPPED",
+				alert: "DISPATCH_STOPPED",
+			}),
+		).toBe("hold");
+	});
+	test("DISPATCH_STOPPED is paused only as READY; other statuses and alerts are not guessed", () => {
+		expect(s({ status: "RUNNING", reason: "DISPATCH_STOPPED" })).toBe(
+			"running",
+		);
+		expect(s({ status: "PASS", reason: "DISPATCH_STOPPED" })).toBe("passed");
+		expect(
+			s({ status: "READY", reason: "DISPATCH_STOPPED", alert: "A_NEW_ALERT" }),
+		).toBe("unknown");
+		expect(
+			s({
+				status: "READY",
+				reason: "DISPATCH_STOPPED",
+				alert: "MISSION_RECONCILIATION_REQUIRED",
+			}),
+		).toBe("needs_reconcile");
 	});
 	test("a combination the table does not list is `unknown`, never a guess", () => {
 		expect(s({ status: "READY", reason: "SOMETHING_NEW" })).toBe("unknown");
 		expect(s({ status: "READY", reason: null })).toBe("unknown");
+		// a fresh mission before any plan: not in the table, so not guessed
+		expect(s({ status: "READY", reason: "GOAL_RECORDED" })).toBe("unknown");
+		expect(s({ status: "READY", reason: "dispatch_stopped" })).toBe("unknown");
 		expect(s({ status: "WEIRD" })).toBe("unknown");
 		expect(s({ alert: "A_NEW_ALERT" })).toBe("unknown");
 	});
@@ -469,7 +541,7 @@ describe("runStateAt — what City itself adds", () => {
 		);
 	});
 
-	test("needs_owner covers waiting_owner, hold, needs_reconcile and unverified", () => {
+	test("needs_owner covers waiting_owner, hold, needs_reconcile and unverified (a finished run)", () => {
 		const need = (o: Record<string, unknown>) =>
 			runStateAt({ ...base, ...o }, iso, "online", at(0)).needs_owner;
 		expect(need({ status: "READY", reason: "AWAITING_PLAN_APPROVAL" })).toBe(
@@ -477,10 +549,43 @@ describe("runStateAt — what City itself adds", () => {
 		);
 		expect(need({ status: "HOLD" })).toBe(true);
 		expect(need({ alert: "FAILED_PROCESS_RECONCILE" })).toBe(true);
-		expect(need({ evidence_verified: false })).toBe(true);
+		expect(need({ status: "PASS", evidence_verified: false })).toBe(true);
+		expect(need({ status: "PARTIAL", alert: "EVIDENCE_UNVERIFIED" })).toBe(
+			true,
+		);
 		expect(need({})).toBe(false);
+		// in progress: unchecked evidence alone does not page the owner
+		expect(need({ evidence_verified: false })).toBe(false);
+		expect(need({ status: "READY", reason: "DISPATCH_STOPPED" })).toBe(false);
+		expect(
+			need({
+				status: "READY",
+				reason: "DISPATCH_STOPPED",
+				evidence_verified: false,
+			}),
+		).toBe(false);
+		expect(
+			need({
+				status: "READY",
+				reason: "AWAITING_PLAN_APPROVAL",
+				evidence_verified: false,
+			}),
+		).toBe(true);
 		expect(need({ alert: "STALE_OR_IDLE" })).toBe(false);
 		expect(need({ status: "PASS" })).toBe(false);
+	});
+
+	test("paused display: shown as paused, not needing the owner, and goes stale like any unfinished run", () => {
+		const paused = { ...base, status: "READY", reason: "DISPATCH_STOPPED" };
+		const fresh = runStateAt(paused, iso, "online", at(1_000));
+		expect(fresh).toEqual({
+			display: "paused",
+			last_display: "paused",
+			needs_owner: false,
+		});
+		const old = runStateAt(paused, iso, "online", at(90_000));
+		expect(old.display).toBe("snapshot_stale");
+		expect(old.last_display).toBe("paused");
 	});
 
 	test("a stale needs-owner run is still listed as needing the owner (last known)", () => {
