@@ -16,8 +16,13 @@ import { townLive } from "./live.ts";
 
 const REDRAW_MS = 500;
 const MAX_H = 240;
-/** Below this the map says nothing useful: hide it instead. */
-const MIN_H = 96;
+/**
+ * Below this the map says nothing useful: hide it instead. 64 px still shows the ring, every lot's lamp,
+ * its 3-letter label (1× pixel font) and the kangaroo. It was 96: a browser window ~900 px high (a
+ * 1920 × 1080 screen minus the browser's bars) left ~160 px empty under the HQ column with the map hidden,
+ * because a map of 85 px + its title was refused (owner review R1).
+ */
+const MIN_H = 64;
 const GREY = "#6a6660"; // minimap.mjs: every lamp grey while reports are stopped
 const GUIDE = "#f6d070";
 const GUIDE_EDGE = "#1b1512";
@@ -53,12 +58,12 @@ function naturalHeight(el: HTMLElement): number {
 
 /**
  * Height the map's canvas may take without pushing the rest of the HQ column (결재 cards, 쉬는 중, 기다리는
- * 세션) past the column's bottom: the room left after every other block and the gaps between them, minus
- * the map's own title.
+ * 세션) past the column's bottom: the room left after every other block and the gaps between them, with
+ * the map's own title (`titled`) and without it (`bare`).
  */
-function roomAbove(wrap: HTMLElement): number {
+function roomAbove(wrap: HTMLElement): { titled: number; bare: number } {
 	const aside = wrap.closest(".hq");
-	if (!(aside instanceof HTMLElement)) return MAX_H;
+	if (!(aside instanceof HTMLElement)) return { titled: MAX_H, bare: MAX_H };
 	const cs = getComputedStyle(aside);
 	const inner = aside.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom);
 	let others = 0;
@@ -73,15 +78,18 @@ function roomAbove(wrap: HTMLElement): number {
 		others += naturalHeight(el);
 		blocks++;
 	}
+	const room = Math.floor(inner - others - px(cs.rowGap) * (blocks - 1));
+	// the title's height, measured while it shows (the space it takes when shown)
 	const title = wrap.querySelector<HTMLElement>(".town-map-title");
-	const head = title
-		? title.offsetHeight + px(getComputedStyle(wrap).rowGap)
-		: 0;
-	return Math.min(
-		MAX_H,
-		Math.floor(inner - others - px(cs.rowGap) * (blocks - 1) - head),
-	);
+	if (title && !title.hidden)
+		titleH = title.offsetHeight + px(getComputedStyle(wrap).rowGap);
+	return {
+		titled: Math.min(MAX_H, room - titleH),
+		bare: Math.min(MAX_H, room),
+	};
 }
+/** Last measured height of the `MAP` title plus the gap under it. */
+let titleH = 0;
 
 export default function TownMinimap() {
 	const wrapRef = useRef<HTMLDivElement>(null);
@@ -101,7 +109,12 @@ export default function TownMinimap() {
 			if (!wrap || !c || !live) return hide();
 			wrap.hidden = false;
 			const width = Math.floor(wrap.clientWidth); // .town-map has no padding: the content box
-			const maxH = roomAbove(wrap);
+			const room = roomAbove(wrap);
+			// short of room the title goes first, then the map
+			const titled = room.titled >= MIN_H;
+			const maxH = titled ? room.titled : room.bare;
+			const title = wrap.querySelector<HTMLElement>(".town-map-title");
+			if (title && title.hidden === titled) title.hidden = !titled;
 			if (width <= 0 || maxH < MIN_H) return hide();
 			const labels = new Map(live.lots.map((l) => [l.id, l.label]));
 			const model: RingMapModel = {
