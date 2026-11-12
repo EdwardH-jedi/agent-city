@@ -41,8 +41,10 @@ import {
 import {
 	arcTable,
 	doorOf,
+	ellipseNormal,
 	ellipseOffset,
 	LOTS,
+	offsetPoint,
 	PROPS,
 	PYLON,
 } from "./engine/ring-layout.mjs";
@@ -622,40 +624,62 @@ describe("the HQ shot (a 결재 lead at the door)", () => {
 		},
 	);
 
-	test("no pavement tree or lamp between the camera and the kangaroo or any of the first four in the queue", () => {
-		const p = HQ_SHOT.position;
-		const blockers = PROPS.filter(
-			(o) => o.kind === "tree" || o.kind === "lamp",
-		);
-		const targets = [
+	test("every figure in the queue and the first two reports: whole sprite in frame, in front of the facade, no tree in front", () => {
+		// people are camera-facing quads that lean back with the camera's pitch: test the leaning quad
+		const cam = new PerspectiveCamera(54, 320 / 288, 0.5, 200);
+		const { position: p, lookAt: l } = HQ_SHOT;
+		cam.position.set(p.x, p.y, p.z);
+		cam.lookAt(l.x, l.y, l.z);
+		cam.updateMatrixWorld(true);
+		const up = new Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
+		const right = new Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+		const hq = LOTS.find((x) => x.id === HQ_LOT);
+		const n = ellipseNormal(hq?.theta ?? 0);
+		const wall = offsetPoint(hq?.theta ?? 0, 4.5); // the facade line (OUTER_EDGE)
+		const trees = PROPS.filter((o) => o.kind === "tree");
+		const figures = [
 			...[0, 1, 2, 3].map((k) => hqSpot("sign", k)),
-			{ x: HQ_STAND.x, z: HQ_STAND.z },
+			...[0, 1].map((k) => hqSpot("report", k)),
 		];
-		for (const t of targets)
-			for (const y of [0.3, 1.2, 2]) {
-				// up to 0.6 units short of the figure: a curb lamp standing beside a lead is not in front of it
-				const len = Math.hypot(t.x - p.x, y - p.y, t.z - p.z);
-				for (let i = 1; i < 50; i += 1) {
-					const f = i / 50;
+		for (const s of figures) {
+			// the body's corners up to the shoulders, the head on the centre line (the quad's edges are clear)
+			for (const [h, w] of [
+				[0, -0.5],
+				[0, 0.5],
+				[1.2, -0.5],
+				[1.2, 0.5],
+				[2.4, 0],
+			] as const) {
+				const pt = new Vector3(
+					s.x + up.x * h + right.x * w,
+					up.y * h,
+					s.z + up.z * h + right.z * w,
+				);
+				const v = pt.clone().project(cam);
+				expect(Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1).toBe(true);
+				// in front of the facade (outward normal n points into the building)
+				const into = (pt.x - wall.x) * n.x + (pt.z - wall.z) * n.z;
+				expect(into).toBeLessThan(-0.1);
+				// no tree canopy or trunk on the line of sight (until 0.6 short of the figure)
+				const len = pt.distanceTo(cam.position);
+				for (let i = 1; i < 60; i += 1) {
+					const f = i / 60;
 					if (f * len > len - 0.6) break;
-					const x = p.x + (t.x - p.x) * f;
-					const yy = p.y + (y - p.y) * f;
-					const z = p.z + (t.z - p.z) * f;
-					for (const o of blockers) {
-						const d = Math.hypot(x - o.x, z - o.z);
+					const q = cam.position.clone().lerp(pt, f);
+					for (const o of trees) {
+						const d = Math.hypot(q.x - o.x, q.z - o.z);
 						const hit =
-							o.kind === "tree"
-								? (yy > 1.9 && yy < 4.4 && d < 1.25) || (yy <= 1.9 && d < 0.3)
-								: yy < 4.3 && d < 0.3;
-						expect({ t, y, prop: o.id, hit }).toEqual({
-							t,
-							y,
-							prop: o.id,
+							(q.y > 1.9 && q.y < 4.4 && d < 1.25) || (q.y <= 1.9 && d < 0.3);
+						expect({ s, h, tree: o.id, hit }).toEqual({
+							s,
+							h,
+							tree: o.id,
 							hit: false,
 						});
 					}
 				}
 			}
+		}
 	});
 });
 

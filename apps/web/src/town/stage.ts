@@ -412,6 +412,9 @@ function buildStage(
 		if (disposed) return;
 		const prev = input;
 		input = next;
+		// reduced motion uses another fixed shot (the plaza): start the kangaroo afresh in the new mode
+		// instead of blending out of a shot that was never on screen
+		if (next.reducedMotion !== prev.reducedMotion) roo = null;
 		if (
 			next.model !== prev.model ||
 			next.time !== prev.time ||

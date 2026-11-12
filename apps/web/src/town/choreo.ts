@@ -34,8 +34,12 @@ import { LAP_S, PATROL_SPEED, patrolPose, patrolTimeAt } from "./patrol.ts";
 export const HQ_LOT = "sportsgang";
 /** The outer pavement lane the leads walk (between the curb lamps at 2.9 and the door benches at 3.85). */
 export const LANE = 3.2;
-/** First in the queue stands on the HQ door mat. */
-export const DOOR_SPOT = 3.9;
+/**
+ * First in the queue stands just in front of the HQ door, 1.2 units off the facade (not on the mat at
+ * 0.6): people are camera-facing sprites, and in the HQ shot (looking down ~26°) a figure that close to
+ * the wall leaned back into it — its head vanished behind the painted door (R1 review).
+ */
+export const DOOR_SPOT = 3.3;
 /** Arc distance between two people in the queue. */
 export const QUEUE_GAP = 1.2;
 /** Reports stand clockwise of the door, this far along the lane. */
@@ -72,9 +76,12 @@ export interface XZ {
  * (spread across the view, not along it) and the kangaroo fill the frame — a lead at the door is ~60 of
  * the 288 rows, readable from a desk away (owner review R1: the old wide shot made them a few pixels
  * tall to fit the whole pylon). Found by a search over camera positions (figure size 42–60 rows, pitch
- * 18–35°, door + sign, the first four queue spots and the kangaroo in frame, no pavement tree or lamp
- * between the camera and any of them, for every render-target width the stage uses, 320–384 × 288:
- * pipeline.ts fitStage); choreo.test.ts re-checks it at 384, 373 and 320.
+ * 18–35°, door + sign, the first four queue spots and the kangaroo in frame, no pavement tree between
+ * the camera and any of them, for every render-target width the stage uses, 320–384 × 288:
+ * pipeline.ts fitStage); choreo.test.ts re-checks it at 384, 373 and 320, with the sprites leaning back
+ * as drawn. Known and accepted: the bin and a curb lamp's pole stand beside / partly in front of the 4th
+ * in the queue, the kangaroo's legs overlap the 2nd one's feet, and only the first two report visitors
+ * (three at 384 wide) stay in frame — the 결재 queue is what this shot is for.
  */
 export const HQ_SHOT = Object.freeze({
 	position: Object.freeze({ x: -17.76, y: 6.5, z: -8.68 }),
