@@ -129,6 +129,65 @@ describe("the pylon on the plaza stretch (16 A2)", () => {
 	);
 });
 
+describe("the rig on the plaza stretch: no shimmer, no turn on a snap (A2 review)", () => {
+	test("uneven frame times (1/60, 1/50 s): the view never turns back and forth", () => {
+		setRenderWidth(384);
+		const world = buildTownWorld({ time: "day", lots: null });
+		try {
+			const rig = world.rig;
+			let t = patrolTimeAtS(PLAZA_START_S) - 5;
+			followRig(rig, patrolPose(t), 9_999, 0);
+			let prev = rig.yawDeg;
+			let prevD = 0;
+			let flips = 0;
+			let amp = 0;
+			let i = 0;
+			while (t < patrolTimeAtS(PLAZA_END_S) + 5) {
+				const dt = i++ % 2 ? 1 / 50 : 1 / 60;
+				t += dt;
+				followRig(rig, patrolPose(t), dt * 1000, dt);
+				const d = rig.yawDeg - prev;
+				prev = rig.yawDeg;
+				if (Math.abs(d) > 1e-4) {
+					if (prevD && Math.sign(d) !== Math.sign(prevD)) {
+						flips += 1;
+						// how far it went back: the smaller of the two steps
+						amp = Math.max(amp, Math.min(Math.abs(d), Math.abs(prevD)));
+					}
+					prevD = d;
+				}
+			}
+			// any step back is under half a pixel (54° over 288 rows ≈ 0.19° a row; the review found 0.16° shimmer
+			// 561 times)
+			expect(amp).toBeLessThan(0.1);
+			expect(flips).toBeLessThan(60);
+		} finally {
+			world.dispose();
+		}
+	});
+
+	test("a snap while already in the plaza (reports stopped, a tab back) keeps the view", () => {
+		const world = buildTownWorld({ time: "day", lots: null });
+		try {
+			const rig = world.rig;
+			const dt = 1 / 30;
+			let t = patrolTimeAtS(PLAZA_START_S) - 5;
+			followRig(rig, patrolPose(t), 9_999, 0);
+			const mid = patrolTimeAtS((PLAZA_START_S + PLAZA_END_S) / 2);
+			while (t < mid) {
+				t += dt;
+				followRig(rig, patrolPose(t), dt * 1000, dt);
+			}
+			const before = rig.yawDeg;
+			expect(rig.mode).toBe("plaza");
+			followRig(rig, patrolPose(t), 2_000, 0); // a frame 2 s later: a snap
+			expect(Math.abs(turnBetween(rig.yawDeg, before))).toBeLessThan(0.5);
+		} finally {
+			world.dispose();
+		}
+	});
+});
+
 // ── a 결재 while on the plaza stretch ──────────────────────────────────────────
 
 const plazaLamps = PROPS.filter((o) => o.side === "plaza" && o.kind === "lamp");

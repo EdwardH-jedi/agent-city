@@ -701,14 +701,13 @@ export function followRig(
 ): "snap" | "follow" {
 	const [fx, fz] = rig.focus;
 	if (gapMs > SNAP_GAP_MS || Math.hypot(at.x - fx, at.z - fz) > TELEPORT_U) {
+		const wasPlaza = rig.mode === "plaza";
 		rig.snapTo(at.x, at.z);
-		// a snap inside the plaza (reload, a rebuilt world, a tab coming back): the rig freezes whatever yaw it
-		// had; prime it from the route's entry instead, as if it had walked in (16 A2)
-		if (rig.mode === "plaza") {
-			const entry = routeAt(PLAZA_START_S);
-			rig.snapTo(entry.x, entry.z);
-			rig.snapTo(at.x, at.z);
-		}
+		// a snap into the plaza from outside it (a reload, a rebuilt world): the rig would freeze whatever yaw
+		// it had; the view goes straight to where the stage steers it there (the pylon, or the boulevard on the
+		// way out). Already in the plaza (every frame while reports are stopped, a tab coming back) the rig
+		// keeps its view: a snap never turns it.
+		if (rig.mode === "plaza" && !wasPlaza) rig.snapYaw(plazaTarget(at));
 		return "snap";
 	}
 	rig.setYaw(rig.yawFor(at));
@@ -739,15 +738,25 @@ const EXIT_RAY = (() => {
  * direction nearest its view; left sideways it picked the wrong one and swung round). The engine is
  * unchanged.
  */
-export function steerPlaza(rig: OrbitRig, at: XZ, dtSec: number): void {
-	if (rig.mode !== "plaza") return;
+/** Where the stage turns the frozen plaza view at (x, z): the boulevard on the footpath out, else the pylon. */
+export function plazaTarget(at: XZ): number {
 	const along = at.x * EXIT_RAY.x + at.z * EXIT_RAY.z;
 	const across = Math.abs(at.x * EXIT_RAY.z - at.z * EXIT_RAY.x);
-	const out = along > PLAZA_LOOP_R - 0.01 && across < 0.01;
-	const want = out ? EXIT_YAW : yawOfDir(-at.x, -at.z);
-	const d = turnBetween(rig.yawDeg, want);
+	return along > PLAZA_LOOP_R - 0.01 && across < 0.01
+		? EXIT_YAW
+		: yawOfDir(-at.x, -at.z);
+}
+
+export function steerPlaza(rig: OrbitRig, at: XZ, dtSec: number): void {
+	if (rig.mode !== "plaza") return;
+	const d = turnBetween(rig.yawDeg, plazaTarget(at));
 	const cap = PLAZA_TURN_DEG_S * Math.max(0, dtSec);
-	// within half a degree it holds (else it hunts against the rig's clearance turn by hundredths)
+	// within half a degree it holds
 	if (Math.abs(d) < 0.5 || cap === 0) return;
-	rig.snapYaw(rig.yawDeg + Math.max(-cap, Math.min(cap, d)));
+	const was = rig.yawDeg;
+	const next = was + Math.max(-cap, Math.min(cap, d));
+	rig.snapYaw(next);
+	// the rig's clearance would turn that view back (the camera would stand too far out): clearance wins and
+	// the view holds where it is — pushing past it every frame made it shimmer back and forth
+	if (Math.abs(turnBetween(rig.yawFor(at), next)) > 0.05) rig.snapYaw(was);
 }
