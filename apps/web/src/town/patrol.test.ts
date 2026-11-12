@@ -1,15 +1,32 @@
 // The town's pure parts: URL switches, time of day by hour, and the kangaroo's patrol (a pure function
 // of patrol time: clockwise on the centre line from the original spawn, one lap ≈ 4 minutes).
 import { describe, expect, test } from "bun:test";
-import { ellipseOffset, ellipseTheta, SPAWN } from "./engine/ring-layout.mjs";
+import {
+	ellipseOffset,
+	ellipseTheta,
+	LOTS,
+	PROPS,
+	SPAWN,
+} from "./engine/ring-layout.mjs";
+import { CAFE_LOT, HQ_LOT, PROJECT_SLOTS } from "./lots.ts";
 import { pinnedTimeOf, sceneOf, timeOfDayAt, timeOfHour } from "./params.ts";
 import {
+	CENTRE_LENGTH,
 	facingFrom,
 	frameIndexFor,
 	LAP_S,
+	onRouteRing,
 	PATROL_SPEED,
+	PLAZA_END_S,
+	PLAZA_LOOP_R,
+	PLAZA_START_S,
 	patrolPose,
+	patrolTimeAtS,
+	ROUTE_LENGTH,
 	rooKey,
+	routeAt,
+	routeNearest,
+	routeSlice,
 	worldToView,
 } from "./patrol.ts";
 
@@ -53,25 +70,72 @@ describe("patrol", () => {
 		expect(p.walked).toBe(0);
 	});
 
-	test("clockwise (θ grows), on the centre line, one lap in LAP_S, faster than the rig's 0.5 dead zone", () => {
+	test("one lap in LAP_S (unchanged), ±15 % of the centre line's length, faster than the rig's 0.5 dead zone", () => {
 		expect(LAP_S).toBe(240);
 		expect(PATROL_SPEED).toBeGreaterThan(0.5);
+		expect(ROUTE_LENGTH / CENTRE_LENGTH).toBeGreaterThan(1);
+		expect(ROUTE_LENGTH / CENTRE_LENGTH).toBeLessThan(1.15);
+		const end = patrolPose(LAP_S);
+		expect(Math.hypot(end.x - SPAWN.x, end.z - SPAWN.z)).toBeLessThan(1e-3);
+	});
+
+	test("the boulevard clockwise, except a quarter through the plaza (16 A2): round the pylon, clear of its props", () => {
 		let prev = ellipseTheta(patrolPose(0).x, patrolPose(0).z);
 		let turned = 0;
-		for (let t = 1; t <= LAP_S; t += 1) {
+		let inPlaza = 0;
+		const dt = 0.25;
+		for (let t = dt; t <= LAP_S; t += dt) {
 			const p = patrolPose(t);
-			expect(Math.abs(ellipseOffset(p.x, p.z))).toBeLessThan(1e-3);
+			const off = ellipseOffset(p.x, p.z);
+			if (Math.abs(off) < 0.01) {
+				// on the boulevard: θ only grows, and never inside the cut quarter (HQ, cafe)
+				expect(onRouteRing(ellipseTheta(p.x, p.z))).toBe(true);
+			} else {
+				inPlaza += dt;
+				const r = Math.hypot(p.x, p.z);
+				// never inside the loop (the benches at 6, the pylon), never on a plaza lamp or bench
+				expect(r).toBeGreaterThan(PLAZA_LOOP_R - 0.01);
+				for (const prop of PROPS)
+					if (prop.side === "plaza")
+						expect(Math.hypot(p.x - prop.x, p.z - prop.z)).toBeGreaterThan(
+							0.45,
+						);
+			}
 			const th = ellipseTheta(p.x, p.z);
 			const d =
 				((((th - prev) % (2 * Math.PI)) + 3 * Math.PI) % (2 * Math.PI)) -
 				Math.PI;
-			expect(d).toBeGreaterThan(0);
+			// θ of the nearest centre-line point: it only grows (inside the plaza it may hold or wobble)
+			if (Math.abs(off) < 0.01) expect(d).toBeGreaterThan(-1e-9);
 			turned += d;
 			prev = th;
 		}
 		expect(turned).toBeCloseTo(2 * Math.PI, 2);
-		const end = patrolPose(LAP_S);
-		expect(Math.hypot(end.x - SPAWN.x, end.z - SPAWN.z)).toBeLessThan(1e-3);
+		// the plaza stretch: from PLAZA_START_S to PLAZA_END_S, about a fifth of the lap
+		expect(inPlaza).toBeCloseTo(
+			patrolTimeAtS(PLAZA_END_S) - patrolTimeAtS(PLAZA_START_S),
+			0,
+		);
+		// every project lot is still driven past: only the HQ and the cafe are in the cut quarter
+		for (const id of PROJECT_SLOTS) {
+			const lot = LOTS.find((l) => l.id === id);
+			expect(onRouteRing(lot?.theta ?? 0)).toBe(true);
+		}
+		for (const id of [HQ_LOT, CAFE_LOT]) {
+			const lot = LOTS.find((l) => l.id === id);
+			expect(onRouteRing(lot?.theta ?? 0)).toBe(false);
+		}
+	});
+
+	test("route helpers: nearest point, slices, time at a distance", () => {
+		const mid = (PLAZA_START_S + PLAZA_END_S) / 2;
+		const p = routeAt(mid);
+		expect(routeNearest(p.x, p.z)).toBeCloseTo(mid, 3);
+		const sl = routeSlice(PLAZA_START_S, PLAZA_END_S);
+		expect(sl[0]?.x).toBeCloseTo(routeAt(PLAZA_START_S).x, 6);
+		expect(sl[sl.length - 1]?.z).toBeCloseTo(routeAt(PLAZA_END_S).z, 6);
+		expect(patrolTimeAtS(ROUTE_LENGTH)).toBeCloseTo(0, 6);
+		expect(patrolPose(patrolTimeAtS(mid)).s).toBeCloseTo(mid, 6);
 	});
 
 	test("pure: the same time gives the same pose; steps per frame are small (no teleports)", () => {

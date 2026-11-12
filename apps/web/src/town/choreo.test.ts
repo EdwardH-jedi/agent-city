@@ -48,6 +48,7 @@ import {
 	PROPS,
 	PYLON,
 } from "./engine/ring-layout.mjs";
+import { ENTRY_THETA } from "./patrol.ts";
 import { buildTownWorld } from "./world.ts";
 
 const dist = (a: { x: number; z: number }, b: { x: number; z: number }) =>
@@ -253,9 +254,13 @@ describe("the kangaroo", () => {
 		const after = r.filter((x) => x.t > 60_000 && x.st.mode === "patrol");
 		expect(after.length).toBeGreaterThan(0);
 		expect(maxStep(r)).toBeLessThanOrEqual(SPRINT_STEP);
-		// it rejoins at the HQ's point of the line (no chase round the ring) and the camera follows again
+		// the HQ is in the quarter the plaza stretch cuts (16 A2): it walks the centre line to the nearer end
+		// of that quarter (θ = 180°, no chase round the ring) and the patrol carries on from there into the
+		// plaza; the camera follows again
 		const first = after[0];
-		expect(dist(first?.pose ?? { x: 0, z: 0 }, HQ_STAND)).toBeLessThan(2.5);
+		expect(
+			dist(first?.pose ?? { x: 0, z: 0 }, offsetPoint(ENTRY_THETA, 0)),
+		).toBeLessThan(0.5);
 		expect(r[r.length - 1]?.pose.cam).toBe(0);
 	});
 
