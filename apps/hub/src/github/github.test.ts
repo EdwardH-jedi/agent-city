@@ -533,6 +533,14 @@ describe("syncGithub", () => {
 				error: null,
 			},
 			{
+				// no origin; its one github.com remote is someone else's repo
+				path: "/w/forked",
+				slug: "other-owner/forked",
+				isWorktree: false,
+				hasOrigin: false,
+				error: null,
+			},
+			{
 				path: "/w/scratch",
 				slug: null,
 				isWorktree: false,
@@ -576,13 +584,17 @@ describe("syncGithub", () => {
 			local: { machineId: "cockpit", roots: ["/w"], scan: async () => scan },
 		});
 		expect(s.local).toMatchObject({
-			scanned: 7,
+			scanned: 8,
 			mapped: 2,
 			worktrees: 2,
 			errors: 1,
 		});
 		expect(s.local?.localOnly.map((l) => [l.id, l.reason])).toEqual([
 			["other-owner/tool", "origin not in this account's GitHub repos"],
+			[
+				"other-owner/forked",
+				"no origin; its github.com remote is not in this account's GitHub repos",
+			],
 			[
 				"local/scratch",
 				"no origin remote, and not exactly one github.com remote",
@@ -602,6 +614,7 @@ describe("syncGithub", () => {
 		).toEqual([
 			{ path: "/w/alpha", repo_id: "octo-example/alpha", is_worktree: 0 },
 			{ path: "/w/alpha-wt", repo_id: "octo-example/alpha", is_worktree: 1 },
+			{ path: "/w/forked", repo_id: "other-owner/forked", is_worktree: 0 },
 			{
 				path: "/w/gitlab-thing",
 				repo_id: "local/gitlab-thing",

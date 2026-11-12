@@ -191,4 +191,52 @@ describe("githubRepoFromConfig (the collector reads .git/config as text)", () =>
 			),
 		).toBeNull();
 	});
+
+	test("as git reads them: a key on the header line, `#` with no space, legacy names lower-cased, a remote without url", () => {
+		const gh = '[remote "gh"]\n\turl = https://github.com/octo-example/x.git';
+		const elsewhere = "url = https://gitlab.example.invalid/o/x";
+		expect(
+			githubRepoFromConfig(`[remote "origin"] ${elsewhere}\n${gh}`),
+		).toBeNull();
+		expect(githubRepoFromConfig(`[include] path = more.cfg\n${gh}`)).toBeNull();
+		expect(
+			githubRepoFromConfig(
+				'[remote "origin"]\n\turl = https://github.com/o/r.git#c',
+			),
+		).toBe("o/r");
+		expect(
+			githubRepoFromConfig(`[remote.Origin]\n\t${elsewhere}\n${gh}`),
+		).toBeNull();
+		// origin with no url: git uses the name as its url → not github, and origin decides
+		expect(
+			githubRepoFromConfig(`[remote "origin"]\n\tprune = true\n${gh}`),
+		).toBeNull();
+		// escaped quotes inside a quoted value: unescaped, and the trailing comment dropped
+		expect(
+			remotesFromConfig(
+				'[remote "origin"]\n\turl = "https://h/\\"q\\".git" # c',
+			),
+		).toEqual([{ name: "origin", url: 'https://h/"q".git' }]);
+		// pushInsteadOf does not rewrite the fetch url
+		expect(
+			githubRepoFromConfig(
+				'[url "https://github.com/"]\n\tpushInsteadOf = gh:\n[remote "origin"]\n\turl = gh:o/r',
+			),
+		).toBeNull();
+	});
+
+	test("bounded time on a 64 KB config the hook might read (no backtracking)", () => {
+		const pad = " ".repeat(64_000);
+		for (const cfg of [
+			`[remote "origin"]\n\turl = https://github.com/o/r.git${pad}x`,
+			`[remote "${"a".repeat(64_000)}`,
+			`[${"a.".repeat(32_000)}]`,
+			`[remote "origin"]\n\turl = "${'\\"'.repeat(20_000)}`,
+			`${'[url "x"]\n\tinsteadOf = y\n'.repeat(2_000)}[remote "origin"]\n\turl = y/z`,
+		]) {
+			const t = performance.now();
+			githubRepoFromConfig(cfg);
+			expect(performance.now() - t).toBeLessThan(50);
+		}
+	});
 });

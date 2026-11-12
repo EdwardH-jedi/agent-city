@@ -76,23 +76,64 @@ export interface GitRemote {
 	url: string;
 }
 
-/** A section header: `[remote "x"]`, `[url "base"]`, legacy `[remote.x]`; a trailing comment is allowed. */
-function sectionOf(line: string): { kind: string; sub: string | null } | null {
-	const m =
-		/^\[\s*([A-Za-z0-9.-]+?)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](?:\s*[#;].*)?$/.exec(
-			line,
-		);
-	if (!m?.[1]) return null;
-	const dot = m[1].indexOf(".");
-	if (m[2] === undefined && dot > 0)
-		return { kind: m[1].slice(0, dot).toLowerCase(), sub: m[1].slice(dot + 1) };
-	return { kind: m[1].toLowerCase(), sub: m[2] ?? null };
+// The parsing below is hand-written and linear in the line length (no backtracking regex): it runs in the
+// Claude Code hook on a .git/config of up to 64 KB (Hard rule 4: bounded time).
+
+/**
+ * A section header line: `[remote "x"]`, `[url "base"]`, legacy `[remote.x]` (its name lower-cased, as
+ * git does). `rest` is what follows `]` — git allows a key on the header line, or a comment.
+ */
+function sectionOf(
+	line: string,
+): { kind: string; sub: string | null; rest: string } | null {
+	let i = 1;
+	const n = line.length;
+	const space = (c: string | undefined) => c === " " || c === "\t";
+	while (space(line[i])) i++;
+	let name = "";
+	while (i < n && /[A-Za-z0-9.-]/.test(line[i] as string)) name += line[i++];
+	if (!name) return null;
+	while (space(line[i])) i++;
+	let sub: string | null = null;
+	if (line[i] === '"') {
+		i++;
+		let q = "";
+		while (i < n && line[i] !== '"') {
+			if (line[i] === "\\" && i + 1 < n) i++;
+			q += line[i++];
+		}
+		if (line[i] !== '"') return null;
+		i++;
+		sub = q;
+		while (space(line[i])) i++;
+	}
+	if (line[i] !== "]") return null;
+	const rest = line.slice(i + 1).trim();
+	const dot = name.indexOf(".");
+	if (sub === null && dot > 0)
+		return {
+			kind: name.slice(0, dot).toLowerCase(),
+			sub: name.slice(dot + 1).toLowerCase(),
+			rest,
+		};
+	return { kind: name.toLowerCase(), sub, rest };
 }
-const configValue = (v: string): string =>
-	v
-		.replace(/\s+[#;].*$/, "")
-		.trim()
-		.replace(/^"(.*)"$/, "$1");
+
+/** A value as git reads it: quotes removed, `\"` `\\` unescaped, a `#` / `;` outside quotes ends it. */
+function configValue(v: string): string {
+	let out = "";
+	let quoted = false;
+	for (let i = 0; i < v.length; i++) {
+		const c = v[i] as string;
+		if (c === "\\" && i + 1 < v.length) {
+			const d = v[++i] as string;
+			out += d === "n" ? "\n" : d === "t" ? "\t" : d;
+		} else if (c === '"') quoted = !quoted;
+		else if (!quoted && (c === "#" || c === ";")) break;
+		else out += c;
+	}
+	return out.trim();
+}
 
 export interface GitConfigRemotes {
 	/** Every remote's first url, in file order, with `url.<base>.insteadOf` applied (as git does). */
@@ -109,30 +150,45 @@ export function remotesFromConfig(config: string): GitRemote[] {
 	return readGitConfig(config).remotes;
 }
 export function readGitConfig(config: string): GitConfigRemotes {
-	const raw: GitRemote[] = [];
+	// every [remote "x"] section names a remote, url or not (git then uses the name as its url)
+	const names: string[] = [];
+	const urls = new Map<string, string>();
 	const insteadOf: { base: string; prefix: string }[] = [];
 	let includes = false;
-	let sec: { kind: string; sub: string | null } | null = null;
-	for (const rawLine of config.split(/\r?\n/)) {
+	let sec: ReturnType<typeof sectionOf> = null;
+	const entry = (line: string) => {
+		if (!sec || sec.sub === null) return;
+		const kv = /^([A-Za-z][A-Za-z0-9-]*)\s*=(.*)$/.exec(line);
+		if (!kv?.[1] || kv[2] === undefined) return;
+		const key = kv[1].toLowerCase();
+		const name = sec.sub;
+		if (sec.kind === "remote" && key === "url") {
+			if (!urls.has(name)) urls.set(name, configValue(kv[2]));
+		} else if (sec.kind === "url" && key === "insteadof")
+			insteadOf.push({ base: name, prefix: configValue(kv[2]) });
+	};
+	for (const rawLine of config.split("\n")) {
 		const line = rawLine.trim();
 		if (!line || line.startsWith("#") || line.startsWith(";")) continue;
 		if (line.startsWith("[")) {
 			sec = sectionOf(line);
 			if (sec && (sec.kind === "include" || sec.kind === "includeif"))
 				includes = true;
+			if (
+				sec?.kind === "remote" &&
+				sec.sub !== null &&
+				!names.includes(sec.sub)
+			)
+				names.push(sec.sub);
+			if (sec?.rest) entry(sec.rest);
 			continue;
 		}
-		if (!sec || sec.sub === null) continue;
-		const kv = /^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$/.exec(line);
-		if (!kv?.[1] || kv[2] === undefined) continue;
-		const key = kv[1].toLowerCase();
-		const name = sec.sub;
-		if (sec.kind === "remote" && key === "url") {
-			if (!raw.some((r) => r.name === name))
-				raw.push({ name, url: configValue(kv[2]) });
-		} else if (sec.kind === "url" && key === "insteadof")
-			insteadOf.push({ base: name, prefix: configValue(kv[2]) });
+		entry(line);
 	}
+	const raw: GitRemote[] = names.map((name) => ({
+		name,
+		url: urls.get(name) ?? name,
+	}));
 	// git: the longest matching insteadOf prefix wins
 	const rewrite = (url: string): string => {
 		let best: { base: string; prefix: string } | null = null;
