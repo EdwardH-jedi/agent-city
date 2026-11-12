@@ -1,0 +1,79 @@
+// Hand-written declarations for the ported engine (agent-city; see PROVENANCE.md).
+export interface XZ {
+	x: number;
+	z: number;
+}
+export declare const A: number;
+export declare const B: number;
+export declare const ROAD_HALF: number;
+export declare const INNER_EDGE: number;
+export declare const OUTER_EDGE: number;
+export declare const PLAZA_R: number;
+export interface RingLot {
+	readonly id: string;
+	readonly deg: number;
+	readonly name: string;
+	readonly label: string;
+	readonly dept: string | null;
+	readonly kind: string;
+	readonly family: string;
+	readonly wall: string;
+	readonly awning: string;
+	readonly h: number;
+	readonly seed: number;
+	readonly sign: string;
+	readonly boarded?: boolean;
+	readonly index: number;
+	readonly theta: number;
+	readonly doorX: number;
+	readonly doorZ: number;
+	/** agent-city overrides (scene-ring opts.lots): lit-window count and lit share of the facade. */
+	readonly litWindows?: number;
+	readonly lit?: number;
+}
+export declare const LOTS: readonly RingLot[];
+export declare const SPAWN: {
+	readonly x: number;
+	readonly z: number;
+	readonly theta: number;
+	readonly facing: "north" | "east" | "south" | "west";
+};
+export declare const PYLON: {
+	readonly x: number;
+	readonly z: number;
+	readonly w: number;
+	readonly d: number;
+	readonly h: number;
+};
+export declare function ellipsePoint(theta: number): XZ;
+export declare function ellipseTangent(theta: number): XZ;
+export declare function ellipseNormal(theta: number): XZ;
+export declare function offsetPoint(theta: number, d: number): XZ;
+export declare function ellipseTheta(x: number, z: number): number;
+export declare function ellipseOffset(x: number, z: number): number;
+export interface ArcTable {
+	readonly length: number;
+	/** θ at arc length s from θ = 0 (clockwise), wrapping. */
+	at(s: number): number;
+	lenAt(theta: number): number;
+}
+export declare function arcTable(offset: number): ArcTable;
+/** A lot's door: centre on the frontage, outward normal, tangent. */
+export declare function doorOf(lot: string | RingLot): {
+	readonly id: string;
+	readonly x: number;
+	readonly z: number;
+	readonly nx: number;
+	readonly nz: number;
+	readonly tx: number;
+	readonly tz: number;
+	readonly theta: number;
+};
+/** Pavement and plaza props (lamps, trees, benches, bins): kind, id and centre. */
+export declare const PROPS: readonly {
+	readonly id: string;
+	readonly kind: "lamp" | "tree" | "bench" | "bin";
+	readonly x: number;
+	readonly z: number;
+	readonly h: number;
+}[];

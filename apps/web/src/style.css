@@ -869,6 +869,53 @@ tr.st-waiting td {
 .cmp-bubble[hidden] {
 	display: none;
 }
+/* ── the ring town (default scene, lazy): 384×288 at an integer scale, page-colour letterbox ─ */
+.town {
+	padding: 0;
+	position: relative;
+}
+.town.village-dim {
+	filter: saturate(0.35) brightness(0.6);
+}
+.town-stage {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+}
+.town-canvas {
+	display: block;
+	image-rendering: pixelated;
+}
+/* the one bubble at the HQ door, over the top of the town's stage (newest report) */
+.town-bubble {
+	position: absolute;
+	top: 16px;
+	left: 50%;
+	transform: translateX(-50%);
+	max-width: 80%;
+	margin: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	padding: 6px 16px;
+	border: 2px solid var(--b-fg);
+	border-radius: 14px;
+	background: #0e1013e6;
+	color: var(--b-fg);
+	font-size: 24px;
+	pointer-events: none;
+}
+/* the town's minimap at the top of the HQ column (the town; restyled in S4) */
+.town-map {
+	flex: none;
+}
+.town-map[hidden] {
+	display: none;
+}
+.town-map-canvas {
+	display: block;
+	image-rendering: pixelated;
+}
 .campus-folded {
 	position: absolute;
 	right: 20px;
@@ -877,4 +924,127 @@ tr.st-waiting td {
 /* reports stopped: every figure stands where it is */
 .village-dim .fig {
 	animation: none;
+}
+
+/* ── the ring town's frame (`.board.scene-town`, design doc 12 §3) ───────────────────────────────────────
+   Colours, borders and title look come from the original town's panels (app/town-panels.css: page
+   #0f0c0b, panel #19140f, edge #6b5a48, line #3a2f27, ink #efe6d4 / #b9ab92 / #8f826e, buttons #2a221d,
+   status yellow #f0b030 and green #4cd06a). The original draws Latin panel titles ("MAP") as a 5-px bitmap
+   font on a canvas; no webfont file exists, so the titles here are DOM text in a monospace stack with wide
+   letter-spacing (Korean text keeps the board font). Sizes stay on the three tiers (48 / 24-28 / 16-18) and
+   weights on two (400 / 700). The column boxes stay 320 / rest / 300 wide: the inset panel is a ::before
+   inside each column, not a margin. */
+.board.scene-town {
+	--b-bg: #0f0c0b;
+	--b-panel: #19140f;
+	--b-edge: #6b5a48;
+	--b-line: #3a2f27;
+	--b-fg: #efe6d4;
+	--b-muted: #b9ab92;
+	--b-dim: #8f826e;
+	--b-yellow: #f0b030;
+	--b-ok: #4cd06a;
+	--b-btn: #2a221d;
+	--b-title-font:
+		ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+.scene-town .board-top {
+	background: #181310;
+	border-bottom: 1px solid var(--b-edge);
+}
+.scene-town .bm {
+	background: var(--b-btn);
+	border-radius: 3px;
+	padding: 4px 12px;
+}
+.scene-town .board-link {
+	padding: 4px 12px;
+	background: var(--b-btn);
+	border: 1px solid var(--b-line);
+	border-radius: 3px;
+}
+/* 예시 데이터 is not a state: the panel's own tones, no yellow (owner review R1: the frame keeps the town
+   panel colours, yellow and red only show state). 화면 연결 끊김 is a state: its border stays yellow. */
+.scene-town .demo-band {
+	color: var(--b-fg);
+	background: var(--b-btn);
+	border: 1px solid var(--b-edge);
+	border-radius: 3px;
+	letter-spacing: 0.05em;
+}
+.scene-town .conn-band {
+	background: var(--b-panel);
+	border-radius: 0 0 3px 3px;
+}
+/* the side columns: an inset panel with the original's edge colour, behind the content */
+.scene-town .hq,
+.scene-town .now {
+	position: relative;
+	isolation: isolate;
+	border: 0;
+	background: var(--b-bg);
+}
+.scene-town .hq {
+	padding: 20px 18px 20px 22px;
+	gap: 12px;
+}
+.scene-town .now {
+	padding: 20px 22px 20px 18px;
+}
+/* the 결재 block never shrinks; the blocks under it drop whole lines before anything is cut in half */
+.scene-town .hq > .hq-wait ~ .hq-wait {
+	flex: 0 1 auto;
+	min-height: 0;
+	overflow: hidden;
+}
+.scene-town .hq::before,
+.scene-town .now::before {
+	content: "";
+	position: absolute;
+	z-index: -1;
+	top: 8px;
+	bottom: 8px;
+	background: var(--b-panel);
+	border: 1px solid var(--b-edge);
+}
+.scene-town .hq::before {
+	left: 8px;
+	right: 4px;
+}
+.scene-town .now::before {
+	left: 4px;
+	right: 8px;
+}
+/* panel titles: the head strip of the original's panels */
+.scene-town h2,
+.scene-town .town-map-title {
+	margin: 0 0 4px;
+	padding: 0 0 7px;
+	border-bottom: 1px solid var(--b-line);
+	font-family: var(--b-title-font), system-ui, -apple-system, sans-serif;
+	font-size: 16px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	color: var(--b-muted);
+}
+.scene-town .hq-wait h2 {
+	margin: 0;
+}
+.scene-town .town-map {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.scene-town .town-map[hidden] {
+	display: none;
+}
+.scene-town .town-map-title {
+	margin: 0;
+}
+.scene-town .hq-away {
+	margin-top: 0;
+}
+/* the run list keeps its size; 자리 비운 사이 takes what is left under it and drops whole lines */
+.scene-town .now-list {
+	flex: none;
 }

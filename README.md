@@ -73,14 +73,17 @@ events; an unset token disables ingest. Keep the hub on loopback. Read the
 ### The screens
 
 `/` is the **board**, made for a monitor watched from 1.5–2 m: one status sentence (`전부 정상` ·
-`결재 N건` · `멈춤 N건` · `입력 대기 N건` · `Mac 보고 끊김 (N분 전)`), an 8 px frame (red > yellow > none), the **HQ 대기** cards
-and **자리 비운 사이** list on the left, the project village in the middle (a 3D campus when WebGL works, the 2D grid otherwise) and **지금 진행** on the right. `#/detail` (key `D` flips between the two) is the table view
+`결재 N건` · `멈춤 N건` · `입력 대기 N건` · `Mac 보고 끊김 (N분 전)`), an 8 px frame (red > yellow > none), the **HQ 대기**
+cards on the left (under the town's map), the project village in the middle (the ring town when WebGL works,
+the 2D grid otherwise; `?scene=campus` draws the 3D campus instead) and **지금 진행** on the right, with
+**자리 비운 사이** under it (in the left column with `?scene=campus`). `#/detail` (key `D` flips between the two) is the table view
 with Needs owner, Runs, Repos, Live sessions and Events.
 
 The board only reads: it draws what the hub reports through `useHub` (GET + `/ws`, plus
 `GET /api/runs/:machine/:id/events` for the current runs) and has no button or form. Approving, running or
 re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.test.ts` scans
-`apps/web/src/board/**` for it.
+`apps/web/src/board/**`, `apps/web/src/campus/**` and `apps/web/src/town/**` (including the ported
+engine's listeners) for it.
 
 - **Current run.** Of several runs with the same `(project, workflow_id)` only the one with the latest
   `last_progress_at` counts (ties: higher `last_event_sequence`, then higher run id). The others show only
@@ -102,7 +105,31 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
   the rest fold into one `조용함 N곳` sign. A building holds its name and pictures only: lit windows for
   running runs (dark when nothing runs), a big yellow (결재) or red (멈춤) flag. The village dims and every
   figure stops when the cockpit or this screen's hub connection goes quiet.
-- **The 3D campus** (`apps/web/src/campus/`, a lazy chunk with `three`) draws the same model: a fixed
+- **The ring town** (`apps/web/src/town/`, the default middle scene, a lazy chunk with `three`) is the
+  owner's Agent Borough ring town (Agent Office Town M3.0–M3.2a): its low-res renderer is copied into
+  `apps/web/src/town/engine/` (origin commit, files and every changed line in `engine/PROVENANCE.md`) and
+  driven from the same model. A ring boulevard around a plaza with the leaderboard pylon (`AGENT CITY`,
+  one row per project with its 진행 and 대기 counts, `ALL` totals, `OFFLINE` and `—` when the Mac stops
+  reporting); HQ is one lot, the
+  cafe another, the other eight are project buildings, filled clockwise in the grid's order and kept while
+  a project stays shown (empty lots are boarded `COMING SOON`). A building's sign is its name on a lit board
+  (about 8 characters; signs, pylon rows and the map's 3-letter labels are shortened so no two read alike);
+  its door lamp
+  is red (멈춤) > yellow (결재 / 입력 대기) > green (running) > off; lit windows = running runs + active
+  sessions (at most 4). The kangaroo is the owner (drawn while the cockpit is `online`): it patrols the
+  boulevard (about 4 min a lap); when a 결재 lead reaches the HQ door it walks back and the camera holds a
+  close shot of the door and the queue for 5 minutes from that arrival, then the patrol resumes while the
+  lead keeps standing at the door (a new 결재 arriving brings it back for 5 minutes); leads queue at the
+  door in the HQ 대기 card order, reports
+  come and go without stopping the patrol, and the one bubble at the HQ door is above the stage. A reload
+  never replays a walk. `?time=day|dusk|night` pins the look (otherwise the local hour: day 07–17, dusk
+  17–20, night 20–07). The map at the top of the left column shows the lots, their lamps and the kangaroo;
+  it gives way to the 결재 cards (its title first) and hides only below 64 px.
+  Reports stopped: everything stands still; reduced motion: the kangaroo at the HQ and a fixed wide shot of
+  the plaza and the pylon. The
+  picture is 384×288 at an integer scale (narrowed to keep 2× on a 1366×768 screen). Same fallbacks as the
+  campus: no WebGL, a missing chunk or a lost context → the 2D grid.
+- **The 3D campus** (`?scene=campus`; `apps/web/src/campus/`, a lazy chunk with `three`) draws the same model: a fixed
   panorama camera (it never moves or follows anything), building names only, the lead walking to the HQ
   for a 결재 (folder = 승인 대기, binder = 멈춤) or a report and walking back when it ends, the owner at the
   HQ desk while the cockpit is `online` (an empty chair otherwise), the one bubble at the HQ door, and
@@ -202,8 +229,14 @@ watches the live board for 90 s and checks that it sends only GETs to loopback a
 `/ws`; `ab3` repeats the 1920×1080 cases with WebGL off (the 2D tiles fallback). It is read-only:
 loopback only, no browser profile, no AI features. The scripts are in `scripts/board-check/` and
 add no dependency. It checks whatever answers on `http://127.0.0.1:4317/`; on the cockpit that is
-the tunnel to the hub on spine, so it sees the deployed build, not an unmerged worktree — point a
-local hub or tunnel at that port to check a change before it ships. Captures and `result.json` go
+the tunnel to the hub on spine, so it sees the deployed build, not an unmerged worktree. To check a
+change before it ships, run the web dev server on another port (it proxies `/api` and `/ws` to the
+hub) and set `AGENTCITY_BOARD_URL` (`http://127.0.0.1:<port>/…` only), e.g.
+`AGENTCITY_BOARD_URL='http://127.0.0.1:5181/' bun run check:board` (the town, the default scene; add
+`?scene=campus` for the 3D campus). A query in the URL is
+kept and the cases add their own (`demo=1`). `ab1` and `ab3` are the checks to run against a dev
+server; `ab2` needs a built page (it reads the `/assets/index-*` chunk names, and the dev server's
+HMR WebSocket would count as a second socket), so point it at the hub-served build or at `vite preview` (`cd apps/web && bun run build && bunx vite preview --port 5184 --strictPort`; it inherits the dev proxy to the hub and passes). Captures and `result.json` go
 to `~/Documents/AgentCityCaptures/ab/` (outside the repo; `AGENTCITY_AB_OUT` may pick another
 folder under it). A `FAIL` makes the command exit 1; `KNOWN` marks an accepted limit and does not.
 Without `agent-browser` on `PATH` the check is skipped, says so, and exits 0; this repo never
@@ -264,6 +297,7 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `CODEX_BACKFILL_EVENT_FILTER` | collector   | `1` → during a file's initial backfill (until its first EOF) skip records older than that window. |
 | `AGENTCITY_HOOK_KILL_S`    | hook launcher  | Seconds before `bin/claude-hook` SIGKILLs a stuck hook (default `0.6`). Process env only. |
 | `AGENTCITY_BUN`            | hook launcher  | Bun binary for the hook (default `command -v bun`, else `~/.bun/bin/bun`). Process env only. |
+| `AGENTCITY_BOARD_URL`      | `check:board`  | Page the screen check opens (loopback only; default `http://127.0.0.1:4317/`). Process env only. |
 
 The collectors read only `HUB_URL`, `INGEST_TOKEN`, `AGENTCITY_*` (except the two launcher
 variables), `SPOOL_*` and `CODEX_*` from this checkout's `.env` — never the whole file; process env
@@ -302,7 +336,7 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `collector:heartbeat`         | Resident machine heartbeat: one beat every 30 s to `POST /ingest/heartbeat`.     |
 | `collector:launchd`           | Print-only: launchd job files for the Mac's resident processes → `~/.agentcity/launchd/`. See [Mac login jobs](#mac-login-jobs-launchd). |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
-| `check:board`                 | Screen check of `127.0.0.1:4317` through `agent-browser` (skipped without it). See [Development and checks](#development-and-checks). |
+| `check:board`                 | Screen check of `127.0.0.1:4317` (or `AGENTCITY_BOARD_URL`) through `agent-browser` (skipped without it). See [Development and checks](#development-and-checks). |
 
 **Machine heartbeat.** `collector:heartbeat` (run on each machine with `AGENTCITY_MACHINE` =
 `cockpit` / `forge` / `spine`) sends a beat every 30 s; `GET /api/machines` and the *Machines* strip
@@ -583,7 +617,7 @@ text; don't paste secrets into commands in the first place):
 | `403 forbidden host` / `forbidden origin` | Reaching the hub by a non-loopback name. Use `127.0.0.1`/`localhost`, or set `HUB_HOST` / `HUB_ALLOWED_ORIGINS`. |
 | Sync `ABORTED: rate-limit`                | It resumes on the next cycle; lengthen the interval if it repeats.                                        |
 | A repo is missing                         | Token scope (see *GitHub token*); compare with `gh repo list`.                                             |
-| Session repo shows `local/<dir>`          | The checkout has no github.com `origin`.                                                                   |
+| Session repo shows `local/<dir>`          | No github.com repo: `origin` is elsewhere, or there is no `origin` and not exactly one github.com remote. |
 
 ## Roadmap
 

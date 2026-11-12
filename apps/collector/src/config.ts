@@ -40,6 +40,69 @@ export interface CollectorConfig {
 	};
 }
 
+// The .env parser below is a hand-written linear scan with exactly the results of the regexes it
+// replaced, /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/ and the comment strip
+// /\s+#.*$/. Those re-scanned whitespace runs from every position (O(n²), one shape O(n³)), and every
+// Claude Code hook parses this file at startup (Hard rule 4: bounded time). config-bounded.test.ts
+// keeps the old regexes as the oracle.
+const WS = /\s/;
+const KEY_START = /[A-Za-z_]/;
+const KEY_CHAR = /[A-Za-z0-9_]/;
+/** JS `\s`, one char. */
+const isWs = (c: string | undefined): boolean => c !== undefined && WS.test(c);
+/** Whitespace to `\s` but a line end to `.`: a value can't contain one (the line didn't match). */
+const isLineEnd = (c: string | undefined): boolean =>
+	c === "\r" || c === "\u2028" || c === "\u2029";
+
+/** `KEY <ws> = <ws> value <ws>` from index `i`: [key, value without the surrounding whitespace]. */
+function keyValue(raw: string, i: number): [string, string] | null {
+	const n = raw.length;
+	if (i >= n || !KEY_START.test(raw[i] as string)) return null;
+	let j = i + 1;
+	while (j < n && KEY_CHAR.test(raw[j] as string)) j++;
+	const key = raw.slice(i, j);
+	while (isWs(raw[j])) j++;
+	if (raw[j] !== "=") return null;
+	j++;
+	while (isWs(raw[j])) j++;
+	let end = n;
+	while (end > j && isWs(raw[end - 1])) end--;
+	for (let k = j; k < end; k++) if (isLineEnd(raw[k])) return null;
+	return [key, raw.slice(j, end)];
+}
+
+/** One .env line: leading whitespace, optional `export <ws>`, then KEY=value. */
+function envLine(raw: string): [string, string] | null {
+	let i = 0;
+	while (isWs(raw[i])) i++;
+	// `export K=v`; when the rest doesn't parse, `export` itself is the key (`export = v`)
+	if (raw.startsWith("export", i) && isWs(raw[i + 6])) {
+		let j = i + 6;
+		while (isWs(raw[j])) j++;
+		const kv = keyValue(raw, j);
+		if (kv) return kv;
+	}
+	return keyValue(raw, i);
+}
+
+/** An unquoted value up to its comment: cut at the whitespace run before the first `#` that has one. */
+function stripComment(v: string): string {
+	for (let h = 1; h < v.length; h++) {
+		if (v[h] !== "#" || !isWs(v[h - 1])) continue;
+		let p = h - 1;
+		while (p > 0 && isWs(v[p - 1])) p--;
+		return v.slice(0, p);
+	}
+	return v;
+}
+
+/** `s` without its trailing `/`s (a backward scan, not /\/+$/ — see above). */
+function trimTrailingSlashes(s: string): string {
+	let end = s.length;
+	while (end > 0 && s[end - 1] === "/") end--;
+	return s.slice(0, end);
+}
+
 /** Minimal KEY=VALUE parser (comments, `export `, single/double quotes). Returns only `keys`. */
 export function parseEnvFile(
 	text: string,
@@ -47,18 +110,17 @@ export function parseEnvFile(
 ): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const raw of text.split("\n")) {
-		const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(
-			raw,
-		);
-		if (!m?.[1] || !keys.includes(m[1])) continue;
-		let v = m[2] ?? "";
+		const kv = envLine(raw);
+		if (!kv || !keys.includes(kv[0])) continue;
+		const [key, value] = kv;
+		let v = value;
 		const q = v[0];
 		if ((q === '"' || q === "'") && v.endsWith(q) && v.length >= 2) {
 			v = v.slice(1, -1);
 		} else {
-			v = v.replace(/\s+#.*$/, "");
+			v = stripComment(v);
 		}
-		out[m[1]] = v;
+		out[key] = v;
 	}
 	return out;
 }
@@ -88,7 +150,7 @@ export function loadConfig(
 	}
 	const get = (k: Key) => env[k] || file[k] || undefined;
 	return {
-		hubUrl: (get("HUB_URL") ?? "http://127.0.0.1:4317").replace(/\/+$/, ""),
+		hubUrl: trimTrailingSlashes(get("HUB_URL") ?? "http://127.0.0.1:4317"),
 		ingestToken: get("INGEST_TOKEN") ?? null,
 		machine: get("AGENTCITY_MACHINE") ?? "cockpit",
 		home: get("AGENTCITY_HOME") ?? join(homedir(), ".agentcity"),

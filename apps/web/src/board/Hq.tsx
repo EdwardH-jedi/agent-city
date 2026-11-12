@@ -1,8 +1,10 @@
-// Left column: the 결재 cards waiting at the HQ, and what happened while the owner was away.
+// Left column: the 결재 cards waiting at the HQ, and (?scene=campus only) what happened while the owner
+// was away. In the town (default scene) that history is `Away`, drawn in the right column under 지금 진행.
 // Text only — the owner acts in Agent Office on the Mac, never here ("Mac에서 처리" is said once, in
 // the heading). The column never clips a card or a line in half: at most SIGN_SHOWN cards stand (the
 // rest are counted), and history lines are one short line each (§13.4) with a divider where the
 // date changes; lines that do not fit drop out whole (CSS column wrap).
+import type { ReactNode } from "react";
 import { PAUSED_HEADING, PAUSED_TEXT, SESSION_LIST_HEADING } from "./copy.ts";
 import { type Incident, incidentRows } from "./incidents.ts";
 import { signCards, type VillageModel } from "./model.ts";
@@ -32,7 +34,19 @@ function waited(iso: string, now: number): string {
 	return `${Math.floor(min / 60)}시간째`;
 }
 
-export function Hq({ model, now }: { model: VillageModel; now: number }) {
+export function Hq({
+	model,
+	now,
+	top,
+	away = true,
+}: {
+	model: VillageModel;
+	now: number;
+	/** The town (default scene): its minimap above the queue (design doc 12 §3). */
+	top?: ReactNode;
+	/** false: 자리 비운 사이 is drawn elsewhere (`<Away>` in the right column, the town). */
+	away?: boolean;
+}) {
 	const signs = signCards(model.visits);
 	const shown = signs.slice(0, SIGN_SHOWN);
 	const more = signs
@@ -40,6 +54,7 @@ export function Hq({ model, now }: { model: VillageModel; now: number }) {
 		.reduce((n, c) => n + c.project_ids.length, 0);
 	return (
 		<aside className="hq">
+			{top}
 			<section className="hq-wait" aria-label="HQ 대기">
 				<h2>HQ 대기 · Mac에서 처리</h2>
 				{signs.length === 0 ? (
@@ -64,28 +79,35 @@ export function Hq({ model, now }: { model: VillageModel; now: number }) {
 			</section>
 			<Paused model={model} />
 			<WaitingSessions model={model} now={now} />
-			<section className="hq-away" aria-label="자리 비운 사이">
-				<h2>자리 비운 사이</h2>
-				{model.incidents.length === 0 ? (
-					<p className="hq-empty">없음</p>
-				) : (
-					<ol className="incidents">
-						{incidentRows(model.incidents, now).map((row) =>
-							row.kind === "day" ? (
-								<li key={`day|${row.label}`} className="inc-day">
-									{row.label}
-								</li>
-							) : (
-								<IncidentRow
-									key={`${row.incident.at}|${row.incident.project_id}|${row.incident.text}`}
-									i={row.incident}
-								/>
-							),
-						)}
-					</ol>
-				)}
-			</section>
+			{away && <Away model={model} now={now} />}
 		</aside>
+	);
+}
+
+/** 자리 비운 사이: one short line per event (§13.4), at most six. Same markup wherever it stands. */
+export function Away({ model, now }: { model: VillageModel; now: number }) {
+	return (
+		<section className="hq-away" aria-label="자리 비운 사이">
+			<h2>자리 비운 사이</h2>
+			{model.incidents.length === 0 ? (
+				<p className="hq-empty">없음</p>
+			) : (
+				<ol className="incidents">
+					{incidentRows(model.incidents, now).map((row) =>
+						row.kind === "day" ? (
+							<li key={`day|${row.label}`} className="inc-day">
+								{row.label}
+							</li>
+						) : (
+							<IncidentRow
+								key={`${row.incident.at}|${row.incident.project_id}|${row.incident.text}`}
+								i={row.incident}
+							/>
+						),
+					)}
+				</ol>
+			)}
+		</section>
 	);
 }
 

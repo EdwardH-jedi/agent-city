@@ -167,10 +167,12 @@
 		demoLabels: [...document.querySelectorAll(".demo-band")].map(text),
 		scene: document.querySelector(".tiles")
 			? "2d"
-			: document.querySelector(".campus canvas")
+			: document.querySelector(".campus canvas, .town-stage canvas")
 				? "3d"
 				: "pending",
-		canvas: [...document.querySelectorAll(".campus canvas")].map((e) => ({
+		canvas: [
+			...document.querySelectorAll(".campus canvas, .town-stage canvas"),
+		].map((e) => ({
 			width: e.width,
 			height: e.height,
 			rect: rect(e),
@@ -285,5 +287,32 @@
 		metrics.demoLabels,
 	);
 	check("status_sentence", metrics.sentence.length > 0, metrics.sentence);
+	// the town's minimap gives way to the 결재 cards (12 §3) but must not hide while the HQ column still has
+	// room for it (owner review R1: MAP missing with space left under the column). Room = the empty height
+	// under the column's last block; a map needs 64 px + its title and gaps (TownMinimap.tsx MIN_H).
+	const townMap = document.querySelector(".town-map");
+	if (document.querySelector(".town-stage canvas") && hq) {
+		const shown =
+			!!townMap &&
+			!townMap.hidden &&
+			townMap.getBoundingClientRect().height >= 64;
+		const blocks = [...hq.children].filter(
+			(e) => e !== townMap && getComputedStyle(e).display !== "none",
+		);
+		const last = blocks[blocks.length - 1];
+		const pad = Number.parseFloat(getComputedStyle(hq).paddingBottom) || 0;
+		const spare = last
+			? Math.round(
+					hq.getBoundingClientRect().bottom -
+						pad -
+						last.getBoundingClientRect().bottom,
+				)
+			: 0;
+		check("town_minimap_not_hidden_with_room", shown || spare < 64 + 46, {
+			mounted: !!townMap,
+			shown,
+			spare,
+		});
+	}
 	return { metrics, checks };
 })();

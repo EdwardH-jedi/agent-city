@@ -1,6 +1,7 @@
 // Right column (§13.5): one run, two lines — `프로젝트 · 단계` and Office's nine phases as a bar. No
 // workflow name, token count or report age; a stale run says `마지막 보고 N분 전`. Then the active
 // Claude / Codex sessions, one line each (decision D4). At most 5 rows, then +N.
+import type { ReactNode } from "react";
 import { agoKo, type NowItem, type VillageModel } from "./model.ts";
 import { PHASES, projectLabel } from "./types.ts";
 
@@ -45,7 +46,16 @@ function NowRow({ n, now }: { n: NowItem; now: number }) {
 	);
 }
 
-export function Now({ model, now }: { model: VillageModel; now: number }) {
+export function Now({
+	model,
+	now,
+	below,
+}: {
+	model: VillageModel;
+	now: number;
+	/** the town (default scene): 자리 비운 사이 under the run list (design doc 12 §3). */
+	below?: ReactNode;
+}) {
 	const shown = model.now.slice(0, NOW_SHOWN);
 	const more = model.now.length - shown.length;
 	return (
@@ -61,6 +71,7 @@ export function Now({ model, now }: { model: VillageModel; now: number }) {
 				</ul>
 			)}
 			{more > 0 && <p className="hq-empty">+{more}</p>}
+			{below}
 		</aside>
 	);
 }
