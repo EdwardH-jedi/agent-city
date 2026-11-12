@@ -43,6 +43,11 @@ const TownMinimap = lazy(
 		import("./TownMinimap.tsx").catch(() => ({ default: () => null })),
 );
 
+const PixelTitle = lazy(
+	(): Promise<{ default: ComponentType<{ text: string }> }> =>
+		import("./pixel-title.tsx").catch(() => ({ default: () => null })),
+);
+
 // Whether the town scene is up (its first frame drawn, not fallen back to 2D). The minimap slot in the
 // HQ column renders only then, so without WebGL (or before the scene's chunk loads) nothing is fetched.
 let sceneUp = false;
@@ -66,6 +71,20 @@ export function TownMinimapSlot() {
 	return (
 		<Suspense fallback={null}>
 			<TownMinimap />
+		</Suspense>
+	);
+}
+
+/**
+ * A panel title in the town's pixel font (15 §2): a lazy chunk, drawn only while the town runs (the
+ * scene's chunk has the font already). Before that, and without WebGL, the head shows the DOM word.
+ */
+export function TownPixelWord({ text }: { text: string }) {
+	const up = useSyncExternalStore(subscribeUp, () => sceneUp);
+	if (!up) return null;
+	return (
+		<Suspense fallback={null}>
+			<PixelTitle text={text} />
 		</Suspense>
 	);
 }

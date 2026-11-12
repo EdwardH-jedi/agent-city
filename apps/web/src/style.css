@@ -302,11 +302,16 @@ tr.st-waiting td {
 }
 
 /* ── board ──────────────────────────────────────────────────────────────────
-   Main screen for a monitor seen from 1.5–2 m (design doc §3, §13). Dark on purpose: it stays on all
-   night. One background colour; yellow / red / green only for state. Three text sizes only: the status
-   sentence 48px, 결재 cards and the bubble 24–28px, everything else 16–18px. Two weights (400, 700). */
+   Main screen (design doc §3, decision D10 / doc 15). Dark on purpose: it stays on all night. One
+   background colour; yellow / red / green only for state. The status sentence is the one big line (28 px);
+   every other text is the original town's panel scale — body 12–13 px, dim notes 11–11.5 px, tags and
+   terminal lines 10.5–11 px — times `--ui` (1, or 1.15 / 1.3 from `?ui=`). Two weights (400, 700).
+   Column widths come from board/layout.ts (`--col-l`, `--col-r`, `--top-h`): the stage's integer scale
+   first, the two panels share the rest. */
 .board {
 	--b-bg: #0e1013;
+	--b-panel: #15181d;
+	--b-edge: #2a2f38;
 	--b-line: #2a2f38;
 	--b-fg: #f1f2f4;
 	--b-muted: #9aa1ac;
@@ -314,13 +319,20 @@ tr.st-waiting td {
 	--b-yellow: #f5c518;
 	--b-red: #ff4d4f;
 	--b-ok: #4ade80;
+	--b-title-font:
+		ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+	--b-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+	--ui: 1;
+	--col-l: 384px;
+	--col-r: 384px;
+	--top-h: 56px;
 	position: fixed;
 	inset: 0;
 	display: grid;
-	grid-template-rows: 80px 1fr;
+	grid-template-rows: var(--top-h) 1fr;
 	background: var(--b-bg);
 	color: var(--b-fg);
-	font-size: 16px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 400;
 	line-height: 1.35;
 	overflow: hidden;
@@ -340,10 +352,7 @@ tr.st-waiting td {
 	border-color: var(--b-yellow);
 }
 .board h2 {
-	font-size: 18px;
-	font-weight: 700;
-	margin: 0 0 10px;
-	color: var(--b-muted);
+	margin: 0;
 }
 .board b {
 	font-weight: 700;
@@ -351,15 +360,17 @@ tr.st-waiting td {
 .board-top {
 	display: flex;
 	align-items: center;
-	gap: 28px;
-	padding: 0 28px;
+	gap: 20px;
+	padding: 0 24px;
 	border-bottom: 1px solid var(--b-line);
 	transition: transform 1s;
+	min-width: 0;
 }
+/* the one big line (not scaled by --ui) */
 .board-sentence {
-	font-size: 48px;
+	font-size: 28px;
 	font-weight: 700;
-	line-height: 80px;
+	line-height: var(--top-h);
 	white-space: nowrap;
 }
 .border-red .board-sentence {
@@ -370,23 +381,24 @@ tr.st-waiting td {
 }
 .board-machines {
 	display: flex;
-	gap: 12px;
+	gap: 8px;
 	list-style: none;
 	margin: 0 auto 0 0;
 	padding: 0;
 }
 .bm {
-	padding: 4px 14px;
+	padding: 2px 10px;
 	border: 1px solid var(--b-line);
 	border-radius: 999px;
 	color: var(--b-muted);
-	font-size: 18px;
+	font-size: calc(12.5px * var(--ui));
+	white-space: nowrap;
 }
 .bm-dot {
 	display: inline-block;
-	width: 10px;
-	height: 10px;
-	margin-right: 8px;
+	width: 8px;
+	height: 8px;
+	margin-right: 6px;
 	border-radius: 50%;
 	background: currentColor;
 }
@@ -399,37 +411,42 @@ tr.st-waiting td {
 .bm-offline {
 	color: var(--b-red);
 }
+/* never observed (`forge 모름`): dim, not hidden (07 §7) */
+.bm-unobserved {
+	color: var(--b-dim);
+}
 .board-counts {
-	font-size: 18px;
+	font-size: calc(13px * var(--ui));
 	display: flex;
 	align-items: baseline;
-	gap: 8px;
+	gap: 6px;
 	white-space: nowrap;
 }
 .board-link {
-	font-size: 16px;
+	font-size: calc(12px * var(--ui));
 	color: var(--b-muted);
+	white-space: nowrap;
 }
 .demo-band {
-	padding: 4px 14px;
+	padding: 2px 10px;
 	white-space: nowrap;
 	border: 1px solid var(--b-muted);
-	border-radius: 6px;
+	border-radius: 3px;
 	color: var(--b-fg);
-	font-size: 18px;
+	font-size: calc(12px * var(--ui));
 	font-weight: 700;
 }
 .conn-band {
 	position: fixed;
-	top: 80px;
+	top: var(--top-h);
 	left: 50%;
 	transform: translateX(-50%);
 	z-index: 5;
-	padding: 6px 24px;
+	padding: 4px 18px;
 	background: var(--b-bg);
 	border: 2px solid var(--b-yellow);
-	border-radius: 0 0 10px 10px;
-	font-size: 18px;
+	border-radius: 0 0 6px 6px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 700;
 }
 .board-error {
@@ -437,43 +454,95 @@ tr.st-waiting td {
 	bottom: 12px;
 	left: 24px;
 	color: var(--b-muted);
-	font-size: 16px;
+	font-size: calc(12px * var(--ui));
 }
-/* §13.7: left 320, right 300, the village takes the rest */
+/* 15 §1: left and right share what the stage leaves (board/layout.ts); the middle takes the rest */
 .board-body {
 	display: grid;
-	grid-template-columns: 320px minmax(0, 1fr) 300px;
+	grid-template-columns: var(--col-l) minmax(0, 1fr) var(--col-r);
 	min-height: 0;
 }
+/* the side columns: a stack of panel boxes, the original's dock (8 px apart, nothing nested) */
 .hq,
 .now {
-	padding: 18px 16px;
+	padding: 8px;
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
-	gap: 18px;
+	gap: 8px;
 	min-height: 0;
+	min-width: 0;
 }
-.hq {
-	border-right: 1px solid var(--b-line);
+.hq > section,
+.now > section,
+.town-map {
+	background: var(--b-panel);
+	border: 1px solid var(--b-edge);
+	min-width: 0;
 }
-.now {
-	border-left: 1px solid var(--b-line);
+/* a panel's head strip: the title, then a dim note (original `.m32-head`, `.tui-panel-head`) */
+.phead {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 28px;
+	padding: 4px 8px 4px 10px;
+	border-bottom: 1px solid var(--b-line);
+	min-width: 0;
+}
+.phead[hidden] {
+	display: none;
+}
+.ptitle {
+	flex: none;
+	position: relative;
+	display: flex;
+	align-items: center;
+	height: calc(14px * var(--ui));
+	font-family: var(--b-title-font), system-ui, -apple-system, sans-serif;
+	font-size: calc(11px * var(--ui));
+	font-weight: 700;
+	line-height: calc(14px * var(--ui));
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: var(--b-muted);
+}
+/* the pixel title is drawn: the DOM word stays for screen readers, out of sight (no layout change) */
+.ptitle:has(.ptitle-px) .ptitle-text {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+.ptitle-px-box,
+.ptitle-px {
+	display: block;
+	image-rendering: pixelated;
+}
+.psub {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: calc(11.5px * var(--ui));
+	color: var(--b-dim);
 }
 .hq-empty,
 .quiet {
 	color: var(--b-muted);
-	font-size: 18px;
+	font-size: calc(12px * var(--ui));
 	margin: 0;
+}
+.hq-empty {
+	padding: 6px 10px;
 }
 .hq-wait {
 	flex: none;
 	display: flex;
 	flex-direction: column;
-	gap: 10px;
-}
-.hq-wait h2 {
-	margin: 0;
 }
 /* a list that never cuts a row in half: what does not fit wraps into a second column out of sight */
 .cards,
@@ -481,13 +550,13 @@ tr.st-waiting td {
 .now-list {
 	list-style: none;
 	margin: 0;
-	padding: 0;
+	padding: 6px 10px;
 	display: flex;
 	flex-direction: column;
 	flex-wrap: wrap;
 	align-content: flex-start;
 	column-gap: 64px;
-	row-gap: 14px;
+	row-gap: 6px;
 	overflow: hidden;
 	min-height: 0;
 }
@@ -498,10 +567,10 @@ tr.st-waiting td {
 	flex: none;
 }
 .card {
-	border-left: 6px solid var(--b-line);
-	padding: 4px 0 4px 14px;
+	border-left: 2px solid var(--b-line);
+	padding: 2px 0 2px 8px;
 	display: grid;
-	gap: 4px;
+	gap: 2px;
 }
 .card-folder {
 	border-left-color: var(--b-yellow);
@@ -510,7 +579,7 @@ tr.st-waiting td {
 	border-left-color: var(--b-red);
 }
 .card-project {
-	font-size: 24px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 700;
 	display: flex;
 	justify-content: space-between;
@@ -524,17 +593,18 @@ tr.st-waiting td {
 }
 .card-wait {
 	flex: none;
-	font-size: 18px;
+	font-size: calc(11px * var(--ui));
 	font-weight: 400;
 	color: var(--b-muted);
 }
 .card-text {
-	font-size: 26px;
+	font-size: calc(12px * var(--ui));
+	color: var(--b-muted);
 	overflow-wrap: anywhere;
 }
 .card code {
-	font-size: 16px;
-	color: var(--b-muted);
+	font-size: calc(11px * var(--ui));
+	color: var(--b-dim);
 	overflow-wrap: anywhere;
 }
 .hq-away {
@@ -545,23 +615,24 @@ tr.st-waiting td {
 }
 .incidents {
 	flex: 1;
-	row-gap: 6px;
+	row-gap: 3px;
 }
 /* §13.4: one dim line each, `17:03 docs T3 통과`, ellipsis when long */
 .inc {
 	display: flex;
-	gap: 10px;
+	gap: 8px;
 	color: var(--b-muted);
-	font-size: 16px;
+	font-size: calc(12px * var(--ui));
 	white-space: nowrap;
 	overflow: hidden;
 }
 .inc-time {
 	flex: none;
+	font-variant-numeric: tabular-nums;
 }
 .inc-project {
 	flex: none;
-	max-width: 110px;
+	max-width: 40%;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
@@ -571,15 +642,15 @@ tr.st-waiting td {
 	text-overflow: ellipsis;
 }
 .inc-day {
-	margin-top: 4px;
-	padding-top: 4px;
+	margin-top: 2px;
+	padding-top: 2px;
 	border-top: 1px solid var(--b-line);
 	color: var(--b-dim);
-	font-size: 16px;
+	font-size: calc(11px * var(--ui));
 }
 /* §13.5: two lines per run */
 .now-line {
-	font-size: 18px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 700;
 	white-space: nowrap;
 	overflow: hidden;
@@ -592,12 +663,12 @@ tr.st-waiting td {
 .phases {
 	display: grid;
 	grid-template-columns: repeat(9, 1fr);
-	gap: 3px;
-	margin-top: 6px;
+	gap: 2px;
+	margin-top: 4px;
 }
 .phase {
-	height: 12px;
-	border-radius: 2px;
+	height: 4px;
+	border-radius: 1px;
 	background: var(--b-line);
 }
 .phase-done {
@@ -630,7 +701,7 @@ tr.st-waiting td {
 	filter: saturate(0.35) brightness(0.6);
 }
 .tile-name {
-	font-size: 18px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 700;
 	white-space: nowrap;
 	overflow: hidden;
@@ -733,8 +804,8 @@ tr.st-waiting td {
 	max-width: min(720px, 100%);
 	padding: 6px 16px;
 	border: 2px solid var(--b-fg);
-	border-radius: 14px;
-	font-size: 24px;
+	border-radius: 10px;
+	font-size: calc(14px * var(--ui));
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -852,7 +923,7 @@ tr.st-waiting td {
 	border-radius: 6px;
 	background: #0e1013cc;
 	color: var(--b-fg);
-	font-size: 18px;
+	font-size: calc(12px * var(--ui));
 	font-weight: 700;
 }
 .cmp-bubble {
@@ -861,10 +932,10 @@ tr.st-waiting td {
 	text-overflow: ellipsis;
 	padding: 6px 16px;
 	border: 2px solid var(--b-fg);
-	border-radius: 14px;
+	border-radius: 10px;
 	background: #0e1013e6;
 	color: var(--b-fg);
-	font-size: 24px;
+	font-size: calc(14px * var(--ui));
 }
 .cmp-bubble[hidden] {
 	display: none;
@@ -899,10 +970,10 @@ tr.st-waiting td {
 	white-space: nowrap;
 	padding: 6px 16px;
 	border: 2px solid var(--b-fg);
-	border-radius: 14px;
+	border-radius: 10px;
 	background: #0e1013e6;
 	color: var(--b-fg);
-	font-size: 24px;
+	font-size: calc(14px * var(--ui));
 	pointer-events: none;
 }
 /* the town's minimap at the top of the HQ column (the town; restyled in S4) */
@@ -926,14 +997,12 @@ tr.st-waiting td {
 	animation: none;
 }
 
-/* ── the ring town's frame (`.board.scene-town`, design doc 12 §3) ───────────────────────────────────────
-   Colours, borders and title look come from the original town's panels (app/town-panels.css: page
+/* ── the ring town's frame (`.board.scene-town`, design doc 12 §3, 15) ─────────────────────────────────────
+   Colours, borders and the panel look come from the original town's panels (app/town-panels.css: page
    #0f0c0b, panel #19140f, edge #6b5a48, line #3a2f27, ink #efe6d4 / #b9ab92 / #8f826e, buttons #2a221d,
-   status yellow #f0b030 and green #4cd06a). The original draws Latin panel titles ("MAP") as a 5-px bitmap
-   font on a canvas; no webfont file exists, so the titles here are DOM text in a monospace stack with wide
-   letter-spacing (Korean text keeps the board font). Sizes stay on the three tiers (48 / 24-28 / 16-18) and
-   weights on two (400 / 700). The column boxes stay 320 / rest / 300 wide: the inset panel is a ::before
-   inside each column, not a margin. */
+   status yellow #f0b030 and green #4cd06a). Each section of a side column is one of the original's panel
+   boxes (head strip + body); the titles are drawn in the town's 5-px pixel font while the town runs
+   (town/pixel-title.tsx), DOM text in a monospace stack otherwise. */
 .board.scene-town {
 	--b-bg: #0f0c0b;
 	--b-panel: #19140f;
@@ -945,8 +1014,6 @@ tr.st-waiting td {
 	--b-yellow: #f0b030;
 	--b-ok: #4cd06a;
 	--b-btn: #2a221d;
-	--b-title-font:
-		ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 }
 .scene-town .board-top {
 	background: #181310;
@@ -955,10 +1022,10 @@ tr.st-waiting td {
 .scene-town .bm {
 	background: var(--b-btn);
 	border-radius: 3px;
-	padding: 4px 12px;
+	padding: 2px 9px;
 }
 .scene-town .board-link {
-	padding: 4px 12px;
+	padding: 2px 9px;
 	background: var(--b-btn);
 	border: 1px solid var(--b-line);
 	border-radius: 3px;
@@ -969,27 +1036,15 @@ tr.st-waiting td {
 	color: var(--b-fg);
 	background: var(--b-btn);
 	border: 1px solid var(--b-edge);
-	border-radius: 3px;
 	letter-spacing: 0.05em;
 }
 .scene-town .conn-band {
 	background: var(--b-panel);
 	border-radius: 0 0 3px 3px;
 }
-/* the side columns: an inset panel with the original's edge colour, behind the content */
 .scene-town .hq,
 .scene-town .now {
-	position: relative;
-	isolation: isolate;
-	border: 0;
 	background: var(--b-bg);
-}
-.scene-town .hq {
-	padding: 20px 18px 20px 22px;
-	gap: 12px;
-}
-.scene-town .now {
-	padding: 20px 22px 20px 18px;
 }
 /* the 결재 block never shrinks; the blocks under it drop whole lines before anything is cut in half */
 .scene-town .hq > .hq-wait ~ .hq-wait {
@@ -997,52 +1052,15 @@ tr.st-waiting td {
 	min-height: 0;
 	overflow: hidden;
 }
-.scene-town .hq::before,
-.scene-town .now::before {
-	content: "";
-	position: absolute;
-	z-index: -1;
-	top: 8px;
-	bottom: 8px;
-	background: var(--b-panel);
-	border: 1px solid var(--b-edge);
-}
-.scene-town .hq::before {
-	left: 8px;
-	right: 4px;
-}
-.scene-town .now::before {
-	left: 4px;
-	right: 8px;
-}
-/* panel titles: the head strip of the original's panels */
-.scene-town h2,
-.scene-town .town-map-title {
-	margin: 0 0 4px;
-	padding: 0 0 7px;
-	border-bottom: 1px solid var(--b-line);
-	font-family: var(--b-title-font), system-ui, -apple-system, sans-serif;
-	font-size: 16px;
-	font-weight: 700;
-	letter-spacing: 0.08em;
-	color: var(--b-muted);
-}
-.scene-town .hq-wait h2 {
-	margin: 0;
-}
 .scene-town .town-map {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
 }
 .scene-town .town-map[hidden] {
 	display: none;
 }
-.scene-town .town-map-title {
-	margin: 0;
-}
-.scene-town .hq-away {
-	margin-top: 0;
+.town-map-canvas {
+	margin: 4px auto;
 }
 /* the run list keeps its size; 자리 비운 사이 takes what is left under it and drops whole lines */
 .scene-town .now-list {

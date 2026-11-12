@@ -3,6 +3,7 @@
 // Claude / Codex sessions, one line each (decision D4). At most 5 rows, then +N.
 import type { ReactNode } from "react";
 import { agoKo, type NowItem, type VillageModel } from "./model.ts";
+import { PanelHead } from "./PanelHead.tsx";
 import { PHASES, projectLabel } from "./types.ts";
 
 export const NOW_SHOWN = 5;
@@ -50,27 +51,36 @@ export function Now({
 	model,
 	now,
 	below,
+	pixel = false,
 }: {
 	model: VillageModel;
 	now: number;
 	/** the town (default scene): 자리 비운 사이 under the run list (design doc 12 §3). */
 	below?: ReactNode;
+	pixel?: boolean;
 }) {
 	const shown = model.now.slice(0, NOW_SHOWN);
 	const more = model.now.length - shown.length;
 	return (
 		<aside className="now" aria-label="지금 진행">
-			<h2>지금 진행</h2>
-			{model.now.length === 0 ? (
-				<p className="hq-empty">없음</p>
-			) : (
-				<ul className="now-list">
-					{shown.map((n) => (
-						<NowRow key={n.key} n={n} now={now} />
-					))}
-				</ul>
-			)}
-			{more > 0 && <p className="hq-empty">+{more}</p>}
+			<section className="now-runs">
+				<PanelHead
+					title="SESSIONS"
+					label="지금 진행"
+					sub="지금 진행"
+					pixel={pixel}
+				/>
+				{model.now.length === 0 ? (
+					<p className="hq-empty">없음</p>
+				) : (
+					<ul className="now-list">
+						{shown.map((n) => (
+							<NowRow key={n.key} n={n} now={now} />
+						))}
+					</ul>
+				)}
+				{more > 0 && <p className="hq-empty">+{more}</p>}
+			</section>
 			{below}
 		</aside>
 	);

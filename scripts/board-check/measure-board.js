@@ -138,8 +138,14 @@
 		Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
 	const demo = new URLSearchParams(location.search).get("demo") === "1";
 	const sizes = [...new Set(fonts.map((f) => f.size))].sort((a, b) => a - b);
-	const allowed = (s) =>
-		s === 48 || (s >= 24 && s <= 28) || (s >= 16 && s <= 18);
+	// 15 §1: one panel text scale (`--ui`, 1 / 1.15 / 1.3), every text but the sentence within 10.5–14 px × ui
+	const ui =
+		Number.parseFloat(
+			getComputedStyle(document.querySelector(".board") ?? document.body)
+				.getPropertyValue("--ui")
+				.trim(),
+		) || 1;
+	const allowed = (s) => s >= 10.5 * ui - 0.01 && s <= 14 * ui + 0.01;
 	const metrics = {
 		at: new Date().toISOString(),
 		url: location.href,
@@ -187,12 +193,29 @@
 	const checks = [];
 	const check = (name, pass, value) =>
 		checks.push({ name, status: pass ? "PASS" : "FAIL", value });
+	// 15 §1 (board/layout.ts): the stage's integer scale first (384×288 · s, s ≤ 4, two 240-px panels beside
+	// it, within the body under the top band), then the two panels share the rest, each 240–420 px
+	const top = rect(document.querySelector(".board-top"));
+	const body = innerHeight - (top ? Math.round(top.height) : 0);
+	let scale = 1;
+	for (let s = 4; s >= 2; s -= 1)
+		if (384 * s + 480 <= innerWidth && 288 * s <= body) {
+			scale = s;
+			break;
+		}
+	const each = Math.max(
+		240,
+		Math.min(420, Math.floor((innerWidth - 384 * scale) / 2)),
+	);
+	const widths = columns.map((c) => c.rect.width);
 	check(
-		"columns_320_300",
+		"columns_stage_first",
 		columns.length === 3 &&
-			Math.abs(columns[0].rect.width - 320) < 1 &&
-			Math.abs(columns[2].rect.width - 300) < 1,
-		columns.map((c) => c.rect.width),
+			Math.abs(widths[0] - each) < 1 &&
+			Math.abs(widths[2] - each) < 1 &&
+			widths[1] >= 384 * scale - 1 &&
+			288 * scale <= body,
+		{ widths, expected: [each, innerWidth - 2 * each, each], scale, body },
 	);
 	if (innerWidth === 1920)
 		check(
@@ -217,13 +240,30 @@
 			),
 		columns.map((c) => c.rect),
 	);
+	const sentenceEl = document.querySelector(".board-sentence");
+	const panelSizes = [
+		...new Set(
+			fonts
+				.filter((f) => !f.class.split(" ").includes("board-sentence"))
+				.map((f) => f.size),
+		),
+	].sort((a, b) => a - b);
 	check(
-		"font_three_tiers",
+		"font_panel_scale",
 		fonts.length > 0 &&
-			sizes.every(allowed) &&
-			getComputedStyle(document.querySelector(".board-sentence")).fontSize ===
-				"48px",
-		sizes,
+			panelSizes.every(allowed) &&
+			!!sentenceEl &&
+			getComputedStyle(sentenceEl).fontSize === "28px",
+		{
+			ui,
+			sizes: panelSizes,
+			out: fonts
+				.filter(
+					(f) =>
+						!f.class.split(" ").includes("board-sentence") && !allowed(f.size),
+				)
+				.slice(0, 5),
+		},
 	);
 	check(
 		"font_at_most_two_weights",

@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { PAUSED_HEADING, PAUSED_TEXT, SESSION_LIST_HEADING } from "./copy.ts";
 import { type Incident, incidentRows } from "./incidents.ts";
 import { signCards, type VillageModel } from "./model.ts";
+import { PanelHead } from "./PanelHead.tsx";
 import { projectLabel } from "./types.ts";
 
 export const SIGN_SHOWN = 3;
@@ -39,6 +40,7 @@ export function Hq({
 	now,
 	top,
 	away = true,
+	pixel = false,
 }: {
 	model: VillageModel;
 	now: number;
@@ -46,6 +48,8 @@ export function Hq({
 	top?: ReactNode;
 	/** false: 자리 비운 사이 is drawn elsewhere (`<Away>` in the right column, the town). */
 	away?: boolean;
+	/** Titles in the town's pixel font (the town scene). */
+	pixel?: boolean;
 }) {
 	const signs = signCards(model.visits);
 	const shown = signs.slice(0, SIGN_SHOWN);
@@ -56,7 +60,12 @@ export function Hq({
 		<aside className="hq">
 			{top}
 			<section className="hq-wait" aria-label="HQ 대기">
-				<h2>HQ 대기 · Mac에서 처리</h2>
+				<PanelHead
+					title="HQ"
+					label="HQ 대기"
+					sub={`대기 ${signs.reduce((n, c) => n + c.ids.length, 0)} · Mac에서 처리`}
+					pixel={pixel}
+				/>
 				{signs.length === 0 ? (
 					<p className="hq-empty">없음</p>
 				) : (
@@ -77,18 +86,31 @@ export function Hq({
 				)}
 				{more > 0 && <p className="hq-empty">외 {more}건</p>}
 			</section>
-			<Paused model={model} />
-			<WaitingSessions model={model} now={now} />
-			{away && <Away model={model} now={now} />}
+			<Paused model={model} pixel={pixel} />
+			<WaitingSessions model={model} now={now} pixel={pixel} />
+			{away && <Away model={model} now={now} pixel={pixel} />}
 		</aside>
 	);
 }
 
 /** 자리 비운 사이: one short line per event (§13.4), at most six. Same markup wherever it stands. */
-export function Away({ model, now }: { model: VillageModel; now: number }) {
+export function Away({
+	model,
+	now,
+	pixel = false,
+}: {
+	model: VillageModel;
+	now: number;
+	pixel?: boolean;
+}) {
 	return (
 		<section className="hq-away" aria-label="자리 비운 사이">
-			<h2>자리 비운 사이</h2>
+			<PanelHead
+				title="LOG"
+				label="자리 비운 사이"
+				sub="자리 비운 사이"
+				pixel={pixel}
+			/>
 			{model.incidents.length === 0 ? (
 				<p className="hq-empty">없음</p>
 			) : (
@@ -115,14 +137,19 @@ export function Away({ model, now }: { model: VillageModel; now: number }) {
  * Decision D2: runs resting between loops, under HQ 대기 — no sound, no border colour, dim text. The
  * sentence is said once for all of them; the names are one line.
  */
-function Paused({ model }: { model: VillageModel }) {
+function Paused({ model, pixel }: { model: VillageModel; pixel: boolean }) {
 	if (model.paused.length === 0) return null;
 	const names = [
 		...new Set(model.paused.map((p) => projectLabel(p.project_id))),
 	];
 	return (
 		<section className="hq-wait" aria-label="쉬는 중">
-			<h2>{PAUSED_HEADING}</h2>
+			<PanelHead
+				title="PAUSED"
+				label="쉬는 중"
+				sub={PAUSED_HEADING}
+				pixel={pixel}
+			/>
 			<ol className="incidents">
 				<li className="inc">
 					<span className="inc-text">{names.join(" · ")}</span>
@@ -139,13 +166,26 @@ function Paused({ model }: { model: VillageModel }) {
  * Decision D4: sessions still waiting for input after their 30 minutes at the HQ — one dim line each
  * (`42분째 docs Claude`), no sound, no border colour. At most WAITING_SHOWN, then `외 N`.
  */
-function WaitingSessions({ model, now }: { model: VillageModel; now: number }) {
+function WaitingSessions({
+	model,
+	now,
+	pixel,
+}: {
+	model: VillageModel;
+	now: number;
+	pixel: boolean;
+}) {
 	const list = model.waitingSessions;
 	if (list.length === 0) return null;
 	const shown = list.slice(0, WAITING_SHOWN);
 	return (
 		<section className="hq-wait" aria-label={SESSION_LIST_HEADING}>
-			<h2>{SESSION_LIST_HEADING}</h2>
+			<PanelHead
+				title="WAITING"
+				label={SESSION_LIST_HEADING}
+				sub={SESSION_LIST_HEADING}
+				pixel={pixel}
+			/>
 			<ol className="incidents">
 				{shown.map((w) => (
 					<li key={w.id} className="inc">

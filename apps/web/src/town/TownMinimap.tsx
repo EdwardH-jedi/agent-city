@@ -3,7 +3,7 @@
 // what the stage shows right now (live.ts), on a slow timer. No listeners: nothing on it responds.
 // It is the first thing to give way in the HQ column (§3): it never pushes the 결재 cards out of view —
 // it shrinks to the room left above them (and the blocks under them), and hides when even a small map
-// would not fit. Its `MAP` title is drawn as DOM text in the panel-title style (style.css).
+// would not fit. Its `MAP` title is the panels' head strip, drawn in the town's pixel font (pixel-title.tsx).
 import { useEffect, useRef } from "react";
 import {
 	drawBase,
@@ -13,6 +13,7 @@ import {
 	ringModel,
 } from "./engine/minimap.mjs";
 import { townLive } from "./live.ts";
+import PixelTitle from "./pixel-title.tsx";
 
 const REDRAW_MS = 500;
 const MAX_H = 240;
@@ -23,6 +24,8 @@ const MAX_H = 240;
  * because a map of 85 px + its title was refused (owner review R1).
  */
 const MIN_H = 64;
+/** The map's panel box around its canvas: a 1 px border top and bottom, a 4 px margin above and below. */
+const CHROME = 2 + 8;
 const GREY = "#6a6660"; // minimap.mjs: every lamp grey while reports are stopped
 const GUIDE = "#f6d070";
 const GUIDE_EDGE = "#1b1512";
@@ -41,16 +44,23 @@ function naturalHeight(el: HTMLElement): number {
 		(k): k is HTMLElement =>
 			k instanceof HTMLElement && getComputedStyle(k).display !== "none",
 	);
-	let sum = px(cs.paddingTop) + px(cs.paddingBottom);
+	let sum =
+		px(cs.paddingTop) +
+		px(cs.paddingBottom) +
+		px(cs.borderTopWidth) +
+		px(cs.borderBottomWidth);
 	for (const k of kids) {
 		if (k.classList.contains("incidents")) {
 			const rows = Array.from(k.children).filter(
 				(r): r is HTMLElement =>
 					r instanceof HTMLElement && getComputedStyle(r).display !== "none",
 			);
+			const ks = getComputedStyle(k);
 			sum +=
 				rows.reduce((n, r) => n + r.offsetHeight, 0) +
-				px(getComputedStyle(k).rowGap) * Math.max(0, rows.length - 1);
+				px(ks.rowGap) * Math.max(0, rows.length - 1) +
+				px(ks.paddingTop) +
+				px(ks.paddingBottom);
 		} else sum += k.offsetHeight;
 	}
 	return sum + px(cs.rowGap) * Math.max(0, kids.length - 1);
@@ -83,9 +93,11 @@ function roomAbove(wrap: HTMLElement): { titled: number; bare: number } {
 	const title = wrap.querySelector<HTMLElement>(".town-map-title");
 	if (title && !title.hidden)
 		titleH = title.offsetHeight + px(getComputedStyle(wrap).rowGap);
+	// the panel box's border and the canvas's margin (style.css: 1 px border, 4 px above and below)
+	const chrome = wrap.offsetHeight > 0 ? CHROME : 0;
 	return {
-		titled: Math.min(MAX_H, room - titleH),
-		bare: Math.min(MAX_H, room),
+		titled: Math.min(MAX_H, room - titleH - chrome),
+		bare: Math.min(MAX_H, room - chrome),
 	};
 }
 /** Last measured height of the `MAP` title plus the gap under it. */
@@ -173,7 +185,12 @@ export default function TownMinimap() {
 	}, []);
 	return (
 		<div ref={wrapRef} className="town-map" aria-hidden="true" hidden>
-			<h2 className="town-map-title">MAP</h2>
+			<div className="town-map-title phead">
+				<h2 className="ptitle">
+					<span className="ptitle-text">MAP</span>
+					<PixelTitle text="MAP" />
+				</h2>
+			</div>
 			<canvas ref={ref} className="town-map-canvas" />
 		</div>
 	);

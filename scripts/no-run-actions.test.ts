@@ -201,33 +201,31 @@ describe("the main screen cannot act on a run", () => {
 		}
 	});
 
-	test("nothing on screen is smaller than 16px", () => {
+	test("nothing on screen is smaller than 10.5px; the status sentence is the one big line (28px)", () => {
 		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
 		const board = css.slice(css.indexOf("/* ── board"));
 		expect(board.length).toBeGreaterThan(100);
-		const sizes = [...board.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) =>
-			Number(m[1]),
-		);
+		const sizes = [
+			...board.matchAll(/font-size:\s*(?:calc\()?([\d.]+)px/g),
+		].map((m) => Number(m[1]));
 		expect(sizes.length).toBeGreaterThan(5);
-		expect(Math.min(...sizes)).toBeGreaterThanOrEqual(16);
-		expect(Math.max(...sizes)).toBeGreaterThanOrEqual(44); // the status sentence
+		expect(Math.min(...sizes)).toBeGreaterThanOrEqual(10.5);
+		expect(Math.max(...sizes)).toBe(28); // the status sentence
 	});
 
-	test("§13.3: three text sizes only (48 · 24–28 · 16–18) and two weights", () => {
+	test("decision D10 (15 §1): panel text 10.5–14px × --ui, the sentence 28px unscaled, two weights", () => {
 		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
 		const board = css.slice(css.indexOf("/* ── board"));
-		const sizes = new Set(
-			[...board.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1])),
+		const decls = [...board.matchAll(/font-size:\s*([^;]+);/g)].map((m) =>
+			(m[1] as string).trim(),
 		);
-		for (const px of sizes)
-			expect({
-				px,
-				ok: px === 48 || (px >= 24 && px <= 28) || (px >= 16 && px <= 18),
-			}).toEqual({
-				px,
-				ok: true,
-			});
-		expect(sizes.has(48)).toBe(true);
+		const fixed = decls.filter((d) => !d.startsWith("calc("));
+		expect(fixed).toEqual(["28px"]);
+		for (const d of decls.filter((x) => x.startsWith("calc("))) {
+			const m = /^calc\(([\d.]+)px \* var\(--ui\)\)$/.exec(d);
+			const px = m ? Number(m[1]) : Number.NaN;
+			expect({ d, ok: px >= 10.5 && px <= 14 }).toEqual({ d, ok: true });
+		}
 		const weights = new Set(
 			[...board.matchAll(/font-weight:\s*(\w+)/g)].map((m) => m[1]),
 		);
