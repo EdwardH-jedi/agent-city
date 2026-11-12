@@ -5,8 +5,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { ColorManagement } from "three";
 import type { CampusModel } from "../campus/presentation.ts";
 import { DisposalRegistry } from "../campus/resources.ts";
+import { HQ_HOLD_MS } from "./choreo.ts";
 import { paletteColors, type TownPipeline } from "./pipeline.ts";
 import { createTownStage } from "./stage.ts";
+import { buildTownWorld } from "./world.ts";
 
 const g = globalThis as unknown as Record<string, unknown>;
 const saved = new Map<string, unknown>();
@@ -193,5 +195,71 @@ describe("town stage start", () => {
 			0, 0, 0,
 		]);
 		expect(reg.size).toBe(0);
+	});
+});
+
+describe("the HQ shot's five minutes count from the 결재 lead's real arrival", () => {
+	// a 결재 visitor that began `ageMs` ago: does the first frame show the HQ shot (blend 1) or the patrol (0)?
+	function firstBlend(ageMs: number): number {
+		const dom = fakeDom();
+		let frame: ((ts: number) => void) | null = null;
+		stubGlobal("requestAnimationFrame", (f: (ts: number) => void) => {
+			frame = f;
+			return 1;
+		});
+		const blends: number[] = [];
+		const world = buildTownWorld({ time: "day", lots: null });
+		const m: CampusModel = {
+			...model,
+			repos: [
+				{
+					repo_id: "o/a",
+					label: "a",
+					active_tasks: 0,
+					monitors: [],
+					pending_requests: 1,
+					has_stopped: false,
+				},
+			],
+			visitors: [
+				{
+					visit_id: "m:r1",
+					kind: "sign",
+					carry: "folder",
+					repo_id: "o/a",
+					created_at: new Date(Date.now() - ageMs).toISOString(),
+				},
+			],
+		};
+		const stage = createTownStage(
+			dom.host,
+			{ model: m, reducedMotion: false, time: "day" },
+			{ onContextLost() {}, onReady() {} },
+			{
+				createPipeline: () =>
+					({
+						world,
+						setWorld() {},
+						setLamps() {},
+						setLitWindows() {},
+						setBoard() {},
+						resize() {},
+						render(_a: unknown, shot: { blend: number }) {
+							blends.push(shot.blend);
+						},
+						dispose() {},
+					}) as unknown as TownPipeline,
+			},
+		);
+		(frame as ((ts: number) => void) | null)?.(1000);
+		stage.dispose();
+		world.dispose();
+		return blends[0] ?? Number.NaN;
+	}
+
+	test("arrived 2 minutes ago: the HQ shot; 2 hours ago: the patrol (the lead still stands at the door)", () => {
+		expect(firstBlend(2 * 60_000)).toBe(1);
+		expect(firstBlend(2 * 3600_000)).toBe(0);
+		expect(firstBlend(HQ_HOLD_MS + 60_000)).toBe(0);
 	});
 });

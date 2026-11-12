@@ -10,8 +10,10 @@
 //  - the kangaroo: a small state machine anchored to the moments it changes (stepKangaroo): patrol on
 //    the centre line (phase = scene time + a shift); once a waiting 결재 lead has arrived it walks
 //    (4.2 u/s) from where it is, the near way, to the road in front of the HQ door and stands there;
-//    when no 결재 is left it walks from where it is back onto the centre line and the patrol carries on
-//    from that point (the shift). Every transition starts from where it actually is: no jumps;
+//    HQ_HOLD_MS after the last 결재 lead arrived (or when no 결재 is left, if sooner) it walks from where
+//    it is back onto the centre line and the patrol carries on from that point (the shift) — the leads
+//    stay at the door while their 결재 lasts; a new 결재 lead arriving brings it back for HQ_HOLD_MS.
+//    Every transition starts from where it actually is: no jumps;
 //  - the camera: follows the kangaroo (orbit rig); it blends toward the fixed HQ shot (door, queue,
 //    pylon) while the kangaroo stands at the HQ, and back when it leaves — from wherever the blend is.
 import {
@@ -44,6 +46,11 @@ export const ROO_HQ_OFFSET = 1.6;
 export const ROO_SPEED = 4.2;
 /** The camera's blend to and from the HQ shot. */
 export const CAM_BLEND_MS = 1_500;
+/**
+ * How long the kangaroo (and the camera) stays at the HQ after a 결재 lead arrives. A 결재 can wait for
+ * hours; after this the patrol resumes and the lead keeps standing at the door (owner review R1).
+ */
+export const HQ_HOLD_MS = 5 * 60_000;
 
 const TAU = Math.PI * 2;
 const HQ = (() => {
@@ -383,12 +390,25 @@ export interface KangarooInput {
 	book: VisitBook;
 	/** Walk length (ms) of a visit's route. */
 	walkMsOf(v: Visit): number;
+	/**
+	 * How much older the visit was when first seen than its head start says (the head start is clamped
+	 * to 60 s): a 결재 that began two hours ago arrived two hours ago, not a minute before the page opened.
+	 * Absent → 0.
+	 */
+	lateMsOf?(v: Visit): number;
 	reducedMotion: boolean;
 }
 
 /** Scene time a visit's lead reaches its spot. */
 export const arrivesAt = (v: Visit, walkMs: number): number =>
 	v.seen_at + walkMs - v.head_start_ms;
+
+/** Scene time the kangaroo's stay at the HQ for this visit is over: its real arrival + HQ_HOLD_MS. */
+export const holdEndsAt = (v: Visit, walkMs: number, lateMs: number): number =>
+	arrivesAt(v, walkMs) - Math.max(0, lateMs) + HQ_HOLD_MS;
+
+const holdEnd = (v: Visit, input: KangarooInput): number =>
+	holdEndsAt(v, input.walkMsOf(v), input.lateMsOf?.(v) ?? 0);
 
 const walkMs = (p: Path) => (p.length / ROO_SPEED) * 1000;
 
@@ -436,18 +456,26 @@ export function initialRoo(input: KangarooInput): RooState {
 	return wantsHq(input) ? leavePatrol(patrol, input) : patrol;
 }
 
-/** A waiting 결재 lead has reached the HQ: the kangaroo should come. */
-function wantsHq({ book, now, walkMsOf }: KangarooInput): boolean {
+/** A waiting 결재 lead reached the HQ less than HQ_HOLD_MS ago: the kangaroo should come. */
+function wantsHq(input: KangarooInput): boolean {
+	const { book, now, walkMsOf } = input;
 	return book.visits.some(
 		(v) =>
 			v.carry !== null &&
 			v.left_at === null &&
-			now >= arrivesAt(v, walkMsOf(v)),
+			now >= arrivesAt(v, walkMsOf(v)) &&
+			now < holdEnd(v, input),
 	);
 }
-/** Some 결재 is still on (arrived or on its way): the kangaroo stays at / keeps going to the HQ. */
-function signsOn({ book }: KangarooInput): boolean {
-	return book.visits.some((v) => v.carry !== null && v.left_at === null);
+/**
+ * Some 결재 still holds the kangaroo (on its way, or arrived less than HQ_HOLD_MS ago): it stays at /
+ * keeps going to the HQ.
+ */
+function signsOn(input: KangarooInput): boolean {
+	return input.book.visits.some(
+		(v) =>
+			v.carry !== null && v.left_at === null && input.now < holdEnd(v, input),
+	);
 }
 
 /**
@@ -517,7 +545,9 @@ function leavePatrol(
 ): RooState {
 	const { now, book, walkMsOf } = input;
 	const arrived = book.visits
-		.filter((v) => v.carry !== null && v.left_at === null)
+		.filter(
+			(v) => v.carry !== null && v.left_at === null && now < holdEnd(v, input),
+		)
 		.map((v) => arrivesAt(v, walkMsOf(v)))
 		.filter((t) => t <= now);
 	const tA = Math.min(now, ...arrived);

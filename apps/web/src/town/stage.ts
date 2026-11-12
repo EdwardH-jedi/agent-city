@@ -204,6 +204,9 @@ function buildStage(
 				carry: (v as Partial<Visit>).carry ?? null,
 			}),
 		);
+	/** Per visit: how much older it was than its head start when (re)seen (see applyModel). */
+	const late = new Map<string, { seen: number; ms: number }>();
+	const lateMsOf = (v: Visit): number => late.get(v.visit_id)?.ms ?? 0;
 	/** The kangaroo's state machine (choreo.ts), stepped every frame on the scene clock. */
 	let roo: RooState | null = null;
 	let lastScene = 0;
@@ -240,7 +243,13 @@ function buildStage(
 		const reduced = input.reducedMotion;
 		const now = nowScene();
 		book = settleVisits(book, now, walkMsOf, reduced);
-		const kin: KangarooInput = { now, book, walkMsOf, reducedMotion: reduced };
+		const kin: KangarooInput = {
+			now,
+			book,
+			walkMsOf,
+			lateMsOf,
+			reducedMotion: reduced,
+		};
 		roo = roo ? stepKangaroo(roo, kin, now - lastScene) : initialRoo(kin);
 		lastScene = now;
 		const pose = rooPose(roo, now);
@@ -436,6 +445,20 @@ function buildStage(
 					return { ...v, head_start_ms: head };
 				}),
 			};
+		// How much older than its (clamped) head start each visit was when it was (re)seen: the kangaroo's
+		// five minutes at the HQ count from the lead's real arrival (choreo.ts HQ_HOLD_MS), so a 결재 that
+		// has waited for hours does not pull it back to the HQ on every reload.
+		for (const v of book.visits) {
+			const had = late.get(v.visit_id);
+			if (had && had.seen === v.seen_at) continue;
+			const t = Date.parse(createdAt.get(v.visit_id) ?? "");
+			late.set(v.visit_id, {
+				seen: v.seen_at,
+				ms: Number.isFinite(t) ? Math.max(0, wall - t - v.head_start_ms) : 0,
+			});
+		}
+		for (const id of late.keys())
+			if (!book.visits.some((v) => v.visit_id === id)) late.delete(id);
 		placeLeads(nowScene(), input.reducedMotion);
 		pipe.setWorld({ time, lots });
 		const lamps = lampInput(model, assign);

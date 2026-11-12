@@ -19,6 +19,7 @@ import {
 	CAM_BLEND_MS,
 	DOOR_SPOT,
 	followRig,
+	HQ_HOLD_MS,
 	HQ_LOT,
 	HQ_SHOT,
 	HQ_STAND,
@@ -254,6 +255,39 @@ describe("the kangaroo", () => {
 		expect(r[r.length - 1]?.pose.cam).toBe(0);
 	});
 
+	test("one 결재 that is never resolved: HQ_HOLD_MS at the HQ after its lead arrives, then patrol only (20 min)", () => {
+		const r = run([{ id: "A", carry: "folder", seen: 0 }], 0, 20 * 60_000, 50);
+		const at = (t: number) => r.find((x) => x.t >= t) ?? r[r.length - 1];
+		expect(at(WALK + 60_000)?.st.mode).toBe("at-hq");
+		expect(at(WALK + HQ_HOLD_MS - 2_000)?.st.mode).toBe("at-hq");
+		// after the hold it leaves, and never comes back for the same lead
+		const after = r.filter((x) => x.t > WALK + HQ_HOLD_MS + 30_000);
+		expect(after.every((x) => x.st.mode === "patrol")).toBe(true);
+		expect(after.every((x) => x.pose.cam === 0)).toBe(true);
+		// one stay only: to-hq / at-hq never start again
+		const modes = r.map((x) => x.st.mode).filter((m, i, a) => m !== a[i - 1]);
+		expect(modes.filter((m) => m === "at-hq").length).toBe(1);
+		expect(maxStep(r)).toBeLessThanOrEqual(SPRINT_STEP * (50 / 16) + 1e-6);
+	});
+
+	test("a new 결재 later brings it back for another HQ_HOLD_MS from that lead's arrival", () => {
+		const second = 10 * 60_000;
+		const r = run(
+			[
+				{ id: "A", carry: "folder", seen: 0 },
+				{ id: "B", carry: "binder", seen: second },
+			],
+			0,
+			25 * 60_000,
+			50,
+		);
+		const at = (t: number) => r.find((x) => x.t >= t) ?? r[r.length - 1];
+		expect(at(second - 1_000)?.st.mode).toBe("patrol");
+		expect(at(second + WALK + 30_000)?.st.mode).toBe("at-hq");
+		expect(at(second + WALK + HQ_HOLD_MS - 2_000)?.st.mode).toBe("at-hq");
+		expect(at(second + WALK + HQ_HOLD_MS + 60_000)?.st.mode).toBe("patrol");
+	});
+
 	test("reports never bring it out", () => {
 		const r = run([{ id: "R", carry: null, seen: 0 }], 0, 60_000, 200);
 		expect(r.every((x) => x.st.mode === "patrol")).toBe(true);
@@ -316,7 +350,7 @@ describe("the kangaroo", () => {
 		expect(visitProgress(visit({ seen_at: 0 }), 0, WALK, true)).toBe(1);
 	});
 
-	test("a long-past 결재 that only arrives with the 2nd model (data loading): at the HQ at once, HQ shot, no walk", () => {
+	test("a 결재 that arrived 2 minutes ago, only in the 2nd model (data loading): at the HQ at once, HQ shot, no walk", () => {
 		let st = initialRoo({
 			now: 1_000,
 			book: book(),
@@ -324,16 +358,34 @@ describe("the kangaroo", () => {
 			reducedMotion: false,
 		});
 		expect(st.mode).toBe("patrol");
-		const old = visit({ seen_at: 1_200, head_start_ms: 60_000 }); // began two hours ago: head start clamped
+		// began 2 min 10 s ago: head start clamped to 60 s, the other 70 s are `late`
+		const v = visit({ seen_at: 1_200, head_start_ms: 60_000 });
 		const input = {
 			now: 1_200,
-			book: book(old),
+			book: book(v),
 			walkMsOf,
+			lateMsOf: () => 70_000,
 			reducedMotion: false,
 		};
 		st = stepKangaroo(st, input, 200);
 		expect(st).toMatchObject({ mode: "at-hq", cam: 1 });
 		expect(dist(rooPose(st, 1_200), HQ_STAND)).toBeLessThan(1e-9);
+	});
+
+	test("a 결재 that has waited for hours: the patrol goes on (no HQ shot on every reload); its lead stays", () => {
+		const v = visit({ seen_at: 1_200, head_start_ms: 60_000 });
+		const input = {
+			now: 1_200,
+			book: book(v),
+			walkMsOf,
+			lateMsOf: () => 2 * 3600_000,
+			reducedMotion: false,
+		};
+		const st = initialRoo(input);
+		expect(st).toMatchObject({ mode: "patrol", cam: 0 });
+		expect(stepKangaroo(st, { ...input, now: 1_216 }, 16).mode).toBe("patrol");
+		// the lead itself is at the door all along (the book is untouched)
+		expect(visitProgress(v, 1_216, WALK, false)).toBe(1);
 	});
 
 	test("a 결재 that arrived a moment before the page opened: the walk is already under way, not restarted", () => {
