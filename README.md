@@ -73,11 +73,11 @@ events; an unset token disables ingest. Keep the hub on loopback. Read the
 ### The screens
 
 `/` is the **board**, made for a monitor watched from 1.5–2 m: one status sentence (`전부 정상` ·
-`결재 N건` · `멈춤 N건` · `입력 대기 N건` · `Mac 보고 끊김 (N분 전)`), an 8 px frame (red > yellow > none), the **HQ 대기**
-cards on the left (under the town's map), the project village in the middle (the ring town when WebGL works,
-the 2D grid otherwise; `?scene=campus` draws the 3D campus instead) and **지금 진행** on the right, with
-**자리 비운 사이** under it (in the left column with `?scene=campus`). `#/detail` (key `D` flips between the two) is the table view
-with Needs owner, Runs, Repos, Live sessions and Events.
+`결재 N건` · `멈춤 N건` · `입력 대기 N건` · `Mac 보고 끊김 (N분 전)`), an 8 px frame (red > yellow > none), the left
+panel (MAP, **HQ 대기**, 쉬는 중, **자리 비운 사이**), the project village in the middle (the ring town when WebGL
+works, the 2D grid otherwise; `?scene=campus` draws the 3D campus instead) and **SESSIONS** on the right: each
+project's Claude Code / Codex sessions with a terminal tail of their last commands. `#/detail` (key `D` flips
+between the two) is the table view with Needs owner, Runs, Repos, Live sessions and Events.
 
 The board only reads: it draws what the hub reports through `useHub` (GET + `/ws`, plus
 `GET /api/runs/:machine/:id/events` for the current runs) and has no button or form. Approving, running or
@@ -96,11 +96,31 @@ engine's listeners) for it.
   `확인이 필요합니다` plus the code on its card (`확인 필요` in 자리 비운 사이); the board never guesses what it
   means. `DISPATCH_STOPPED` and `PRESERVED_ON_HOLD` were checked against Agent Office's
   `server/pipeline/lifecycle.mjs` and have sentences.
-- **Screen rules (design doc 07 §13).** One fact, one place: a 결재 sentence only on its HQ 대기 card, the
-  newest report only in the one bubble at the HQ door. Three text sizes (48 · 24–28 · 16–18 px). 자리 비운
-  사이 is one short dim line per item (`17:03 docs T3 통과`, at most 6, a `어제` divider where the date
-  changes, no code strings). 지금 진행 is two lines per run (`프로젝트 · 단계`, the nine-phase bar; at most 5,
-  then `+N`). Columns are 320 px / village / 300 px.
+- **Screen rules (design doc 07 §13, panels per decision D10 / doc 15).** One fact, one place: a 결재 sentence
+  only on its HQ 대기 row, the newest report only in the one bubble at the HQ door. The panels are the original
+  town's panels (`apps/web/src/style.css`; titles `MAP` `HQ` `PAUSED` `LOG` `SESSIONS` in the town's pixel
+  font while the town runs). Text: the status sentence is the one big line (28 px); everything else is the
+  panel scale, 10.5–14 px, times `?ui=1.15` or `?ui=1.3` (any other value is 1; for a monitor read from
+  further away). Columns (`apps/web/src/board/layout.ts`): the stage picks its integer scale first (384×288 ·
+  s under a 56 px top band), then the two panels share the rest, each 240–420 px — 384 / 1152 / 384 at
+  1920×1080, 299 / 768 / 299 at 1366×768; the campus and the 2D grid use the same widths.
+- **Left panel.** HQ 대기 rows are two lines: project, a short tag (`통합 대기`, `계획 승인`, `입력 대기`, …; Office's
+  code stays in `#/detail`) and how long, then the sentence on one dim line; a 2 px yellow (결재 · 입력 대기) or
+  red (멈춤) bar. At most 3 rows, then `외 N건`; they are never cut. 쉬는 중 rows have the same shape and no bar.
+  자리 비운 사이 is one short dim line per item (`17:03 docs T3 통과`, at most 6, a `어제` divider where the
+  date changes). When the column is short, mostly 자리 비운 사이 gives way (it shrinks 100:1 against 쉬는 중;
+  each keeps one line), then the map.
+- **SESSIONS (right panel).** Projects (결재 · 입력 대기 first, then working, then the most recent; at most 8,
+  then `외 N곳`): a project row with its run's state (`리뷰 중`, `통합 대기`, `쉬는 중`) or its branch, and a thin
+  phase bar while a run is running. Under it its sessions (`● Claude · opus 5.5  12초`; `입력 대기` / `쉬는 중`
+  tags; `+N sub` while subagents run): `active`, `waiting`, and `idle` until it turns `stale` (15 min); at
+  most 4 a project and 16 in all, then `외 N`. Under an `active` or `waiting` session a monospace tail of its
+  last commands and files (`$ bun test ×3`, `Edit src/a.ts`, `→ reviewer: …`, `› 입력 (412자)`, `■ 턴 끝`;
+  at most 6 tails of 3 lines, 2 under 1600 px). The tail is built from the events the board already holds
+  (`/api/events?limit=200` + ws `event`; no new request), from `summary` only, redacted again, with every
+  absolute path made relative to the session folder or cut to its last parts. Command output and prompt
+  text are not in the hub, so they are never shown. The panel never scrolls: tails fold first (oldest
+  `active` first), then rows, then projects.
 - **The village** stands at most 8 project buildings, by recent activity (a flagged one always stands);
   the rest fold into one `조용함 N곳` sign. A building holds its name and pictures only: lit windows for
   running runs (dark when nothing runs), a big yellow (결재) or red (멈춤) flag. The village dims and every
@@ -120,11 +140,12 @@ engine's listeners) for it.
   boulevard (about 4 min a lap); when a 결재 lead reaches the HQ door it walks back and the camera holds a
   close shot of the door and the queue for 5 minutes from that arrival, then the patrol resumes while the
   lead keeps standing at the door (a new 결재 arriving brings it back for 5 minutes); leads queue at the
-  door in the HQ 대기 card order, reports
+  door in the HQ 대기 row order, reports
   come and go without stopping the patrol, and the one bubble at the HQ door is above the stage. A reload
   never replays a walk. `?time=day|dusk|night` pins the look (otherwise the local hour: day 07–17, dusk
   17–20, night 20–07). The map at the top of the left column shows the lots, their lamps and the kangaroo;
-  it gives way to the 결재 cards (its title first) and hides only below 64 px.
+  it gives way to the HQ 대기 rows (after 자리 비운 사이 and 쉬는 중 are down to one line) and hides only below
+  64 px.
   Reports stopped: everything stands still; reduced motion: the kangaroo at the HQ and a fixed wide shot of
   the plaza and the pylon. The
   picture is 384×288 at an integer scale (narrowed to keep 2× on a 1366×768 screen). Same fallbacks as the
@@ -154,19 +175,20 @@ engine's listeners) for it.
 - **Sessions (decision D4).** Claude Code / Codex sessions from `GET /api/sessions` and ws `session` (no
   new request): a repo with a session active in the last 7 days gets a building (`local/<dir>` too; the
   name tag is the part after the slash; a session outside any checkout raises none). Lit windows =
-  running runs + `active` sessions, at most 4. 지금 진행 lists each `active` session as one line,
-  `프로젝트 · Claude · N초 전` (no phase bar). A session `waiting` for input for 60 s sends its lead to the HQ:
+  running runs + `active` sessions, at most 4. SESSIONS (above) lists them by project. A session `waiting`
+  for input for 60 s sends its lead to the HQ:
   `입력을 기다리고 있습니다.`, one knock (no 30-minute reminder), yellow border; visit id `session:<id>`.
-  30 min after the wait began the visit ends and the session moves to the quiet `기다리는 세션` list (no
-  sound, no border). Change the 30 min in the page URL: `?session_wait=45`; `?session_wait=0` turns
-  session visits off (waiting sessions go straight to the list). `idle`, `stale` and `ended` sessions light
+  30 min after the wait began the visit ends (no sound, no border afterwards; its `입력 대기` row stays in
+  SESSIONS — decision D10 removed the separate `기다리는 세션` list). Change the 30 min in the page URL: `?session_wait=45`; `?session_wait=0` turns
+  session visits off. `idle`, `stale` and `ended` sessions light
   nothing and visit nobody; an `active` session silent for 15 min is `stale` by the screen's clock. While
   the cockpit, or the session's own machine, is not reporting, session visits stand still (see below).
   Known limit: the dispatcher's own Claude runs carry the same hook, so a run and its session can both
   light a window in the same building (the cap of 4 holds).
 - **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`, in
   its own lazy chunk that the live page never loads) so it can be looked at without a running Office. It opens no hub connection, plays no sound and says
-  `예시 데이터` in the top band. Without `?demo=1` only hub data is ever shown.
+  `예시 데이터` in the top band. Without `?demo=1` only hub data is ever shown. `&case=calm` shows a day with
+nothing waiting for the owner, `&case=busy` many sessions (the right panel's caps and folds).
 
 ### Serving the web UI from the hub
 
@@ -223,8 +245,10 @@ has no GitHub Actions workflow; run the checks locally for the change under revi
 
 **Screen check (`check:board`).** `bun run check:board [ab1|ab2|ab3|all]` drives the board in
 headless Chrome through the `agent-browser` CLI and reads numbers off the page: `ab1` (default)
-checks column widths, font tiers, scroll, the 자리 비운 사이 rows, approval cards, the demo label,
-console errors and the `D` detail round trip, at 1920×1080 and 1366×768, live and `?demo=1`; `ab2`
+checks the column rule, the panel text scale, scroll, the 자리 비운 사이 rows, HQ rows, the SESSIONS caps
+(no absolute path in a tail, no scroll in the right panel), the demo label, console errors and the `D`
+detail round trip, at 1920×1080 and 1366×768, live and `?demo=1` (add `?ui=1.3` to the URL to check
+the larger text); `ab2`
 watches the live board for 90 s and checks that it sends only GETs to loopback and opens one
 `/ws`; `ab3` repeats the 1920×1080 cases with WebGL off (the 2D tiles fallback). It is read-only:
 loopback only, no browser profile, no AI features. The scripts are in `scripts/board-check/` and
@@ -652,8 +676,10 @@ The following work is planned, not implemented by the telemetry layer above.
   exposing a hub beyond loopback
 - Service units for the hub, Codex tailer, and SSH tunnels remain to be added
 - Old token-scoped `github_etags` rows are not automatically pruned
-- Board width on narrow screens: fixed 320px and 300px side columns leave 746px (54.6%) for the village at 1366px; the village reaches 60% at widths of 1550px or more.
-- At 1366×768, a long HQ waiting list leaves the 자리 비운 사이 rows out of view (RX is 1920×1080).
+- Board width: the stage takes exactly 384 × its scale (1152 px = 60% at 1920; 768 px = 56% at 1366).
+- SESSIONS tails come from the newest 200 events of all sessions, so a busy session can push a quiet one's
+  tail (and its `+N sub`) out of the window; a subagent sent to the background is not counted.
+- At 1366×768 with a long HQ waiting list, 자리 비운 사이 keeps only its newest line (RX is 1920×1080).
 - Board known limits: open P2s from the Codex reviews of `feat/board-sessions` (line numbers as of
   `0855f2b`). Accepted for now; if the kiosk shows a real miss, the dwell logic is to be reworked as
   one function rather than patched piece by piece.

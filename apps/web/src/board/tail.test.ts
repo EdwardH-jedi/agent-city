@@ -142,6 +142,9 @@ describe("tail lines (15 §3.1 table)", () => {
 			expect(t).not.toContain("/private/");
 		}
 		expect(out[0]).toBe("$ cd . && cat …/.ssh/known_hosts");
+		expect(
+			line({ summary: "Bash: cat /Users/demo/notes/today.md && bun run lint" }),
+		).toBe("$ cat …/notes/today.md && bun run lint");
 		// a URL is left as it is
 		expect(
 			line({ summary: "Bash: curl http://127.0.0.1:4317/api/events" }),

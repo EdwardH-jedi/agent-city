@@ -116,7 +116,8 @@ export function scrubPaths(text: string, cwd: string | null): string {
 	s = s.replace(DASHED_HOME, "-$1-…");
 	s = s.replace(HOME_ROOT, (m) => {
 		const rest = tailOf(m, 2);
-		return rest ? `…/${rest}` : "~";
+		const space = /\s*$/.exec(m)?.[0] ?? "";
+		return (rest ? `…/${rest}` : "~") + space;
 	});
 	return s.replace(ABS_IN_TEXT, (m) => {
 		if (WEB_URL.test(m)) return m;
