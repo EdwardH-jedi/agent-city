@@ -151,8 +151,13 @@ engine's listeners) for it.
   close shot of the door and the queue for 5 minutes from that arrival, then the patrol resumes while the
   lead keeps standing at the door (a new 결재 arriving brings it back for 5 minutes); leads queue at the
   door in the HQ 대기 row order, reports
-  come and go without stopping the patrol, and the one bubble at the HQ door is above the stage. A reload
-  never replays a walk. `?time=day|dusk|night` pins the look (otherwise the local hour: day 07–17, dusk
+  come and go without stopping the patrol, and the one bubble at the HQ door is above the stage. The
+  SESSIONS panel's sessions are people in the town too (`town/crew.ts`, the panel's own visible-session
+  rule): working in front of its building (at most 3; a name tag `OPUS` / `SONNET` / `FABLE` / `CODEX` …
+  in the pylon's glyphs, small companions for running subagents), waiting at its door, resting or an old
+  wait at the cafe (at most 6), 16 in all; looks by model family (TownArt), frames by look so the cache stays
+  bounded. A session with no building in the town (no repo, or folded out) is drawn only when it rests. A
+  reload never replays a walk. `?time=day|dusk|night` pins the look (otherwise the local hour: day 07–17, dusk
   17–20, night 20–07). The map at the top of the left column shows the lots, their lamps and the kangaroo;
   it gives way to the HQ 대기 rows (after 자리 비운 사이 and 쉬는 중 are down to one line) and hides only below
   64 px.
