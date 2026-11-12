@@ -355,6 +355,37 @@ function heredocAt(line: string): number {
 	return -1;
 }
 
+/**
+ * Credential words a value may follow. Matched case-insensitively, not inside a longer word (`tokens`,
+ * `secret.txt` and `token-store.ts` are not cut: the word must be followed by a separator).
+ */
+const CREDENTIAL =
+	/(?<![A-Za-z])(?:password|passwd|passphrase|secret|token|authorization|api[-_]?key|apikey|credentials?|bearer|cookie|private[-_]?key|access[-_]?key)(?=[\s=:'"])/i;
+
+/**
+ * The tail's last guard (INBOX-A 2026-11-13 B2 P1): `redact()` misses an unclosed quote
+ * (`--password "x`), a custom auth scheme (`Authorization: Custom x`), PowerShell's `-Password 'x'` and
+ * `password="x`. On the always-on screen anything after a credential word is dropped: the word stays (so
+ * the line still says what ran), its `=` / `:` too, and the rest becomes `[REDACTED]`. A line where the
+ * word has no value after it is left alone. Linear: one search with a fixed pattern.
+ */
+export function hideCredentials(line: string): string {
+	const m = CREDENTIAL.exec(line);
+	if (!m) return line;
+	let end = m.index + m[0].length;
+	const rest = line.slice(end);
+	const sep = /^\s*[=:]?/.exec(rest)?.[0] ?? "";
+	end += sep.length;
+	const value = line
+		.slice(end)
+		.replace(/^[\s'"]+/, "")
+		.replace(/['"]+$/, "")
+		.trim();
+	if (value === "" || value === "[REDACTED]") return line;
+	const head = line.slice(0, end).trimEnd();
+	return `${head}${head.endsWith("=") ? "" : " "}[REDACTED]`;
+}
+
 /** The tail line one event makes, or null. */
 export function tailLine(e: TailEvent, cwd: string | null): string | null {
 	const summary = e.summary ?? "";
@@ -391,7 +422,7 @@ export function tailLine(e: TailEvent, cwd: string | null): string | null {
 			return null;
 	}
 	if (!line) return null;
-	const safe = scrubPaths(redact(line), cwd);
+	const safe = scrubPaths(hideCredentials(redact(line)), cwd);
 	return safe.length > LINE_MAX ? `${safe.slice(0, LINE_MAX - 1)}…` : safe;
 }
 
