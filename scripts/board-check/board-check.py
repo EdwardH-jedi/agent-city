@@ -39,6 +39,9 @@ try:
             wait,code=command(['wait','--fn',ready,'--timeout','15000'],required=False)
             save(case_dir/'wait.json',{'exit':code,**wait})
             if not wait.get('success'): raise RuntimeError('board readiness timed out')
+            # the town's minimap is a lazy chunk mounted after the scene's first frame: give it up to 5 s
+            # (measure-board.js town_minimap_shown then reports what is there)
+            command(['wait','--fn','!document.querySelector(".town-stage canvas") || Boolean(document.querySelector(".town-map:not([hidden])"))','--timeout','5000'],required=False)
             command(['eval','--stdin'],stdin='(async()=>{await document.fonts.ready;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()')
             measured,_=command(['eval','--stdin'],stdin=(HERE/'measure-board.js').read_text())
             record.update(measured['data']['result'])

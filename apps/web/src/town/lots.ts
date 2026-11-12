@@ -306,7 +306,6 @@ export function lotLabels(
 		"HQ",
 		"NO WUKKAS",
 		"NO-WUKKAS",
-		"NO-WUKKA",
 	]);
 	const board = distinctLabels(names, BOARD_FONT, ["ALL"]);
 	const map = distinctLabels(names, MAP_FONT, ["HQ", CAFE_MAP_LABEL]);

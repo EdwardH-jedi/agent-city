@@ -287,5 +287,24 @@
 		metrics.demoLabels,
 	);
 	check("status_sentence", metrics.sentence.length > 0, metrics.sentence);
+	// the town at 1920 × 1080 has room for its minimap above the 결재 cards (owner review R1: it hid while
+	// space was left); smaller screens may hide it — the cards come first
+	const townMap = document.querySelector(".town-map");
+	if (
+		document.querySelector(".town-stage canvas") &&
+		innerWidth >= 1920 &&
+		innerHeight >= 1080
+	)
+		check(
+			"town_minimap_shown",
+			!!townMap &&
+				!townMap.hidden &&
+				townMap.getBoundingClientRect().height >= 64,
+			{
+				mounted: !!townMap,
+				hidden: townMap ? townMap.hidden : null,
+				height: rect(townMap)?.height ?? null,
+			},
+		);
 	return { metrics, checks };
 })();

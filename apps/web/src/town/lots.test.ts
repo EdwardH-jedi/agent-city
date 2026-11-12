@@ -290,11 +290,19 @@ describe("short, distinct names: signs, pylon rows, minimap", () => {
 		expect(by.get("o/hq")?.mapLabel).not.toBe("HQ");
 		expect(by.get("o/caf")?.mapLabel).not.toBe("CAF");
 		expect(by.get("o/all")?.label).not.toBe("ALL");
-		expect(by.get("o/no-wukkas")?.sign.startsWith("NO-WUKKA")).toBe(false);
-		for (const l of [...by.values()].filter((x) => x.repo_id)) {
-			expect(l.label).toMatch(/^[A-Z0-9-]+$/);
-			expect(l.mapLabel ?? "").toMatch(/^[A-Z0-9-]+$/);
+		// the cafe's own words are taken, but a near name keeps a readable sign (no `NO` stub)
+		expect(by.get("o/no-wukkas")?.sign).not.toBe("NO-WUKKAS");
+		expect(by.get("o/no-wukkas")?.sign.length).toBeGreaterThanOrEqual(4);
+		for (const l of [...by.values()].filter(
+			(x) => x.repo_id && x.repo_id !== "o/dash",
+		)) {
+			expect(l.label).toMatch(/^[A-Z0-9][A-Z0-9-]*$/);
+			expect(l.mapLabel ?? "").toMatch(/^[A-Z0-9]+$/);
 		}
+		// a name with nothing the fonts can write: a dash, never the pylon's "no data" marks
+		const dash = by.get("o/dash");
+		for (const t of [dash?.sign, dash?.label, dash?.mapLabel])
+			expect(t ?? "").not.toMatch(/[—?+]/);
 	});
 });
 

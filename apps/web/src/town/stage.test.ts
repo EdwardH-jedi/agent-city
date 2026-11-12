@@ -290,4 +290,82 @@ describe("the HQ shot's five minutes count from the 결재 lead's real arrival",
 		// re-measured, the lead would count as having arrived 4 min 50 s ago and the stay would be over
 		expect(blendsOf(4 * 60_000, 50_000)).toEqual([1, 1]);
 	});
+
+	test("a 보고 lead that turns into a 결재 in place: the HQ shot holds five minutes from the flip", () => {
+		const realNow = Date.now;
+		const t0 = realNow();
+		let wall = t0;
+		Date.now = () => wall;
+		const dom = fakeDom();
+		let frame: ((ts: number) => void) | null = null;
+		stubGlobal("requestAnimationFrame", (f: (ts: number) => void) => {
+			frame = f;
+			return 1;
+		});
+		const blends: number[] = [];
+		const world = buildTownWorld({ time: "day", lots: null });
+		const repo = {
+			repo_id: "o/a",
+			label: "a",
+			active_tasks: 1,
+			monitors: [],
+			pending_requests: 0,
+			has_stopped: false,
+		};
+		const visitor = (carry: "folder" | null) => ({
+			visit_id: "m:r1",
+			kind: carry ? ("sign" as const) : ("report" as const),
+			carry,
+			repo_id: "o/a",
+			created_at: new Date(t0 - 10_000).toISOString(),
+		});
+		const m = (carry: "folder" | null): CampusModel => ({
+			...model,
+			repos: [repo],
+			visitors: [visitor(carry)],
+		});
+		const stage = createTownStage(
+			dom.host,
+			{ model: m(null), reducedMotion: false, time: "day" },
+			{ onContextLost() {}, onReady() {} },
+			{
+				createPipeline: () =>
+					({
+						world,
+						setWorld() {},
+						setLamps() {},
+						setLitWindows() {},
+						setBoard() {},
+						resize() {},
+						render(_a: unknown, shot: { blend: number }) {
+							blends.push(shot.blend);
+						},
+						dispose() {},
+					}) as unknown as TownPipeline,
+			},
+		);
+		const at = (ms: number) => {
+			wall = t0 + ms;
+			(frame as ((ts: number) => void) | null)?.(1000 + ms);
+		};
+		try {
+			at(0);
+			at(60_000); // a report: the patrol
+			const flip = 180_000;
+			wall = t0 + flip;
+			stage.update({ model: m("folder"), reducedMotion: false, time: "day" });
+			at(flip);
+			at(flip + 60_000); // walked there by now
+			at(flip + 240_000); // 4 min after the flip: still at the HQ
+			at(flip + HQ_HOLD_MS + 60_000); // past five minutes: back on patrol
+		} finally {
+			Date.now = realNow;
+			stage.dispose();
+			world.dispose();
+		}
+		expect(blends[1]).toBe(0);
+		expect(blends[3]).toBe(1);
+		expect(blends[4]).toBe(1);
+		expect(blends[5]).toBe(0);
+	});
 });
