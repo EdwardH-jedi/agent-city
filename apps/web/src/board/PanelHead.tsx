@@ -6,7 +6,17 @@
 import type { ReactNode } from "react";
 import { TownPixelWord } from "../town/TownView.tsx";
 
-export const PANEL_TITLES = ["MAP", "HQ", "PAUSED", "LOG", "SESSIONS"] as const;
+export const PANEL_TITLES = [
+	"MAP",
+	"HQ",
+	"PAUSED",
+	"LOG",
+	"SESSIONS",
+	// the detail screen (16 A3)
+	"RUNS",
+	"REPOS",
+	"EVENTS",
+] as const;
 export type PanelTitle = (typeof PANEL_TITLES)[number];
 
 export function PanelHead({

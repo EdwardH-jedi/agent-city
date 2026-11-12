@@ -61,6 +61,10 @@ try:
                 back_ok=False
                 if detail.get('success'):
                     detail_snap,_=command(['snapshot']);save(case_dir/'detail-snapshot.json',detail_snap)
+                    # 16 A3: the detail screen in the board's panel look (measure-detail.js)
+                    dm,_=command(['eval','--stdin'],stdin=(HERE/'measure-detail.js').read_text())
+                    record['checks'].extend(dm['data']['result']['checks'])
+                    command(['screenshot',str(case_dir/'detail.png')])
                     command(['press','D'])
                     back,_=command(['wait','--fn','location.hash !== "#/detail" && Boolean(document.querySelector(".board-sentence"))','--timeout','2000'],required=False)
                     back_ok=back.get('success',False)

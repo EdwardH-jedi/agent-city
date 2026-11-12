@@ -1274,3 +1274,304 @@ tr.st-waiting td {
 .town-map-canvas {
 	margin: 4px auto;
 }
+
+/* ── the detail screen (#/detail, Detail.tsx; 16 A3): the board's panel look ──────────────────────
+   Board colours and type scale (every text calc(10.5–14px × --ui)), panel boxes with a head strip, no
+   page scroll: each panel scrolls inside itself, never sideways. */
+.detail {
+	grid-template-rows: 56px 1fr;
+}
+.detail-top {
+	gap: 16px;
+}
+.detail-title {
+	margin: 0;
+	font-size: calc(14px * var(--ui));
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	white-space: nowrap;
+}
+.detail-beat {
+	margin-left: 6px;
+	color: var(--b-dim);
+	font-size: calc(11px * var(--ui));
+}
+.detail-conn.conn-open {
+	color: var(--b-ok);
+}
+.detail-conn.conn-connecting,
+.detail-conn.conn-reconnecting {
+	color: var(--b-yellow);
+}
+.detail-body {
+	display: grid;
+	grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1.35fr);
+	gap: 8px;
+	padding: 8px;
+	min-height: 0;
+	overflow: hidden;
+}
+.detail-col {
+	display: grid;
+	grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 8px;
+	min-height: 0;
+	min-width: 0;
+}
+.dpanel {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	min-width: 0;
+	background: var(--b-panel);
+	border: 1px solid var(--b-edge);
+}
+.dscroll {
+	flex: 1;
+	min-height: 0;
+	overflow-x: hidden;
+	overflow-y: auto;
+	margin: 0;
+	padding: 4px 8px 8px;
+	list-style: none;
+}
+.dpad {
+	padding: 6px 10px;
+}
+.detail .dim {
+	color: var(--b-dim);
+}
+.detail .tag {
+	margin-left: 6px;
+	font-size: calc(10.5px * var(--ui));
+}
+/* runs: Runs.tsx's two tables (text only), narrowed to the column */
+.detail-runs section {
+	margin-bottom: 8px;
+}
+.detail-runs h2 {
+	margin: 4px 0;
+	font-size: calc(12px * var(--ui));
+	font-weight: 700;
+	color: var(--b-muted);
+}
+.detail-runs .muted {
+	margin: 0;
+	color: var(--b-dim);
+	font-size: calc(12px * var(--ui));
+}
+.detail-runs table,
+.dtable {
+	width: 100%;
+	table-layout: fixed;
+	border-collapse: collapse;
+	font-size: calc(11px * var(--ui));
+}
+.detail-runs th {
+	text-align: left;
+	font-weight: 400;
+	color: var(--b-dim);
+	font-size: calc(10.5px * var(--ui));
+	padding: 2px 4px;
+	border-bottom: 1px solid var(--b-line);
+}
+.detail .detail-runs th,
+.detail .detail-runs td,
+.detail .dtable td {
+	white-space: normal;
+}
+.detail .detail-runs td,
+.detail .dtable td {
+	padding: 3px 4px;
+	border-bottom: 1px solid var(--b-line);
+	vertical-align: top;
+	overflow-wrap: anywhere;
+	color: var(--b-fg);
+}
+.detail-runs .run-state {
+	color: var(--b-muted);
+}
+.detail-runs .run-waiting_owner .run-state,
+.detail-runs .run-hold .run-state {
+	color: var(--b-yellow);
+}
+.detail-runs .run-running .run-state {
+	color: var(--b-ok);
+}
+.detail-runs .run-report {
+	color: var(--b-dim);
+}
+/* repos */
+.dgroup {
+	margin: 6px 0 2px;
+	font-size: calc(12px * var(--ui));
+	font-weight: 700;
+	color: var(--b-muted);
+}
+.dtable .dname {
+	width: 46%;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.dtable .num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	color: var(--b-muted);
+}
+.dtable .has-live .dname {
+	color: var(--b-ok);
+}
+.dci {
+	color: var(--b-dim);
+}
+.dci.ci-success {
+	color: var(--b-ok);
+}
+.dci.ci-failure {
+	color: var(--b-red);
+}
+.dci.ci-pending {
+	color: var(--b-yellow);
+}
+/* sessions: rows like the right panel's, a row picks its events */
+.dcheck {
+	padding: 4px 10px 0;
+	font-size: calc(11px * var(--ui));
+	color: var(--b-muted);
+}
+.dsess > li {
+	margin: 0;
+}
+.drow {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	min-width: 0;
+	padding: 2px 4px;
+	border: 1px solid transparent;
+	background: none;
+	color: var(--b-fg);
+	font: inherit;
+	font-size: calc(12px * var(--ui));
+	line-height: calc(18px * var(--ui));
+	text-align: left;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.drow:hover,
+.drow:focus-visible {
+	border-color: var(--b-line);
+	outline: none;
+}
+.drow.picked {
+	border-color: var(--b-muted);
+	background: #1c2027;
+}
+.dwho {
+	flex: none;
+}
+.dwhere {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--b-muted);
+	font-size: calc(11.5px * var(--ui));
+}
+.dage {
+	flex: none;
+	margin-left: auto;
+	color: var(--b-dim);
+	font-size: calc(11px * var(--ui));
+	font-variant-numeric: tabular-nums;
+}
+.dstat.st-waiting {
+	color: var(--b-yellow);
+	border-color: #8a6430;
+}
+.dstat.st-active {
+	color: var(--b-ok);
+	border-color: #2f7a40;
+}
+.drow.st-stale .dwho,
+.drow.st-ended .dwho {
+	color: var(--b-dim);
+}
+/* events: terminal lines (cleaned like the tails: tail.ts eventLine) */
+.dfilters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 6px 8px 2px;
+}
+.dfilters select,
+.dclear {
+	max-width: 100%;
+	background: var(--b-bg);
+	color: var(--b-fg);
+	border: 1px solid var(--b-line);
+	font: inherit;
+	font-size: calc(11.5px * var(--ui));
+	padding: 2px 4px;
+}
+.dclear {
+	cursor: pointer;
+	color: var(--b-yellow);
+}
+.devents {
+	background: #0b0908;
+	margin: 4px 8px 8px;
+	padding: 4px 6px;
+	border-left: 1px solid var(--b-line);
+	font-family: var(--b-mono);
+	font-size: calc(10.5px * var(--ui));
+	line-height: calc(15px * var(--ui));
+}
+.devents > li {
+	display: flex;
+	gap: 8px;
+	min-width: 0;
+	white-space: nowrap;
+}
+.dtime {
+	flex: none;
+	width: 4.5em;
+	color: var(--b-dim);
+	text-align: right;
+}
+.dprov {
+	flex: none;
+	width: 4.5em;
+	color: var(--b-muted);
+}
+.dprov.prov-codex {
+	color: #7fb3d5;
+}
+.dtype {
+	flex: none;
+	width: 2.5em;
+	color: var(--b-dim);
+}
+.dline {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--b-fg);
+}
+.drepo {
+	flex: none;
+	max-width: 9em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--b-dim);
+}
+/* one session picked: one long terminal, lines may wrap so nothing is cut */
+.dterm > li {
+	white-space: normal;
+}
+.dterm .dline {
+	overflow-wrap: anywhere;
+	color: var(--b-muted);
+}

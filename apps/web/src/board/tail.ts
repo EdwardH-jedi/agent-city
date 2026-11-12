@@ -427,6 +427,25 @@ export function tailLine(e: TailEvent, cwd: string | null): string | null {
 }
 
 /**
+ * One event as the detail screen's terminal line (16 A3): the same cleaning as the tails — commands
+ * through commandLine, paths through scrubPaths (relative to the session's folder, never absolute), the
+ * shared redaction and hideCredentials. Any event gives a line: a tool's other events are shown like its
+ * PreToolUse; anything else is its type and the first line of its summary, cleaned the same way.
+ */
+export function eventLine(e: TailEvent, cwd: string | null): string {
+	const own = tailLine(e, cwd);
+	if (own !== null) return own;
+	if (e.tool && e.type !== "PreToolUse") {
+		const asTool = tailLine({ ...e, type: "PreToolUse" }, cwd);
+		if (asTool !== null) return asTool;
+	}
+	const summary = firstLine(e.summary ?? "");
+	const raw = summary ? `${e.type} ${summary}` : e.type;
+	const safe = scrubPaths(hideCredentials(redact(raw)), cwd);
+	return safe.length > LINE_MAX ? `${safe.slice(0, LINE_MAX - 1)}…` : safe;
+}
+
+/**
  * Tail lines of one session's events (any order), oldest first so the newest is at the bottom; a run
  * of the same line is merged into one with its count. The last `max` are kept.
  */

@@ -3,6 +3,7 @@ import { summarizeToolInput } from "@agent-city/schema";
 import {
 	codexCommand,
 	commandLine,
+	eventLine,
 	hideCredentials,
 	relPath,
 	runningSubagents,
@@ -425,6 +426,41 @@ describe("credentials the shared redaction misses (INBOX-A B2 P1)", () => {
 		hideCredentials(long);
 		hideCredentials(`${"a ".repeat(100_000)}password`);
 		expect(performance.now() - t).toBeLessThan(200);
+	});
+});
+
+describe("the detail screen's event lines (16 A3): every event, cleaned like the tails", () => {
+	test("a tool's PreToolUse is its tail line; its PostToolUse reads the same", () => {
+		const pre = ev({ summary: "Bash: cat /Users/demo/work/orchard/src/a.ts" });
+		expect(eventLine(pre, CWD)).toBe("$ cat ./src/a.ts");
+		expect(eventLine({ ...pre, type: "PostToolUse" }, CWD)).toBe(
+			"$ cat ./src/a.ts",
+		);
+	});
+
+	test("other events: type and summary, absolute paths gone, credentials hidden", () => {
+		const fake = ["synthetic", "Canary42"].join("");
+		for (const [summary, type] of [
+			["started in /Users/demo/private/notes", "SessionStart"],
+			[`token=${fake}`, "Notification"],
+			["C:\\Users\\demo\\x", "SessionEnd"],
+		] as const) {
+			const out = eventLine(ev({ type, tool: null, summary }), null);
+			expect(out).not.toContain("/Users/");
+			expect(out).not.toContain("\\Users\\");
+			expect(out).not.toContain(fake);
+		}
+		expect(
+			eventLine(ev({ type: "SessionStart", tool: null, summary: null }), null),
+		).toBe("SessionStart");
+	});
+
+	test("a long line is cut at LINE_MAX", () => {
+		const out = eventLine(
+			ev({ type: "SessionStart", tool: null, summary: "x".repeat(500) }),
+			null,
+		);
+		expect(out.length).toBeLessThanOrEqual(160);
 	});
 });
 
