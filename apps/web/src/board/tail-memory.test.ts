@@ -4,6 +4,7 @@ import {
 	endedSessions,
 	MEMORY_SESSIONS,
 	type MemEvent,
+	screenMemory,
 	stepTailMemory,
 	type TailMemory,
 	tailsWithSubagents,
@@ -156,5 +157,46 @@ describe("tail memory (REVIEW 2026-11-13 #3)", () => {
 			lines: [{ text: "→ reviewer: look", count: 1 }],
 			subagents: 0,
 		});
+	});
+});
+
+describe("the page's one memory (16 A4-1): it outlives the D screen, and stays 64 × 3", () => {
+	test("a quiet session's lines survive the board's unmount and a window that no longer holds them", () => {
+		const saved = screenMemory.current;
+		try {
+			screenMemory.current = new Map();
+			// on the board: session q ran a command
+			const first = [ev("claude:q", "make build")].reverse();
+			screenMemory.current = step(screenMemory.current, first);
+			// the D screen: the board is gone (nothing steps); meanwhile a busy session fills the window
+			const busy = Array.from({ length: 200 }, (_, i) =>
+				ev("claude:b", `echo ${i}`),
+			).reverse();
+			// back on the board: a new Sessions steps the same page memory with the new window
+			screenMemory.current = step(screenMemory.current, busy);
+			expect(screenMemory.current.get("claude:q")?.map((l) => l.text)).toEqual([
+				"$ make build",
+			]);
+		} finally {
+			screenMemory.current = saved;
+		}
+	});
+
+	test("a night of round trips: never more than MEMORY_SESSIONS sessions × TAIL_MAX lines", () => {
+		const saved = screenMemory.current;
+		try {
+			screenMemory.current = new Map();
+			for (let trip = 0; trip < 20; trip += 1) {
+				const window = Array.from({ length: 200 }, (_, i) =>
+					ev(`claude:s${trip * 37 + (i % 50)}`, `step ${trip}-${i}`),
+				).reverse();
+				screenMemory.current = step(screenMemory.current, window);
+			}
+			expect(screenMemory.current.size).toBeLessThanOrEqual(MEMORY_SESSIONS);
+			for (const lines of screenMemory.current.values())
+				expect(lines.length).toBeLessThanOrEqual(TAIL_MAX);
+		} finally {
+			screenMemory.current = saved;
+		}
 	});
 });

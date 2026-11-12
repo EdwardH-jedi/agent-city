@@ -11,6 +11,7 @@
 //   event or a summary
 // - the same window on every render gives the same memory (the step returns `prev` itself while under
 //   the cap; at the cap an equal copy)
+// - one memory per page (screenMemory): it outlives the board's unmount for the D screen, not a reload
 // - ended sessions (status `ended`, or their newest event in the window is SessionEnd) are dropped on
 //   every step; past MEMORY_SESSIONS the entry with the oldest line goes. The memory stays bounded however
 //   long the board runs (a night with hundreds of sessions keeps at most 64 × 3 lines).
@@ -28,6 +29,13 @@ import {
 
 /** Sessions remembered at most. */
 export const MEMORY_SESSIONS = 64;
+
+/**
+ * The screen's one memory (16 A4-1), held outside React: the D screen unmounts the board, and coming back
+ * must not lose what the tails showed. A reload starts it empty (it is page memory, never stored). Only
+ * Sessions.tsx steps it, through stepTailMemory, so it stays within MEMORY_SESSIONS × TAIL_MAX.
+ */
+export const screenMemory: { current: TailMemory } = { current: new Map() };
 
 export type MemEvent = TailEvent & Pick<Event, "id">;
 

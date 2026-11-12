@@ -5,7 +5,7 @@
 // window by tail-memory.ts. Nothing here asks the hub for more: sessions and events are what useHub already
 // holds. The panel never scrolls (the model folds to fit).
 import type { Session } from "@agent-city/schema";
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 import type { VillageModel } from "./model.ts";
 import { PanelHead } from "./PanelHead.tsx";
 import {
@@ -18,8 +18,8 @@ import { shortModel } from "./tail.ts";
 import {
 	endedSessions,
 	type MemEvent,
+	screenMemory,
 	stepTailMemory,
-	type TailMemory,
 	tailsWithSubagents,
 } from "./tail-memory.ts";
 
@@ -107,8 +107,9 @@ export function Sessions({
 	wide: boolean;
 	pixel?: boolean;
 }) {
-	// tails follow the events, not the clock; each session's last lines outlive the 200-event window
-	const memory = useRef<TailMemory>(new Map());
+	// tails follow the events, not the clock; each session's last lines outlive the 200-event window and
+	// the D screen (the page's one memory, tail-memory.ts screenMemory; a reload starts empty)
+	const memory = screenMemory;
 	const tails = useMemo(() => {
 		memory.current = stepTailMemory(
 			memory.current,
