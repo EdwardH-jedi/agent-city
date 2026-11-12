@@ -249,7 +249,12 @@ export function BoardView({
 					pixel={town}
 				/>
 				{town ? (
-					<TownView model={model} now={now} />
+					<TownView
+						model={model}
+						now={now}
+						sessions={sessions}
+						events={events}
+					/>
 				) : (
 					<CampusView model={model} now={now} />
 				)}

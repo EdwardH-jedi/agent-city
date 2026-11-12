@@ -133,9 +133,59 @@ interface Draft {
 	last: string;
 }
 
+export interface VisibleSession {
+	session: Session;
+	/** The status with this screen's clock (applyStale). */
+	status: RowStatus;
+	/** A `waiting` session whose HQ visit is over: when the wait began; else null. */
+	waited_since: string | null;
+}
+
+/**
+ * The sessions the board shows, before any cap (the panel's rows and the town's crew both come from
+ * this, so the two never disagree): `active`, `waiting`, and `idle` / `stale` within REST_SHOWN_MS of
+ * the last activity, with the status re-derived at `now`. A `waiting` one whose HQ visit is over
+ * (`waitingSessions`, sessions.ts) — or older than the town's 7 days — carries when its wait began.
+ */
+export function visibleSessions(
+	sessions: readonly Session[],
+	waitingSessions: VillageModel["waitingSessions"],
+	now: number,
+): VisibleSession[] {
+	const at = new Date(now);
+	// waits whose HQ visit is over (sessions.ts decides; `session:<id>` → since)
+	const waited = new Map(
+		waitingSessions.map((w) => [w.id.replace(/^session:/, ""), w.since]),
+	);
+	const out: VisibleSession[] = [];
+	for (const s of sessions) {
+		const status = applyStale(s.status, s.last_event_at, at);
+		const t = Date.parse(s.last_event_at);
+		const resting = status === "idle" || status === "stale";
+		const shown =
+			status === "active" ||
+			status === "waiting" ||
+			(resting && !Number.isNaN(t) && now - t < REST_SHOWN_MS);
+		if (!shown) continue;
+		// a wait older than the town's 7 days has no visit and is in no list: an old wait too
+		const waitedSince =
+			status === "waiting"
+				? (waited.get(s.id) ??
+					(!Number.isNaN(t) && now - t >= SESSION_RECENT_MS
+						? s.last_event_at
+						: null))
+				: null;
+		out.push({
+			session: s,
+			status: status as RowStatus,
+			waited_since: waitedSince,
+		});
+	}
+	return out;
+}
+
 export function sessionPanel(input: PanelInput): SessionPanel {
 	const { sessions, tails, model, now, ui } = input;
-	const at = new Date(now);
 	const counts = { active: 0, waiting: 0, idle: 0 };
 	const drafts = new Map<string, Draft>();
 	const draft = (project: string): Draft => {
@@ -162,30 +212,14 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 		if (iso > d.last) d.last = iso;
 	};
 
-	// waits whose HQ visit is over (sessions.ts decides; `session:<id>` → since)
-	const waited = new Map(
-		model.waitingSessions.map((w) => [w.id.replace(/^session:/, ""), w.since]),
-	);
-
-	// visible sessions
+	// visible sessions (the same rule the town's crew uses: visibleSessions)
 	const branchOf = new Map<string, { at: string; branch: string }>();
-	for (const s of sessions) {
-		const status = applyStale(s.status, s.last_event_at, at);
-		const t = Date.parse(s.last_event_at);
+	for (const {
+		session: s,
+		status,
+		waited_since: waitedSince,
+	} of visibleSessions(sessions, model.waitingSessions, now)) {
 		const resting = status === "idle" || status === "stale";
-		const shown =
-			status === "active" ||
-			status === "waiting" ||
-			(resting && !Number.isNaN(t) && now - t < REST_SHOWN_MS);
-		if (!shown) continue;
-		// a wait older than the town's 7 days has no visit and is in no list: an old wait too
-		const waitedSince =
-			status === "waiting"
-				? (waited.get(s.id) ??
-					(!Number.isNaN(t) && now - t >= SESSION_RECENT_MS
-						? s.last_event_at
-						: null))
-				: null;
 		if (resting) counts.idle++;
 		else if (status === "active") counts.active++;
 		else if (!waitedSince) counts.waiting++;

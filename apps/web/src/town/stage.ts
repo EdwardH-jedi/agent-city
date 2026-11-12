@@ -30,6 +30,7 @@ import {
 	visitProgress,
 } from "../campus/visits.ts";
 import {
+	along,
 	assignSpots,
 	easeCam,
 	followRig,
@@ -48,6 +49,21 @@ import {
 	shufflePos,
 	stepKangaroo,
 } from "./choreo.ts";
+import {
+	assignCrewSlots,
+	type CrewSlots,
+	companionSpot,
+	crewPath,
+	crewSpot,
+	doorPoint,
+} from "./crew-place.ts";
+import {
+	type CrewSprite,
+	crewKey,
+	crewLook,
+	type TagSprite,
+	tagKey,
+} from "./crew-sprites.ts";
 import { turnBetween, yawOfDir } from "./engine/orbit-camera.mjs";
 import { LAMP_COLORS, type LampState } from "./engine/scene-ring.mjs";
 import type { Actor } from "./engine/sprites.mjs";
@@ -59,8 +75,10 @@ import {
 	assignLots,
 	boardViewOf,
 	buildLots,
+	CAFE_LOT,
 	CAFE_MAP_LABEL,
 	HQ_LOT,
+	hash32,
 	type LotAssignment,
 	lampInput,
 	type TownLot,
@@ -94,6 +112,32 @@ const SHOTS = {
 } as const;
 /** Walk frames: a new phase every 0.45 units walked (ring-world.mjs townsfolk). */
 const LEAD_STRIDE = 0.45;
+
+/** A crew member's spot and its walk there (16 A1): the walk starts at its data `since` on the scene clock. */
+interface CrewWalk {
+	lot: string;
+	k: number;
+	path: Path;
+	t0: number;
+	walkMs: number;
+}
+/** Where a crew member is at scene time `now` (reduced motion: arrived). */
+function crewAt(
+	w: CrewWalk,
+	now: number,
+	reduced: boolean,
+): {
+	x: number;
+	z: number;
+	dir: [number, number];
+	arrived: boolean;
+	walked: number;
+} {
+	const p = reduced ? 1 : Math.max(0, Math.min(1, (now - w.t0) / w.walkMs));
+	const s = p * w.path.length;
+	const a = along(w.path, s);
+	return { x: a.x, z: a.z, dir: a.dir, arrived: p >= 1, walked: s };
+}
 
 export interface TownInput {
 	model: CampusModel;
@@ -217,6 +261,10 @@ function buildStage(
 	const lateMsOf = (v: Visit): number => late.get(v.visit_id)?.ms ?? 0;
 	const signedAtOf = (v: Visit): number =>
 		late.get(v.visit_id)?.signedAt ?? Number.NEGATIVE_INFINITY;
+	/** The crew (16 A1): sticky spots, each member's walk, its screen facing. */
+	let crewSlots: CrewSlots = new Map();
+	const crewWalks = new Map<string, CrewWalk>();
+	const crewFacing = new Map<string, RooDirection>();
 	/** The kangaroo's state machine (choreo.ts), stepped every frame on the scene clock. */
 	let roo: RooState | null = null;
 	let lastScene = 0;
@@ -360,6 +408,7 @@ function buildStage(
 				sprite,
 			});
 		});
+		pushCrew(actors, now, reduced, walk, viewYaw);
 		for (const id of leadFacing.keys())
 			if (!book.visits.some((v) => v.visit_id === id)) leadFacing.delete(id);
 		for (const id of places.keys())
@@ -406,6 +455,137 @@ function buildStage(
 				else places.set(id, { routeK: k, spotK: k, shuffle: null });
 			}
 		}
+	}
+
+	/**
+	 * The crew's actors (16 A1): each member at its spot or on its walk there, a name tag over it (its
+	 * own actor, the same foot), and its companions beside it. Ids are per slot on stage, like the leads.
+	 */
+	function pushCrew(
+		actors: Actor[],
+		now: number,
+		reduced: boolean,
+		walk: boolean,
+		viewYaw: number,
+	) {
+		let n = 0;
+		let m = 0;
+		for (const c of input.model.crew ?? []) {
+			const w = crewWalks.get(c.id);
+			if (!w) continue;
+			const at = crewAt(w, now, reduced);
+			const spot = crewSpot(w.lot, w.k, c.place === "door");
+			const pos = at.arrived ? { x: spot.x, z: spot.z } : at;
+			const dir = at.arrived ? spot.face : at.dir;
+			const v = worldToView(dir[0], dir[1], viewYaw);
+			const f = facingFrom(v[0], v[1], crewFacing.get(c.id) ?? null) ?? "south";
+			crewFacing.set(c.id, f);
+			const moving = !at.arrived && walk;
+			// idle: a blink now and then, each on its own beat
+			const beat = (now + (hash32(c.id) % 3600)) % 3600;
+			const phase = moving
+				? Math.floor(at.walked / LEAD_STRIDE) & 3
+				: walk && beat < 140
+					? 1
+					: 0;
+			const look = crewLook(c.id, c.provider, c.family);
+			const sprite: CrewSprite = {
+				kind: "crew",
+				look,
+				facing: f,
+				action: moving ? "walk" : "idle",
+				phase,
+				small: false,
+			};
+			actors.push({
+				id: `crew:${n}`,
+				kind: "npc",
+				x: pos.x,
+				z: pos.z,
+				key: crewKey(sprite),
+				lockedScale: false,
+				shadow: true,
+				sprite,
+			});
+			if (c.tag) {
+				const tag: TagSprite = { kind: "tag", text: c.tag, style: look.style };
+				actors.push({
+					id: `tag:${n}`,
+					kind: "npc",
+					x: pos.x,
+					z: pos.z,
+					key: tagKey(tag),
+					lockedScale: false,
+					sprite: tag,
+				});
+			}
+			n += 1;
+			for (let i = 0; i < c.companions; i += 1) {
+				const p = companionSpot(pos, i);
+				const small: CrewSprite = { ...sprite, small: true };
+				actors.push({
+					id: `mate:${m}`,
+					kind: "npc",
+					x: p.x,
+					z: p.z,
+					key: crewKey(small),
+					lockedScale: false,
+					shadow: true,
+					sprite: small,
+				});
+				m += 1;
+			}
+		}
+	}
+
+	/**
+	 * The crew's spots from the model (16 A1): sticky per lot; a member that changes spot walks from where
+	 * it is, one seen for the first time from its building's door (the cafe's, with no building) — both
+	 * starting at its `since`, so a reload lands it where it was and a member settled long ago just stands.
+	 */
+	function placeCrew() {
+		const crew = input.model.crew ?? [];
+		const lotOf = (c: (typeof crew)[number]): string =>
+			c.place === "cafe" ? CAFE_LOT : (assign.get(c.repo_id ?? "") ?? "");
+		crewSlots = assignCrewSlots(
+			crewSlots,
+			crew.map((c) => ({ id: c.id, lot: lotOf(c) })).filter((x) => x.lot),
+		);
+		const wall = Date.now();
+		const nowS = nowScene();
+		const reduced = input.reducedMotion;
+		for (const c of crew) {
+			const slot = crewSlots.get(c.id);
+			if (!slot) continue;
+			const had = crewWalks.get(c.id);
+			if (had && had.lot === slot.lot && had.k === slot.k) continue;
+			const target = crewSpot(slot.lot, slot.k, c.place === "door");
+			let from: { x: number; z: number };
+			if (had) {
+				const at = crewAt(had, nowS, reduced);
+				from = at.arrived ? crewSpot(had.lot, had.k, false) : at;
+			} else {
+				const home = assign.get(c.repo_id ?? "");
+				from = doorPoint(
+					c.place === "cafe" && !home ? CAFE_LOT : (home ?? slot.lot),
+				);
+			}
+			const since = Date.parse(c.since);
+			const ago = Number.isFinite(since) ? Math.max(0, wall - since) : 0;
+			const path = crewPath(from, target);
+			crewWalks.set(c.id, {
+				lot: slot.lot,
+				k: slot.k,
+				path,
+				t0: nowS - ago,
+				walkMs: leadWalkMs(path),
+			});
+		}
+		for (const id of crewWalks.keys())
+			if (!crewSlots.has(id)) {
+				crewWalks.delete(id);
+				crewFacing.delete(id);
+			}
 	}
 
 	function update(next: TownInput) {
@@ -486,6 +666,7 @@ function buildStage(
 		for (const id of late.keys())
 			if (!book.visits.some((v) => v.visit_id === id)) late.delete(id);
 		placeLeads(nowScene(), input.reducedMotion);
+		placeCrew();
 		pipe.setWorld({ time, lots });
 		const lamps = lampInput(model, assign);
 		pipe.setLamps(lamps);
