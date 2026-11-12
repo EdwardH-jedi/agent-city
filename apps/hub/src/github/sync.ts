@@ -452,10 +452,12 @@ async function mapLocal(
 					id: repoId,
 					path: c.path,
 					reason: c.slug
-						? "origin not in this account's GitHub repos"
+						? c.hasOrigin
+							? "origin not in this account's GitHub repos"
+							: "no origin; its github.com remote is not in this account's GitHub repos"
 						: c.hasOrigin
 							? "origin is not github.com"
-							: "no origin remote",
+							: "no origin remote, and not exactly one github.com remote",
 				});
 				upsertLocalRepo.run({
 					id: repoId,

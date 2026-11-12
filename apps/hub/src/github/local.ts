@@ -1,4 +1,5 @@
-// Find git checkouts under REPO_ROOTS and identify them (read-only: `git rev-parse` / `remote get-url`).
+// Find git checkouts under REPO_ROOTS and identify them (read-only: `git rev-parse`, `git remote`,
+// `git remote get-url <name>` — git applies `url.<base>.insteadOf`).
 // Remote URLs may embed credentials — only the parsed `owner/name` ever leaves this module.
 import { type Dirent, existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -130,15 +131,16 @@ export async function probeCheckout(dir: string): Promise<LocalCheckout> {
 		};
 	}
 	const [top, gitDir, commonDir] = rp.out.split("\n");
-	// every remote's url ("remote.<name>.url <url>" per line); urls may hold credentials — only the
+	// every remote's url as git resolves it (insteadOf applied); urls may hold credentials — only the
 	// parsed slug leaves this function
-	const cfg = await git(dir, ["config", "--get-regexp", "^remote\\..*\\.url$"]);
+	const names = await git(dir, ["remote"]);
 	const remotes: GitRemote[] = [];
-	if (cfg.ok)
-		for (const line of cfg.out.split("\n")) {
-			const m = /^remote\.(.+)\.url\s+(.+)$/.exec(line.trim());
-			if (m?.[1] && m[2] && !remotes.some((r) => r.name === m[1]))
-				remotes.push({ name: m[1], url: m[2] });
+	if (names.ok)
+		for (const name of names.out.split("\n").map((n) => n.trim())) {
+			if (!name || remotes.some((r) => r.name === name)) continue;
+			const url = await git(dir, ["remote", "get-url", "--", name]);
+			if (url.ok && url.out)
+				remotes.push({ name, url: url.out.split("\n")[0] ?? "" });
 		}
 	const origin = remotes.find((r) => r.name === "origin");
 	const isWorktree =

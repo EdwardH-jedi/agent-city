@@ -23,6 +23,7 @@ export {
 } from "./redact.ts";
 export {
 	type GitRemote,
+	githubRepoFromConfig,
 	githubRepoFromRemotes,
 	localRepoId,
 	normalizeRepoId,

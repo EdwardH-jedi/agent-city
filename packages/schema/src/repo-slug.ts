@@ -76,26 +76,85 @@ export interface GitRemote {
 	url: string;
 }
 
+/** A section header: `[remote "x"]`, `[url "base"]`, legacy `[remote.x]`; a trailing comment is allowed. */
+function sectionOf(line: string): { kind: string; sub: string | null } | null {
+	const m =
+		/^\[\s*([A-Za-z0-9.-]+?)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](?:\s*[#;].*)?$/.exec(
+			line,
+		);
+	if (!m?.[1]) return null;
+	const dot = m[1].indexOf(".");
+	if (m[2] === undefined && dot > 0)
+		return { kind: m[1].slice(0, dot).toLowerCase(), sub: m[1].slice(dot + 1) };
+	return { kind: m[1].toLowerCase(), sub: m[2] ?? null };
+}
+const configValue = (v: string): string =>
+	v
+		.replace(/\s+[#;].*$/, "")
+		.trim()
+		.replace(/^"(.*)"$/, "$1");
+
+export interface GitConfigRemotes {
+	/** Every remote's first url, in file order, with `url.<base>.insteadOf` applied (as git does). */
+	remotes: GitRemote[];
+	/** The file pulls in other files (`[include]` / `[includeIf]`): remotes may be missing from it. */
+	includes: boolean;
+}
+
 /**
- * Every `[remote "<name>"]` url in a git config file, in file order (first url per remote). Pure text
- * parsing — the hook never runs git. Urls can hold credentials: callers keep only what
- * parseGithubRemote makes of them.
+ * The remotes of a git config file, by text only — the hook never runs git. Urls can hold credentials:
+ * callers keep only what parseGithubRemote makes of them.
  */
 export function remotesFromConfig(config: string): GitRemote[] {
-	const out: GitRemote[] = [];
-	let name: string | null = null;
-	for (const raw of config.split("\n")) {
-		const line = raw.trim();
+	return readGitConfig(config).remotes;
+}
+export function readGitConfig(config: string): GitConfigRemotes {
+	const raw: GitRemote[] = [];
+	const insteadOf: { base: string; prefix: string }[] = [];
+	let includes = false;
+	let sec: { kind: string; sub: string | null } | null = null;
+	for (const rawLine of config.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line || line.startsWith("#") || line.startsWith(";")) continue;
 		if (line.startsWith("[")) {
-			const m = /^\[\s*remote\s+"([^"]*)"\s*\]$/i.exec(line);
-			name = m ? (m[1] ?? "") : null;
+			sec = sectionOf(line);
+			if (sec && (sec.kind === "include" || sec.kind === "includeif"))
+				includes = true;
 			continue;
 		}
-		if (name === null || out.some((r) => r.name === name)) continue;
-		const m = /^url\s*=\s*(.+)$/i.exec(line);
-		if (m?.[1]) out.push({ name, url: m[1].trim().replace(/^"(.*)"$/, "$1") });
+		if (!sec || sec.sub === null) continue;
+		const kv = /^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$/.exec(line);
+		if (!kv?.[1] || kv[2] === undefined) continue;
+		const key = kv[1].toLowerCase();
+		const name = sec.sub;
+		if (sec.kind === "remote" && key === "url") {
+			if (!raw.some((r) => r.name === name))
+				raw.push({ name, url: configValue(kv[2]) });
+		} else if (sec.kind === "url" && key === "insteadof")
+			insteadOf.push({ base: name, prefix: configValue(kv[2]) });
 	}
-	return out;
+	// git: the longest matching insteadOf prefix wins
+	const rewrite = (url: string): string => {
+		let best: { base: string; prefix: string } | null = null;
+		for (const r of insteadOf)
+			if (r.prefix && url.startsWith(r.prefix))
+				if (!best || r.prefix.length > best.prefix.length) best = r;
+		return best ? best.base + url.slice(best.prefix.length) : url;
+	};
+	return {
+		remotes: raw.map((r) => ({ name: r.name, url: rewrite(r.url) })),
+		includes,
+	};
+}
+
+/**
+ * githubRepoFromRemotes for a config file read as text (the collector): when there is no `origin` but
+ * the file includes others, the origin may be defined there — no guess from the other remotes.
+ */
+export function githubRepoFromConfig(config: string): string | null {
+	const { remotes, includes } = readGitConfig(config);
+	if (includes && !remotes.some((r) => r.name === "origin")) return null;
+	return githubRepoFromRemotes(remotes);
 }
 
 /**

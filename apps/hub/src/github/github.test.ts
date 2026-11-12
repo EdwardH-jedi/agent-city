@@ -583,8 +583,14 @@ describe("syncGithub", () => {
 		});
 		expect(s.local?.localOnly.map((l) => [l.id, l.reason])).toEqual([
 			["other-owner/tool", "origin not in this account's GitHub repos"],
-			["local/scratch", "no origin remote"],
-			["local/scratch", "no origin remote"],
+			[
+				"local/scratch",
+				"no origin remote, and not exactly one github.com remote",
+			],
+			[
+				"local/scratch",
+				"no origin remote, and not exactly one github.com remote",
+			],
 			["local/gitlab-thing", "origin is not github.com"],
 		]);
 		expect(
@@ -782,6 +788,13 @@ describe("local scan (temp git repos)", () => {
 		expect(wt.commonDir && realpathSync(wt.commonDir)).toBe(
 			realpathSync(join(c, ".git")),
 		);
+		// url.<base>.insteadOf is applied, as git does (and the collector's config reader)
+		const d = join(root, "aliased");
+		mkdirSync(d, { recursive: true });
+		git(d, "init", "-q");
+		git(d, "config", "url.https://github.com/.insteadOf", "gh:");
+		git(d, "remote", "add", "origin", "gh:octo-example/aliased");
+		expect((await probeCheckout(d)).slug).toBe("octo-example/aliased");
 		// two different github repos and no origin: no guess
 		git(c, "remote", "add", "fork", "git@github.com:someone/rover-fork.git");
 		expect((await probeCheckout(c)).slug).toBeNull();

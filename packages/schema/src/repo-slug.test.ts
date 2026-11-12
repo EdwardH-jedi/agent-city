@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	githubRepoFromConfig,
 	githubRepoFromRemotes,
 	localRepoId,
 	parseGithubRemote,
@@ -142,6 +143,52 @@ describe("remotes", () => {
 			githubRepoFromRemotes([
 				{ name: "mirror", url: "https://gitlab.example.invalid/o/a.git" },
 			]),
+		).toBeNull();
+	});
+});
+
+describe("githubRepoFromConfig (the collector reads .git/config as text)", () => {
+	const gh = '[remote "gh"]\n\turl = https://github.com/octo-example/x.git';
+	test("an origin written another way is still found, so the other remote is not taken for it", () => {
+		const elsewhere = "url = https://gitlab.example.invalid/o/x.git";
+		expect(
+			githubRepoFromConfig(`[remote "origin"] # c\n\t${elsewhere}\n${gh}`),
+		).toBeNull();
+		expect(
+			githubRepoFromConfig(`[remote.origin]\n\t${elsewhere}\n${gh}`),
+		).toBeNull();
+		expect(
+			githubRepoFromConfig(`[remote "origin"]\r\n\t${elsewhere}\r\n${gh}`),
+		).toBeNull();
+	});
+
+	test("an [include] may hold the origin: with no origin in the file itself, no guess", () => {
+		expect(
+			githubRepoFromConfig(`[include]\n\tpath = more.cfg\n${gh}`),
+		).toBeNull();
+		expect(
+			githubRepoFromConfig(
+				`[includeIf "gitdir:~/w/"]\n\tpath = more.cfg\n${gh}`,
+			),
+		).toBeNull();
+		expect(githubRepoFromConfig(gh)).toBe("octo-example/x");
+	});
+
+	test("url.<base>.insteadOf is applied (longest prefix); the first url of a remote counts", () => {
+		const cfg = [
+			'[url "https://github.com/"]',
+			"\tinsteadOf = gh:",
+			'[url "https://gitlab.example.invalid/"]',
+			"\tinsteadOf = gh:mirror/",
+			'[remote "origin"]',
+			"\turl = gh:octo-example/aliased",
+			"\turl = https://github.com/someone/second.git",
+		].join("\n");
+		expect(githubRepoFromConfig(cfg)).toBe("octo-example/aliased");
+		expect(
+			githubRepoFromConfig(
+				cfg.replace("gh:octo-example/aliased", "gh:mirror/aliased"),
+			),
 		).toBeNull();
 	});
 });
