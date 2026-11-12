@@ -149,6 +149,35 @@ describe("gitInfo (reads .git files, no spawn)", () => {
 		expect(gitInfo(tmp("norepo"))).toBeNull();
 	});
 
+	test("linked worktrees of a repo without an origin share one id: the main checkout's folder", () => {
+		// a repo whose only remote is not named "origin" (seen live: every worktree became its own
+		// building, local/<worktree dir>); the hub's local scan of the main checkout says local/<dir>
+		const root = tmp("git-noorigin");
+		const main = join(root, "station-x");
+		mkdirSync(main, { recursive: true });
+		git(main, "init", "-q");
+		git(
+			main,
+			"remote",
+			"add",
+			"github-station-x",
+			"https://github.com/octo-example/station-x.git",
+		);
+		git(main, "commit", "-q", "--allow-empty", "-m", "init");
+		const wt1 = join(root, "pipeline", "notes-1");
+		const wt2 = join(root, "tests-20261110");
+		git(main, "worktree", "add", "-q", wt1, "-b", "notes");
+		git(main, "worktree", "add", "-q", wt2, "-b", "tests");
+
+		expect(gitInfo(main)?.repo_id).toBe("local/station-x");
+		expect(gitInfo(wt1)).toEqual({
+			toplevel: wt1,
+			repo_id: "local/station-x",
+			branch: "notes",
+		});
+		expect(gitInfo(wt2)?.repo_id).toBe("local/station-x");
+	});
+
 	test('originUrlFromConfig only reads [remote "origin"]', () => {
 		const cfg = [
 			'[remote "upstream"]',
