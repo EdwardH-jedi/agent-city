@@ -22,7 +22,8 @@
 		"collector:hooks": "bun --no-env-file apps/collector/src/install-hooks.ts",
 		"collector:launchd": "bun --no-env-file apps/collector/src/install-launchd.ts",
 		"collector:heartbeat": "bun --no-env-file apps/collector/src/heartbeat.ts",
-		"check:secrets": "bun scripts/check-secrets.ts"
+		"check:secrets": "bun scripts/check-secrets.ts",
+		"check:board": "bun scripts/board-check/run.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.14",

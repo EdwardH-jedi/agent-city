@@ -86,3 +86,4 @@ bun run check:secrets    # scan tracked/untracked files for token patterns
 - `sessions.rev` is bumped on every write to a session row; clients merge by rev (higher wins,
   equal keeps). Bulk rewrites (repo remap) publish `{kind:"invalidate", scope:[…]}` on `/ws`.
 - Every env var the code reads is in both `.env.example` and the README table (a test enforces it).
+- When you change a screen, run `bun run check:board`.
