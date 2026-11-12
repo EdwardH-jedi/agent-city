@@ -147,7 +147,9 @@ engine's listeners) for it.
   its door lamp
   is red (멈춤) > yellow (결재 / 입력 대기) > green (running) > off; lit windows = running runs + active
   sessions (at most 4). The kangaroo is the owner (drawn while the cockpit is `online`): it patrols the
-  boulevard (about 4 min a lap); when a 결재 lead reaches the HQ door it walks back and the camera holds a
+  boulevard (4 min a lap), and once a lap crosses a quarter of the plaza round the pylon (in at the west
+  footpath, out at the north one; the quarter it cuts holds only the HQ and the cafe) with the camera turned
+  to the pylon's title and numbers; when a 결재 lead reaches the HQ door it walks back and the camera holds a
   close shot of the door and the queue for 5 minutes from that arrival, then the patrol resumes while the
   lead keeps standing at the door (a new 결재 arriving brings it back for 5 minutes); leads queue at the
   door in the HQ 대기 row order, reports
