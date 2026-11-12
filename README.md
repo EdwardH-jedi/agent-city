@@ -77,13 +77,15 @@ events; an unset token disables ingest. Keep the hub on loopback. Read the
 panel (MAP, **HQ 대기**, 쉬는 중, **자리 비운 사이**), the project village in the middle (the ring town when WebGL
 works, the 2D grid otherwise; `?scene=campus` draws the 3D campus instead) and **SESSIONS** on the right: each
 project's Claude Code / Codex sessions with a terminal tail of their last commands. `#/detail` (key `D` flips
-between the two) is the table view with Needs owner, Runs, Repos, Live sessions and Events.
+between the two) is the detail screen, in the board's panel look: RUNS (Needs owner, Runs), REPOS,
+SESSIONS and EVENTS with their repo / provider filters; every event line is cleaned like the tails (no
+absolute path, no secret), and picking a session shows only its events as one terminal.
 
 The board only reads: it draws what the hub reports through `useHub` (GET + `/ws`, plus
 `GET /api/runs/:machine/:id/events` for the current runs) and has no button or form. Approving, running or
 re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.test.ts` scans
 `apps/web/src/board/**`, `apps/web/src/campus/**` and `apps/web/src/town/**` (including the ported
-engine's listeners) for it.
+engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or action.
 
 - **Current run.** Of several runs with the same `(project, workflow_id)` only the one with the latest
   `last_progress_at` counts (ties: higher `last_event_sequence`, then higher run id). The others show only
@@ -697,8 +699,8 @@ The following work is planned, not implemented by the telemetry layer above.
 - Old token-scoped `github_etags` rows are not automatically pruned
 - Board width: the stage takes exactly 384 × its scale (1152 px = 60% at 1920; 768 px = 56% at 1366).
 - SESSIONS tails are remembered per session on the screen (3 lines, 64 sessions), but only from what the
-  200-event window showed while the board was open: after a reload, or a trip to the detail tables and
-  back, a quiet session's tail is back only if its events are still in the window. `+N sub` is counted in the window alone; a subagent sent to the
+  200-event window showed since the page opened (a trip to the detail screen and back keeps them): after
+  a reload, a quiet session's tail is back only if its events are still in the window. `+N sub` is counted in the window alone; a subagent sent to the
   background is not counted. A command longer than the hook's 80 characters is cut there (`$ S=…`).
 - At 1366×768 with a long HQ waiting list, 자리 비운 사이 keeps only its newest line (RX is 1920×1080).
 - Board known limits: open P2s from the Codex reviews of `feat/board-sessions` (line numbers as of
@@ -731,5 +733,5 @@ The following work is planned, not implemented by the telemetry layer above.
     visit.
   - #9 `sound.ts:153`: if the screen misses every tick of an outage in a background tab, a morning
     knock that fell due during it sounds as soon as the cockpit returns.
-  - #12 `App.tsx:325` (the detail screen, older than this branch): the tooltip of a session row without
-    `repo_id` shows its `cwd`.
+  - #12 (closed by 16 A3): the old detail screen's session tooltip showed a repo-less session's `cwd`;
+    the detail screen (`Detail.tsx`) no longer does.
