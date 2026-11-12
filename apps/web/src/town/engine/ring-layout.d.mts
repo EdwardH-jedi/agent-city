@@ -69,3 +69,11 @@ export declare function doorOf(lot: string | RingLot): {
 	readonly tz: number;
 	readonly theta: number;
 };
+/** Pavement and plaza props (lamps, trees, benches, bins): kind, id and centre. */
+export declare const PROPS: readonly {
+	readonly id: string;
+	readonly kind: "lamp" | "tree" | "bench" | "bin";
+	readonly x: number;
+	readonly z: number;
+	readonly h: number;
+}[];

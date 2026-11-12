@@ -28,6 +28,7 @@ import {
 	LANE,
 	leadPath,
 	leadPose,
+	PLAZA_SHOT,
 	patrolAt,
 	QUEUE_GAP,
 	type RooState,
@@ -42,6 +43,7 @@ import {
 	doorOf,
 	ellipseOffset,
 	LOTS,
+	PROPS,
 	PYLON,
 } from "./engine/ring-layout.mjs";
 import { buildTownWorld } from "./world.ts";
@@ -532,13 +534,93 @@ describe("the orbit rig after a pause", () => {
 	});
 });
 
-describe("the HQ shot", () => {
+describe("the HQ shot (a 결재 lead at the door)", () => {
 	// the stage's render target is 288 rows high and 320–384 wide (pipeline.ts fitStage)
+	const camAt = (shot: typeof HQ_SHOT, rtW: number) => {
+		const cam = new PerspectiveCamera(54, rtW / 288, 0.5, 200);
+		cam.position.set(shot.position.x, shot.position.y, shot.position.z);
+		cam.lookAt(shot.lookAt.x, shot.lookAt.y, shot.lookAt.z);
+		cam.updateMatrixWorld(true);
+		return (x: number, y: number, z: number) =>
+			new Vector3(x, y, z).project(cam);
+	};
+	const inside = (v: Vector3, m = 0.95) =>
+		Math.abs(v.x) <= m && Math.abs(v.y) <= m && v.z < 1;
+	/** Rows a 2.4-unit lead takes on the 288-row target. */
+	const rows = (ndc: ReturnType<typeof camAt>, s: { x: number; z: number }) =>
+		(ndc(s.x, 2.4, s.z).y - ndc(s.x, 0, s.z).y) * 144;
+
+	test.each([384, 373, 320])(
+		"at a %i × 288 target: door, sign, kangaroo and four queue spots in frame; a lead is 40+ rows tall (a desk away); the queue spreads across",
+		(rtW) => {
+			const ndc = camAt(HQ_SHOT, rtW);
+			const door = doorOf(HQ_LOT);
+			expect(inside(ndc(door.x, 0, door.z))).toBe(true);
+			expect(inside(ndc(door.x, 5, door.z))).toBe(true); // the HQ sign over the door
+			expect(inside(ndc(HQ_STAND.x, 0, HQ_STAND.z))).toBe(true);
+			const xs: number[] = [];
+			for (let k = 0; k < 4; k += 1) {
+				const s = hqSpot("sign", k);
+				expect(inside(ndc(s.x, 0, s.z))).toBe(true);
+				expect(inside(ndc(s.x, 2.4, s.z))).toBe(true);
+				expect(rows(ndc, s)).toBeGreaterThan(40);
+				xs.push((ndc(s.x, 0, s.z).x * rtW) / 2);
+			}
+			for (let k = 1; k < 4; k += 1)
+				expect(
+					Math.abs((xs[k] ?? 0) - (xs[k - 1] ?? 0)),
+				).toBeGreaterThanOrEqual(10);
+			// several times the old wide shot, which kept the whole pylon in view
+			const old = camAt(PLAZA_SHOT, rtW);
+			expect(rows(ndc, hqSpot("sign", 0))).toBeGreaterThan(
+				3 * rows(old, hqSpot("sign", 0)),
+			);
+		},
+	);
+
+	test("no pavement tree or lamp between the camera and the kangaroo or any of the first four in the queue", () => {
+		const p = HQ_SHOT.position;
+		const blockers = PROPS.filter(
+			(o) => o.kind === "tree" || o.kind === "lamp",
+		);
+		const targets = [
+			...[0, 1, 2, 3].map((k) => hqSpot("sign", k)),
+			{ x: HQ_STAND.x, z: HQ_STAND.z },
+		];
+		for (const t of targets)
+			for (const y of [0.3, 1.2, 2]) {
+				// up to 0.6 units short of the figure: a curb lamp standing beside a lead is not in front of it
+				const len = Math.hypot(t.x - p.x, y - p.y, t.z - p.z);
+				for (let i = 1; i < 50; i += 1) {
+					const f = i / 50;
+					if (f * len > len - 0.6) break;
+					const x = p.x + (t.x - p.x) * f;
+					const yy = p.y + (y - p.y) * f;
+					const z = p.z + (t.z - p.z) * f;
+					for (const o of blockers) {
+						const d = Math.hypot(x - o.x, z - o.z);
+						const hit =
+							o.kind === "tree"
+								? (yy > 1.9 && yy < 4.4 && d < 1.25) || (yy <= 1.9 && d < 0.3)
+								: yy < 4.3 && d < 0.3;
+						expect({ t, y, prop: o.id, hit }).toEqual({
+							t,
+							y,
+							prop: o.id,
+							hit: false,
+						});
+					}
+				}
+			}
+	});
+});
+
+describe("the reduced-motion plaza shot", () => {
 	test.each([384, 373, 320])(
 		"at a %i × 288 target: frames the HQ door, the first four queue spots and the whole pylon, with the pylon clear of the door",
 		(rtW) => {
 			const cam = new PerspectiveCamera(54, rtW / 288, 0.5, 200);
-			const { position: p, lookAt: l } = HQ_SHOT;
+			const { position: p, lookAt: l } = PLAZA_SHOT;
 			cam.position.set(p.x, p.y, p.z);
 			cam.lookAt(l.x, l.y, l.z);
 			cam.updateMatrixWorld(true);

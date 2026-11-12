@@ -42,6 +42,7 @@ import {
 	leadPose,
 	leadWalkMs,
 	type Path,
+	PLAZA_SHOT,
 	type RooState,
 	rooPose,
 	shufflePos,
@@ -73,6 +74,7 @@ import {
 	worldToView,
 } from "./patrol.ts";
 import { createTownPipeline, type TownPipeline } from "./pipeline.ts";
+import type { CameraShot } from "./world.ts";
 
 const DEG = Math.PI / 180;
 const lampCss = (s: LampState): string | null => {
@@ -82,11 +84,14 @@ const lampCss = (s: LampState): string | null => {
 };
 /** The orbit rig never advances more than this per frame (its turn and pitch ramps). */
 const MAX_DT_S = 0.1;
-/** The HQ shot's yaw (degrees, camera-rig convention), for the sprites' screen facings. */
-const SHOT_YAW = yawOfDir(
-	HQ_SHOT.lookAt.x - HQ_SHOT.position.x,
-	HQ_SHOT.lookAt.z - HQ_SHOT.position.z,
-);
+/** A fixed shot's yaw (degrees, camera-rig convention), for the sprites' screen facings. */
+const yawOfShot = (s: Omit<CameraShot, "blend">): number =>
+	yawOfDir(s.lookAt.x - s.position.x, s.lookAt.z - s.position.z);
+/** The 결재 HQ shot; reduced motion stands in the plaza shot (the pylon in view). */
+const SHOTS = {
+	hq: { shot: HQ_SHOT, yaw: yawOfShot(HQ_SHOT) },
+	plaza: { shot: PLAZA_SHOT, yaw: yawOfShot(PLAZA_SHOT) },
+} as const;
 /** Walk frames: a new phase every 0.45 units walked (ring-world.mjs townsfolk). */
 const LEAD_STRIDE = 0.45;
 
@@ -254,11 +259,12 @@ function buildStage(
 		lastScene = now;
 		const pose = rooPose(roo, now);
 		const cam = easeCam(pose.cam);
+		const fixed = reduced ? SHOTS.plaza : SHOTS.hq;
 		const rig = pipe.world.rig;
 		followRig(rig, pose, gap, dt);
 		// the view's yaw, blended like the camera, for the sprites' screen facings
 		const viewYaw =
-			(rig.yawDeg + turnBetween(rig.yawDeg, SHOT_YAW) * cam) * DEG;
+			(rig.yawDeg + turnBetween(rig.yawDeg, fixed.yaw) * cam) * DEG;
 		const actors: Actor[] = [];
 		if (input.model.owner_present) {
 			const v = worldToView(pose.dir[0], pose.dir[1], viewYaw);
@@ -352,7 +358,7 @@ function buildStage(
 			if (!book.visits.some((v) => v.visit_id === id)) leadFacing.delete(id);
 		for (const id of places.keys())
 			if (!book.visits.some((v) => v.visit_id === id)) places.delete(id);
-		pipe.render(actors, { ...HQ_SHOT, blend: cam });
+		pipe.render(actors, { ...fixed.shot, blend: cam });
 		const live = townLive.get();
 		if (live)
 			live.guide = input.model.owner_present

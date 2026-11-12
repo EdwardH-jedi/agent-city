@@ -67,13 +67,26 @@ export interface XZ {
 }
 
 /**
- * The HQ shot (§5 "the camera stops facing the HQ front"): from the plaza's north-east, low, looking
- * across the plaza at the HQ, so the HQ door and the queue sit right of centre and the pylon stands on
- * the left; high enough to see the queue over the pavement trees. Found by a search over camera positions (door as large as possible with door, queue and the
- * whole pylon in frame and the pylon clear of the door, for every render-target width the stage uses,
- * 320–384 × 288: pipeline.ts fitStage); choreo.test.ts re-checks the framing at 384, 373 and 320.
+ * The HQ shot (§5 "the camera stops facing the HQ front") while a 결재 lead is there: from the inner
+ * pavement just clockwise of the HQ, 6.5 up, looking down ~26° at the queue, so the door, the queue
+ * (spread across the view, not along it) and the kangaroo fill the frame — a lead at the door is ~60 of
+ * the 288 rows, readable from a desk away (owner review R1: the old wide shot made them a few pixels
+ * tall to fit the whole pylon). Found by a search over camera positions (figure size 42–60 rows, pitch
+ * 18–35°, door + sign, the first four queue spots and the kangaroo in frame, no pavement tree or lamp
+ * between the camera and any of them, for every render-target width the stage uses, 320–384 × 288:
+ * pipeline.ts fitStage); choreo.test.ts re-checks it at 384, 373 and 320.
  */
 export const HQ_SHOT = Object.freeze({
+	position: Object.freeze({ x: -17.76, y: 6.5, z: -8.68 }),
+	lookAt: Object.freeze({ x: -26.25, y: 2, z: -11.95 }),
+});
+
+/**
+ * The reduced-motion view (§5 "a fixed view where the plaza and the pylon show"): the S3 shot from the
+ * plaza's north-east, low, looking across the plaza at the HQ, the door and queue right of centre and
+ * the whole pylon on the left. Nothing moves there, so it keeps the pylon's numbers in view.
+ */
+export const PLAZA_SHOT = Object.freeze({
 	position: Object.freeze({ x: 12.36, y: 11, z: -13.62 }),
 	lookAt: Object.freeze({ x: -7.69, y: 2.5, z: -4.19 }),
 });
