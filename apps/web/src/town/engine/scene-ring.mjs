@@ -180,7 +180,7 @@ export function buildRingMeshes(seed, look, opts) {
   // The group's origin is the anticlockwise front corner (u = 0): local +x -> the inward normal, local -z -> clockwise.
   (opts.lots || LOTS).forEach((L) => {   // agent-city: opts.lots = optional LOTS override (same ids and positions)
     const r = lotRect(L), g = new Group();
-    const painted = !L.boarded && facadeCanSign(L.sign);
+    const painted = !L.boarded && !L.signLit && facadeCanSign(L.sign);   // agent-city: signLit = always the lit board
     const b = {
       id: L.id, side: 'west', x0: -LOT_D, x1: 0, z0: -LOT_W, z1: 0, h: L.h, seed: L.seed, family: L.family, wall: L.wall,
       awning: L.awning, door: L.door, sign: painted ? L.sign : null, entrance: !L.boarded,
@@ -197,10 +197,11 @@ export function buildRingMeshes(seed, look, opts) {
     if (!painted) {
       // A lit board where facade-gen paints its signs (centred, 3.25..4.25 up): COMING SOON on the boarded lots, the cafe's
       // name. Untinted, so it reads lit at dusk / night like the alley's blade sign.
-      const tw = signTextWidth(L.sign, 2), SW = Math.ceil((tw + 12) / 8) / 2, SH = 1, img = createImage(texels(SW), texels(SH));
+      // agent-city: L.signScale (default 2) — the board grows with it (2: the original 1 unit high, tw + 12 wide)
+      const ss = L.signScale || 2, tw = signTextWidth(L.sign, ss), SW = Math.ceil((tw + 6 * ss) / 8) / 2, SH = ss / 2, img = createImage(texels(SW), texels(SH));
       fillRect(img, 0, 0, img.width, img.height, [0x2c, 0x2a, 0x30]);
       strokeRect(img, 0, 0, img.width, img.height, OUTLINE);
-      drawSignText(img, L.sign, Math.floor((img.width - tw) / 2), Math.floor((img.height - 10) / 2), 2, RAMPS.lamp[3]);
+      drawSignText(img, L.sign, Math.floor((img.width - tw) / 2), Math.floor((img.height - 5 * ss) / 2), ss, RAMPS.lamp[3]);
       note('sign:' + L.id, img);
       const face = track(new MeshBasicMaterial({ map: track(pixelTexture(img)), color: WHITE })), side = flat([0x2c, 0x2a, 0x30]);
       const sign = new Mesh(track(new BoxGeometry(0.125, SH, SW)), [face, side, side, side, side, side]);

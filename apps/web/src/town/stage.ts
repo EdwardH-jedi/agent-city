@@ -58,10 +58,10 @@ import {
 	assignLots,
 	boardViewOf,
 	buildLots,
+	CAFE_MAP_LABEL,
 	HQ_LOT,
 	type LotAssignment,
 	lampInput,
-	mapLabel,
 	type TownLot,
 } from "./lots.ts";
 import type { TimeOfDay } from "./params.ts";
@@ -453,10 +453,10 @@ function buildStage(
 					l.id === HQ_LOT
 						? "HQ"
 						: l.repo_id
-							? mapLabel(l.name)
+							? (l.mapLabel ?? "")
 							: l.boarded
 								? ""
-								: mapLabel(l.label),
+								: CAFE_MAP_LABEL,
 				lamp: lampOf.get(l.id) ?? "off",
 				color: lampCss(lampOf.get(l.id) ?? "off"),
 			})),

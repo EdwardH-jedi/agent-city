@@ -1,5 +1,6 @@
-// Doc 12 §4 mapping rules (pure): sticky project slots, facades fixed by repo id, sign text, lamp colour
-// priority, and the pylon's rows / OFFLINE "—" — read back from the leaderboard's own face plan.
+// Doc 12 §4 mapping rules (pure): sticky project slots, facades fixed by repo id, short distinct names
+// (signs, pylon rows, minimap), lamp colour priority, and the pylon's rows / OFFLINE "—" — read back from
+// the leaderboard's own face plan.
 import { describe, expect, test } from "bun:test";
 import type { CampusModel, CampusRepo } from "../campus/presentation.ts";
 import { planFace } from "./engine/leaderboard.mjs";
@@ -8,11 +9,12 @@ import { lampState, signTextWidth } from "./engine/scene-ring.mjs";
 import {
 	AWNINGS,
 	assignLots,
+	BOARD_FONT,
 	BOARD_TITLE,
-	boardLabel,
 	boardViewOf,
 	buildLots,
 	CAFE_LOT,
+	distinctLabels,
 	FACADE_PAIRS,
 	facadeOf,
 	HEIGHTS,
@@ -20,10 +22,12 @@ import {
 	lampInput,
 	lampOf,
 	lotsKey,
+	MAP_FONT,
 	PROJECT_SLOTS,
 	SIGN_BOARD_MAX_UNITS,
-	SIGN_MAX_TX,
-	signText,
+	SIGN_FONT,
+	SIGN_SCALE,
+	SIGN_TEXT_MAX_TX,
 } from "./lots.ts";
 
 const repo = (
@@ -169,44 +173,104 @@ describe("facade by repo id", () => {
 	});
 });
 
-describe("sign text", () => {
-	test("upper case; digits and '-' drawn; separators become spaces", () => {
-		expect(signText("orchard")).toBe("ORCHARD");
-		expect(signText("agent-city-2")).toBe("AGENT-CITY-2");
-		expect(signText("my_repo.v2")).toBe("MY REPO V2");
-	});
+describe("short, distinct names: signs, pylon rows, minimap", () => {
+	// invented names shaped like the real ones: a repo, its worktrees, two repos sharing a first word
+	const NAMES = [
+		"kiwi-app",
+		"kiwi-tools",
+		"rover9",
+		"rover9-nav-deduction-tests-1",
+		"rover9-ui-20261106",
+		"rover9-night-8h-20261106",
+		"no-wukkas-plus",
+	];
+	const FONTS = { sign: SIGN_FONT, board: BOARD_FONT, map: MAP_FONT };
 
-	test("every A–Z, 0–9 and '-' has a sign glyph; anything else is dropped", () => {
+	test("every A–Z, 0–9 and '-' has a sign glyph", () => {
 		for (const ch of "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
-			expect(() => signTextWidth(ch, 2)).not.toThrow();
-		expect(signText("café!")).toBe("CAF");
-		expect(signText("한글")).toBe("-");
+			expect(() => signTextWidth(ch, SIGN_SCALE)).not.toThrow();
 	});
 
-	test("cut from the end to fit the frontage with a margin: starts at the first letter", () => {
-		for (const name of [
-			"a-very-long-project-name-that-goes-on",
-			"station0-ux-2026-review",
-			"station0-validation-notes-1",
-			"MMMMMMMMMMMMMMMMMMMM",
-		]) {
-			const s = signText(name);
-			const tw = signTextWidth(s, 2);
-			expect(tw).toBeLessThanOrEqual(SIGN_MAX_TX);
-			expect(name.toUpperCase().startsWith(s)).toBe(true);
-			expect(s.length).toBeGreaterThanOrEqual(8);
-			// both board styles stay inside the frontage's margin: the lit board (scene-ring: ceil((tw+12)/8)/2
-			// units) and the painted one (facade-gen: tw + 10 texels)
-			expect(Math.ceil((tw + 12) / 8) / 2).toBeLessThanOrEqual(
+	test.each(Object.entries(FONTS))(
+		"%s: all different, none reserved, each fits its font with drawable glyphs",
+		(_k, f) => {
+			const reserved = ["HQ", "CAF", "ALL", "NO WUKKAS"];
+			for (const names of [
+				NAMES,
+				["same", "same", "same"],
+				["Same", "same"],
+				["한글", "x", "café!", "a-very-long-project-name-that-goes-on"],
+				Array.from({ length: 8 }, (_, i) => `mmmmmmmmmmmm-${i}`),
+			]) {
+				const out = distinctLabels(names, f, reserved);
+				expect(out.length).toBe(names.length);
+				expect(new Set(out).size).toBe(out.length);
+				for (const s of out) {
+					expect(reserved).not.toContain(s);
+					expect(f.fits(s)).toBe(true);
+					expect(s.length).toBeGreaterThan(0);
+					for (const ch of s) expect(ch === "-" || f.has(ch)).toBe(true);
+				}
+			}
+		},
+	);
+
+	test("the plain name is kept when it fits and is unique; the one with fewest words keeps a shared stem", () => {
+		expect(distinctLabels(["orchard", "quarry"], SIGN_FONT)).toEqual([
+			"ORCHARD",
+			"QUARRY",
+		]);
+		expect(distinctLabels(["agent-2"], SIGN_FONT)).toEqual(["AGENT-2"]);
+		const sign = distinctLabels(NAMES, SIGN_FONT);
+		const map = distinctLabels(NAMES, MAP_FONT);
+		const board = distinctLabels(NAMES, BOARD_FONT);
+		expect(sign[2]).toBe("ROVER9");
+		expect(map[2]).toBe("ROV");
+		expect(board[2]).toBe("ROVER9");
+		// worktrees: the stem shortened + the word that tells them apart
+		expect(map.slice(3, 6)).toEqual(["RNA", "RUI", "RNI"]);
+		expect(sign[4]?.endsWith("-UI")).toBe(true);
+		// two repos sharing a first word: not both KIWI
+		expect(sign[0]).not.toBe(sign[1]);
+		expect(map.slice(0, 2)).toEqual(["KAP", "KTO"]);
+		// no stub: a long first word cut, not `NO`
+		expect(sign[6]?.startsWith("NO-WUKKA")).toBe(true);
+	});
+
+	test("the 3× sign board stays inside the frontage's margin (scene-ring: ceil((tw + 6s) / 8) / 2 units)", () => {
+		for (const s of distinctLabels(
+			[...NAMES, "MMMMMMMMMMMMMMMMMMMM", "abcdefghijklmnopqrstuvwxyz"],
+			SIGN_FONT,
+		)) {
+			const tw = signTextWidth(s, SIGN_SCALE);
+			expect(tw).toBeLessThanOrEqual(SIGN_TEXT_MAX_TX);
+			expect(Math.ceil((tw + 6 * SIGN_SCALE) / 8) / 2).toBeLessThanOrEqual(
 				SIGN_BOARD_MAX_UNITS,
 			);
-			expect((tw + 10) / 16).toBeLessThanOrEqual(SIGN_BOARD_MAX_UNITS);
 		}
 	});
 
-	test("the pylon's label: 6 characters of the leaderboard font", () => {
-		expect(boardLabel("orchard")).toBe("ORCHAR");
-		expect(boardLabel("app-2")).toBe("APP-2");
+	test("lots: project signs are lit 3× boards; the pylon row and the map label come from the same names", () => {
+		const repos = [
+			repo("o/r1", { label: "rover9" }),
+			repo("o/r2", { label: "rover9-ui-20261106" }),
+		];
+		const asg = assignLots(
+			new Map(),
+			repos.map((r) => r.repo_id),
+		);
+		const lots = buildLots(asg, repos);
+		const by = new Map(lots.map((l) => [l.repo_id, l]));
+		expect(by.get("o/r1")).toMatchObject({
+			sign: "ROVER9",
+			signLit: true,
+			signScale: SIGN_SCALE,
+			label: "ROVER9",
+			mapLabel: "ROV",
+		});
+		expect(by.get("o/r2")?.mapLabel).toBe("RUI");
+		const rows = boardViewOf(model(repos), asg).rows.map((r) => r.label);
+		expect(rows).toEqual(["ROVER9", "ROV-UI"]);
 	});
 });
 
@@ -262,7 +326,7 @@ describe("the pylon", () => {
 			["engineering", "GAMMA", 0, 1],
 		]);
 		expect(v.rows.map((r) => r.deg)).toEqual([288, 324, 0]);
-		expect(v.totals).toEqual({ working: 3, waiting: 2, idle: 0, unknown: 0 });
+		expect(v.totals).toEqual({ working: 3, waiting: 2 });
 		const texts = [0, 1, 2].flatMap((k) => planFace(v, k).texts);
 		expect(texts.filter((t) => t.field === "title").map((t) => t.s)).toContain(
 			"CITY",
@@ -272,31 +336,39 @@ describe("the pylon", () => {
 				.filter((t) => t.lot === "*" && t.field === "working")
 				.map((t) => t.s),
 		).toEqual(["03", "03", "03"]);
+		// only 진행 and 대기: no made-up idle / unknown "00", no age column
+		expect(
+			texts.filter((t) => ["idle", "unknown", "age"].includes(String(t.field))),
+		).toEqual([]);
+		const alpha = texts.filter((t) => t.lot === "lot-9");
+		expect(alpha.map((t) => [t.field, t.s])).toEqual([
+			["label", "ALPHA"],
+			["working", "02"],
+			["waiting", "01"],
+		]);
 	});
 
 	test("still: OFFLINE band and '—' everywhere, never 0", () => {
 		const v = boardViewOf(model(repos, { still: true }), asg);
 		expect(v.offline).toBe(true);
-		expect(v.totals).toEqual({
-			working: null,
-			waiting: null,
-			idle: null,
-			unknown: null,
-		});
+		expect(v.totals).toEqual({ working: null, waiting: null });
 		for (const k of [0, 1, 2]) {
 			const plan = planFace(v, k);
 			expect(plan.texts.some((t) => t.field === "offline")).toBe(true);
 			const counters = plan.texts.filter((t) =>
-				["working", "waiting", "idle"].includes(String(t.field)),
+				["working", "waiting", "idle", "unknown"].includes(String(t.field)),
 			);
 			expect(counters.length).toBeGreaterThan(0);
 			for (const t of counters) expect(t.s).toBe("—");
+			expect(
+				counters.every((t) => ["working", "waiting"].includes(String(t.field))),
+			).toBe(true);
 		}
 	});
 
 	test("no projects: no rows, ALL zero", () => {
 		const v = boardViewOf(model([]), new Map());
 		expect(v.rows).toEqual([]);
-		expect(v.totals).toEqual({ working: 0, waiting: 0, idle: 0, unknown: 0 });
+		expect(v.totals).toEqual({ working: 0, waiting: 0 });
 	});
 });

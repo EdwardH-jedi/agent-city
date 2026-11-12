@@ -7,19 +7,21 @@ export interface BoardCounts {
 	idle: number | null;
 	unknown: number | null;
 }
-export interface BoardRow extends BoardCounts {
+/** agent-city: a count left out (undefined) is not drawn at all; null draws "—". */
+export interface BoardRow extends Partial<BoardCounts> {
 	/** Ring lot id. */
 	lot: string;
 	label: string;
 	/** Places the row on the face that looks toward its lot. */
 	deg: number | null;
-	lastEvidenceS: number | null;
+	/** agent-city: left out → no age column. */
+	lastEvidenceS?: number | null;
 }
 export interface BoardView {
 	title: string;
 	rows: BoardRow[];
 	offline: boolean;
-	totals?: BoardCounts;
+	totals?: Partial<BoardCounts>;
 	source?: string;
 }
 export interface Leaderboard {
@@ -36,6 +38,8 @@ export interface Leaderboard {
 export declare const TITLE: string;
 export declare const LABEL_MAX_W: number;
 export declare function boardText(s: unknown, max: number, maxW: number): string;
+/** The leaderboard font has this character (A–Z, 0–9, `-` and a few more). */
+export declare function hasGlyph(ch: string): boolean;
 export declare function createLeaderboard(opts?: {
 	seed?: number;
 	look?: ScenePreset;

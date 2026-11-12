@@ -192,10 +192,11 @@ export function planFace(view, k) {
   rects.push({ x: L.border, y: L.titleY + L.titleH, w: inner, h: 1, color: C.rule });
   const counters = (row, y, meta, withUnknown) => {
     ['working', 'waiting', 'idle'].forEach((key, j) => {
+      if (row[key] === undefined) return;   // agent-city: a count the data does not have is not drawn (not "00")
       const v = offline ? null : row[key], s = counterText(v);
       text(s, L.counterX[j] + (s === '—' ? 1 : 0), y, v == null ? C.dash : C[key], Object.assign({ field: key, value: v }, meta));
     });
-    if (withUnknown) {
+    if (withUnknown && row.unknown !== undefined) {   // agent-city: no unknown count in the data → not drawn
       const v = offline ? null : row.unknown, s = '?' + counterText(v);
       text(s, L.unknownX, y, v == null ? C.dash : C.unknown, Object.assign({ field: 'unknown', value: v }, meta));
     }
@@ -204,8 +205,10 @@ export function planFace(view, k) {
   list.forEach((row, r) => {
     const y0 = L.rowsY + r * L.rowH, meta = { lot: row.lot };
     text(boardText(row.label, 6, LABEL_MAX_W), L.textX, y0 + 1, C.label, Object.assign({ field: 'label' }, meta));
-    const age = formatAge(row.lastEvidenceS);
-    text(age, L.right - boardTextWidth(age), y0 + 1, C.age, Object.assign({ field: 'age' }, meta));
+    if (row.lastEvidenceS !== undefined) {   // agent-city: no evidence age in the data → no age column
+      const age = formatAge(row.lastEvidenceS);
+      text(age, L.right - boardTextWidth(age), y0 + 1, C.age, Object.assign({ field: 'age' }, meta));
+    }
     counters(row, y0 + 1 + L.line2, meta, true);
     rects.push({ x: L.border + 1, y: y0 + 13, w: inner - 2, h: 1, color: C.rule });
   });

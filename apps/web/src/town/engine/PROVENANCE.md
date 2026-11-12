@@ -119,6 +119,16 @@ TownRooControlsM2, six decorative townsfolk, the `d` key; replaced by `../patrol
    Letterbox (not engine): outside the integer-scaled picture the canvas is cleared to the board's page colour
    #0f0c0b, not the preset's sky as pipeline.mjs did — the original's picture sat inside a dark stage.
 
+7. **R1 (owner review: readable signs and pylon)** — marked `agent-city:`:
+   - `scene-ring.mjs` `buildRingMeshes`: `L.signLit` forces the lit sign board even for a name facade-gen could
+     paint; `L.signScale` (default 2) sets the board's glyph scale, the board growing with it (width
+     `ceil((tw + 6s) / 8) / 2`, height `s / 2` units — at 2 exactly the original 1-unit board). Project lots use
+     3× lit boards: the original 2× glyphs (0.625 units high) minify into noise on the 384 × 288 target beyond
+     ~35 units, i.e. every sign across the plaza. The glyphs themselves were correct (checked texel by texel).
+   - `leaderboard.mjs` `planFace`: a counter (`working` / `waiting` / `idle`, `unknown`) or the age whose row
+     value is `undefined` is not drawn. The city's rows carry only 진행 and 대기, so the faces no longer show
+     made-up `00` / `?00` / `—` columns. Rows that carry every field (the original's) draw as before.
+
 ## Re-implemented in TypeScript (outside engine/)
 
 - `../pipeline.ts` — `createPipelineTargets` (without the door-fade quad), the ring branch of
