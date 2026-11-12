@@ -1,11 +1,18 @@
 // Ring-only low-res pipeline, modelled on the original renderer/pipeline.mjs (preset 'ring' branch; that
-// file is not ported because it pulls the alley and interior scenes). The world renders into a 384×288
-// nearest-filtered target, which is blitted at the largest integer scale that fits, centred, the rest
-// cleared to the sky colour. Owns no animation frame: the stage (stage.ts) drives it.
+// file is not ported because it pulls the alley and interior scenes). The world renders into a low-res
+// nearest-filtered target, which is blitted at an integer scale, centred; the rest is cleared to the
+// board's page colour (LETTERBOX; the original's own pipeline cleared to the sky, but its picture sat in a
+// dark stage). Owns no animation frame: the stage (stage.ts) drives it.
+//
+// Target size (doc 12 §12): the original's 384×288 at the largest integer scale that fits. When only 1×
+// would fit (a 1366×768 screen: the column is ~746×688), the target narrows instead — the height stays 288
+// (so the texel density, the camera's pixel size and every snap step are the original's) and the width
+// becomes floor(column / 2), down to 320 — so the column gets 2× (373×288) rather than a tiny 1×.
 //
 // Two lifetimes: the WebGL renderer and the targets live for the mount; the world (scene, pylon, rig,
 // atlas, actors) is rebuilt by setWorld() when its spec changes (time of day, the lots' signs and facades).
 import {
+	Color,
 	ColorManagement,
 	LinearSRGBColorSpace,
 	Mesh,
@@ -19,10 +26,11 @@ import {
 } from "three";
 import type { BoardView } from "./engine/leaderboard.mjs";
 import {
-	chooseIntegerScale,
 	type IntegerLayout,
 	RT_H,
 	RT_W,
+	RT_W_MAX,
+	setRenderWidth,
 } from "./engine/pipeline-core.mjs";
 import type { LampInput } from "./engine/scene-ring.mjs";
 import type { Actor } from "./engine/sprites.mjs";
@@ -35,6 +43,47 @@ import {
 } from "./world.ts";
 
 export { RT_H, RT_W };
+
+/** The narrowest render target the town uses (the HQ shot is checked down to this aspect). */
+export const RT_W_MIN = 320;
+const MAX_SCALE = 4;
+
+/** The board frame's page colour, around the picture. */
+export const LETTERBOX = 0x0f0c0b;
+
+export interface StageLayout extends IntegerLayout {
+	/** Render-target width (RT_H is fixed). */
+	rtW: number;
+}
+
+/**
+ * The render target and its integer scale for a stage of winW × winH CSS px: the original 384×288 at
+ * the largest integer scale that fits; only when that is 1×, a narrower target (≥ RT_W_MIN wide,
+ * floor(winW / 2)) at 2×; otherwise 384 at 1×. Centred, bottom-left origin (GL viewport).
+ */
+export function fitStage(winW: number, winH: number): StageLayout {
+	const mk = (rtW: number, scale: number): StageLayout => {
+		const width = rtW * scale;
+		const height = RT_H * scale;
+		return {
+			rtW,
+			scale,
+			width,
+			height,
+			x: Math.max(0, Math.floor((winW - width) / 2)),
+			y: Math.max(0, Math.floor((winH - height) / 2)),
+			fits: width <= winW && height <= winH,
+		};
+	};
+	// the original's full 384 width at the largest integer scale that fits
+	for (let scale = MAX_SCALE; scale >= 2; scale -= 1)
+		if (RT_W_MAX * scale <= winW && RT_H * scale <= winH)
+			return mk(RT_W_MAX, scale);
+	// only 1× would fit: narrow the target (≥ 320) to reach 2× instead
+	const narrow = Math.floor(winW / 2);
+	if (narrow >= RT_W_MIN && RT_H * 2 <= winH) return mk(narrow, 2);
+	return mk(RT_W_MAX, 1);
+}
 
 /**
  * The original turns three's colour management off so authored texel colours reach the screen
@@ -87,8 +136,8 @@ export function createPipelineTargets() {
 export interface TownPipeline {
 	readonly renderer: WebGLRenderer;
 	readonly world: TownWorld;
-	readonly layout: IntegerLayout;
-	resize(w: number, h: number): IntegerLayout;
+	readonly layout: StageLayout;
+	resize(w: number, h: number): StageLayout;
 	/** Rebuilds the world when the spec's key changed; returns true if it did. */
 	setWorld(spec: WorldSpec): boolean;
 	setBoard(view: BoardView): void;
@@ -104,7 +153,6 @@ export function createTownPipeline(opts: {
 	width: number;
 	height: number;
 	spec: WorldSpec;
-	maxScale?: number;
 }): TownPipeline {
 	const restoreColors = paletteColors();
 	// A failed start releases what it made and hands the colour switch back (the 2D grid takes over).
@@ -132,16 +180,31 @@ export function createTownPipeline(opts: {
 	const rt = targets;
 	let board: BoardView | null = null;
 	let lamps: LampInput | null = null;
-	let layout = chooseIntegerScale(1, 1, opts.maxScale);
+	// Outside the integer-scaled picture: the board's page colour (the original's picture sat in a dark
+	// stage), made here so it is not converted by colour management (off from paletteColors() on).
+	const letterbox = new Color(LETTERBOX);
+	let layout = fitStage(RT_W, RT_H);
 	let winW = 1;
 	let winH = 1;
 	let disposed = false;
 
-	function resize(w: number, h: number): IntegerLayout {
+	/** The target's width and the camera's aspect follow the layout (new worlds read RT_W themselves). */
+	function applyWidth(rtW: number) {
+		setRenderWidth(rtW);
+		if (rt.target.width !== rtW) rt.target.setSize(rtW, RT_H);
+		const cam = world.rig.camera;
+		if (Math.abs(cam.aspect - rtW / RT_H) > 1e-9) {
+			cam.aspect = rtW / RT_H;
+			cam.updateProjectionMatrix();
+		}
+	}
+
+	function resize(w: number, h: number): StageLayout {
 		winW = Math.max(1, Math.floor(w));
 		winH = Math.max(1, Math.floor(h));
 		gl.setSize(winW, winH, true); // canvas CSS size == backing store (pixel ratio 1)
-		layout = chooseIntegerScale(winW, winH, opts.maxScale);
+		layout = fitStage(winW, winH);
+		applyWidth(layout.rtW);
 		return layout;
 	}
 
@@ -151,6 +214,7 @@ export function createTownPipeline(opts: {
 		const [x, z] = world.rig.focus;
 		world.dispose();
 		world = next;
+		applyWidth(layout.rtW);
 		world.rig.snapTo(x, z);
 		if (board) world.setBoard(board);
 		if (lamps) world.setLamps(lamps);
@@ -167,13 +231,22 @@ export function createTownPipeline(opts: {
 		gl.setRenderTarget(null);
 		gl.autoClear = false;
 		gl.setViewport(0, 0, winW, winH);
-		gl.setClearColor(world.skyColor, 1);
+		gl.setClearColor(letterbox, 1);
 		gl.clear();
 		gl.setViewport(layout.x, layout.y, layout.width, layout.height);
 		gl.render(rt.blitScene, rt.blitCamera);
 	}
 
-	resize(opts.width, opts.height);
+	try {
+		resize(opts.width, opts.height);
+	} catch (e) {
+		world.dispose();
+		rt.dispose();
+		gl.dispose();
+		setRenderWidth(RT_W_MAX);
+		restoreColors();
+		throw e;
+	}
 	return {
 		renderer: gl,
 		get world() {
@@ -202,6 +275,7 @@ export function createTownPipeline(opts: {
 			world.dispose();
 			rt.dispose();
 			gl.dispose();
+			setRenderWidth(RT_W_MAX); // the width is module state: hand back the original's
 			restoreColors();
 		},
 	};

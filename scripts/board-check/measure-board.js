@@ -167,10 +167,12 @@
 		demoLabels: [...document.querySelectorAll(".demo-band")].map(text),
 		scene: document.querySelector(".tiles")
 			? "2d"
-			: document.querySelector(".campus canvas")
+			: document.querySelector(".campus canvas, .town-stage canvas")
 				? "3d"
 				: "pending",
-		canvas: [...document.querySelectorAll(".campus canvas")].map((e) => ({
+		canvas: [
+			...document.querySelectorAll(".campus canvas, .town-stage canvas"),
+		].map((e) => ({
 			width: e.width,
 			height: e.height,
 			rect: rect(e),

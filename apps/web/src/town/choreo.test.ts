@@ -316,6 +316,39 @@ describe("the kangaroo", () => {
 		expect(visitProgress(visit({ seen_at: 0 }), 0, WALK, true)).toBe(1);
 	});
 
+	test("a long-past 결재 that only arrives with the 2nd model (data loading): at the HQ at once, HQ shot, no walk", () => {
+		let st = initialRoo({
+			now: 1_000,
+			book: book(),
+			walkMsOf,
+			reducedMotion: false,
+		});
+		expect(st.mode).toBe("patrol");
+		const old = visit({ seen_at: 1_200, head_start_ms: 60_000 }); // began two hours ago: head start clamped
+		const input = {
+			now: 1_200,
+			book: book(old),
+			walkMsOf,
+			reducedMotion: false,
+		};
+		st = stepKangaroo(st, input, 200);
+		expect(st).toMatchObject({ mode: "at-hq", cam: 1 });
+		expect(dist(rooPose(st, 1_200), HQ_STAND)).toBeLessThan(1e-9);
+	});
+
+	test("a 결재 that arrived a moment before the page opened: the walk is already under way, not restarted", () => {
+		const v = visit({ seen_at: 10_000, head_start_ms: WALK + 2_000 }); // arrived 2 s before 10 s
+		const st = initialRoo({
+			now: 10_000,
+			book: book(v),
+			walkMsOf,
+			reducedMotion: false,
+		});
+		expect(st.mode).toBe("to-hq");
+		const p = rooPose(st, 10_000);
+		expect(p.walked).toBeCloseTo(2 * 4.2, 6);
+	});
+
 	test("opened while a 결재 lead is already at the HQ: it starts there (no replay)", () => {
 		const input = {
 			now: 50_000,
@@ -448,28 +481,44 @@ describe("the orbit rig after a pause", () => {
 });
 
 describe("the HQ shot", () => {
-	test("frames the HQ door, the first four queue spots and the whole pylon, with the pylon clear of the door", () => {
-		const cam = new PerspectiveCamera(54, 384 / 288, 0.5, 200);
-		const { position: p, lookAt: l } = HQ_SHOT;
-		cam.position.set(p.x, p.y, p.z);
-		cam.lookAt(l.x, l.y, l.z);
-		cam.updateMatrixWorld(true);
-		const ndc = (x: number, y: number, z: number) =>
-			new Vector3(x, y, z).project(cam);
-		const inside = (v: Vector3, m = 0.95) =>
-			Math.abs(v.x) <= m && Math.abs(v.y) <= m && v.z < 1;
-		const door = doorOf(HQ_LOT);
-		expect(inside(ndc(door.x, 0, door.z))).toBe(true);
-		expect(inside(ndc(door.x, 3, door.z))).toBe(true);
-		for (let k = 0; k < 4; k += 1) {
-			const s = hqSpot("sign", k);
-			expect(inside(ndc(s.x, 0, s.z))).toBe(true);
-			expect(inside(ndc(s.x, 2.4, s.z))).toBe(true);
-		}
-		const top = ndc(PYLON.x, PYLON.h, PYLON.z);
-		const bottom = ndc(PYLON.x, 0, PYLON.z);
-		expect(inside(top)).toBe(true);
-		expect(inside(bottom)).toBe(true);
-		expect(Math.abs(bottom.x - ndc(door.x, 0, door.z).x)).toBeGreaterThan(0.5);
-	});
+	// the stage's render target is 288 rows high and 320–384 wide (pipeline.ts fitStage)
+	test.each([384, 373, 320])(
+		"at a %i × 288 target: frames the HQ door, the first four queue spots and the whole pylon, with the pylon clear of the door",
+		(rtW) => {
+			const cam = new PerspectiveCamera(54, rtW / 288, 0.5, 200);
+			const { position: p, lookAt: l } = HQ_SHOT;
+			cam.position.set(p.x, p.y, p.z);
+			cam.lookAt(l.x, l.y, l.z);
+			cam.updateMatrixWorld(true);
+			const ndc = (x: number, y: number, z: number) =>
+				new Vector3(x, y, z).project(cam);
+			const inside = (v: Vector3, m = 0.95) =>
+				Math.abs(v.x) <= m && Math.abs(v.y) <= m && v.z < 1;
+			const door = doorOf(HQ_LOT);
+			expect(inside(ndc(door.x, 0, door.z))).toBe(true);
+			expect(inside(ndc(door.x, 3, door.z))).toBe(true);
+			for (let k = 0; k < 4; k += 1) {
+				const s = hqSpot("sign", k);
+				expect(inside(ndc(s.x, 0, s.z))).toBe(true);
+				expect(inside(ndc(s.x, 2.4, s.z))).toBe(true);
+			}
+			const top = ndc(PYLON.x, PYLON.h, PYLON.z);
+			const bottom = ndc(PYLON.x, 0, PYLON.z);
+			expect(inside(top)).toBe(true);
+			expect(inside(bottom)).toBe(true);
+			// the pylon's corners too (its faces are what it is for), at least just inside the frame
+			for (const dx of [-PYLON.w / 2, PYLON.w / 2])
+				for (const dz of [-PYLON.d / 2, PYLON.d / 2])
+					for (const y of [0, PYLON.h])
+						expect({
+							dx,
+							dz,
+							y,
+							ok: inside(ndc(PYLON.x + dx, y, PYLON.z + dz), 1),
+						}).toEqual({ dx, dz, y, ok: true });
+			expect(Math.abs(bottom.x - ndc(door.x, 0, door.z).x)).toBeGreaterThan(
+				0.5,
+			);
+		},
+	);
 });

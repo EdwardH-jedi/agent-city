@@ -10,7 +10,6 @@ spec=importlib.util.spec_from_file_location('ab_cli',HERE/'ab-cli.py')
 ab=importlib.util.module_from_spec(spec);spec.loader.exec_module(ab)
 OUT=ab.DEFAULT_OUT
 MODE=sys.argv[1] if len(sys.argv)>1 else 'ab1'
-BASE='http://127.0.0.1:4317/'
 results=[]
 
 def command(args, *, stdin=None, required=True):
@@ -35,8 +34,8 @@ try:
         try:
             command(['set','viewport',str(width),str(height)])
             command(['errors','--clear']);command(['console','--clear'])
-            command(['open',BASE+('?demo=1' if demo else '')])
-            ready='Boolean(document.querySelector(".board-sentence") && (document.querySelector(".campus canvas") || document.querySelector(".tiles")) && '+('document.querySelector(".demo-band")' if demo else 'document.querySelector(".bm-online")')+')'
+            command(['open',ab.board_url(demo=demo)])
+            ready='Boolean(document.querySelector(".board-sentence") && (document.querySelector(".campus canvas") || document.querySelector(".town-stage canvas") || document.querySelector(".tiles")) && '+('document.querySelector(".demo-band")' if demo else 'document.querySelector(".bm-online")')+')'
             wait,code=command(['wait','--fn',ready,'--timeout','15000'],required=False)
             save(case_dir/'wait.json',{'exit':code,**wait})
             if not wait.get('success'): raise RuntimeError('board readiness timed out')

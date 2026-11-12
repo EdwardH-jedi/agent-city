@@ -63,11 +63,12 @@ export interface XZ {
  * The HQ shot (§5 "the camera stops facing the HQ front"): from the plaza's north-east, low, looking
  * across the plaza at the HQ, so the HQ door and the queue sit right of centre and the pylon stands on
  * the left; high enough to see the queue over the pavement trees. Found by a search over camera positions (door as large as possible with door, queue and the
- * whole pylon in frame and the pylon clear of the door); choreo.test.ts re-checks the framing.
+ * whole pylon in frame and the pylon clear of the door, for every render-target width the stage uses,
+ * 320–384 × 288: pipeline.ts fitStage); choreo.test.ts re-checks the framing at 384, 373 and 320.
  */
 export const HQ_SHOT = Object.freeze({
-	position: Object.freeze({ x: 9.35, y: 11, z: -14.87 }),
-	lookAt: Object.freeze({ x: -8.97, y: 2.5, z: -4.88 }),
+	position: Object.freeze({ x: 12.36, y: 11, z: -13.62 }),
+	lookAt: Object.freeze({ x: -7.69, y: 2.5, z: -4.19 }),
 });
 
 // ── paths ──────────────────────────────────────────────────────────────────────
@@ -429,9 +430,10 @@ export function rooPose(st: RooState, now: number): RooPose {
 
 /** The kangaroo when the scene starts: already at the HQ if a 결재 lead is already there (no replay). */
 export function initialRoo(input: KangarooInput): RooState {
-	if (input.reducedMotion || wantsHq(input))
+	if (input.reducedMotion)
 		return { mode: "at-hq", since: input.now, shiftMs: 0, cam: 1 };
-	return { mode: "patrol", shiftMs: 0, cam: 0 };
+	const patrol: RooState = { mode: "patrol", shiftMs: 0, cam: 0 };
+	return wantsHq(input) ? leavePatrol(patrol, input) : patrol;
 }
 
 /** A waiting 결재 lead has reached the HQ: the kangaroo should come. */
@@ -464,14 +466,7 @@ export function stepKangaroo(
 	let next: RooState = st;
 	switch (st.mode) {
 		case "patrol":
-			if (wantsHq(input))
-				next = {
-					mode: "to-hq",
-					path: rooToHq(here),
-					t0: now,
-					shiftMs: st.shiftMs,
-					cam: st.cam,
-				};
+			if (wantsHq(input)) next = leavePatrol(st, input);
 			break;
 		case "to-hq":
 			if (!signsOn(input)) next = back(here, now, st.cam);
@@ -507,6 +502,32 @@ export function stepKangaroo(
 			? Math.min(target, next.cam + step)
 			: Math.max(target, next.cam - step);
 	return cam === next.cam ? next : { ...next, cam };
+}
+
+/**
+ * Off the patrol to the HQ, anchored to when the first waiting 결재 lead arrived (tA): the walk starts
+ * from the patrol point at tA. Stepped every frame that is now (no jump); but when the visit only shows
+ * up already arrived — the page just opened, or its data came with a later model — the walk is where it
+ * would be by now, and if it would be over the kangaroo simply stands at the HQ in the HQ shot (a reload
+ * never replays the walk).
+ */
+function leavePatrol(
+	st: Extract<RooState, { mode: "patrol" }>,
+	input: KangarooInput,
+): RooState {
+	const { now, book, walkMsOf } = input;
+	const arrived = book.visits
+		.filter((v) => v.carry !== null && v.left_at === null)
+		.map((v) => arrivesAt(v, walkMsOf(v)))
+		.filter((t) => t <= now);
+	const tA = Math.min(now, ...arrived);
+	const p = rooToHq(patrolAt(tA + st.shiftMs));
+	const end = tA + walkMs(p);
+	if (now >= end) {
+		const cam = Math.min(1, Math.max(st.cam, (now - end) / CAM_BLEND_MS));
+		return { mode: "at-hq", since: end, shiftMs: st.shiftMs, cam };
+	}
+	return { mode: "to-hq", path: p, t0: tA, shiftMs: st.shiftMs, cam: st.cam };
 }
 
 /** Walk from `here` onto the centre line; the patrol continues from that point when it gets there. */

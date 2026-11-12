@@ -27,8 +27,15 @@ export const CAFE_LOT = "no-wukkas-cafe";
 export const BOARD_TITLE = "AGENT CITY";
 /** Lit windows a facade shows at most (the board caps active_tasks at 4 too). */
 export const MAX_LIT = 4;
-/** A sign's text is at most this many texels wide at scale 2 (10 world units of the 14-unit frontage). */
-export const SIGN_MAX_TX = 160;
+/**
+ * A sign's text is at most this many texels wide at scale 2: 7 of the 14-unit frontage, so the board
+ * (text + its 6-texel border, ≤ 8 units on the lit board, ≤ 7.6 painted) keeps ≥ 3 units clear on each side,
+ * inside the curb lamps and their glows seen from the road. Cut from the end: a sign always starts at the
+ * name's first letter (the full name is in the side columns and the map).
+ */
+export const SIGN_MAX_TX = 112;
+/** The frontage a sign board must stay inside, with a margin each side (world units). */
+export const SIGN_BOARD_MAX_UNITS = 14 - 2 * 3;
 
 const lotOf = (id: string): RingLot => {
 	const l = LOTS.find((x) => x.id === id);

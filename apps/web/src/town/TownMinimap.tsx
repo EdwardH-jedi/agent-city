@@ -2,7 +2,8 @@
 // and the kangaroo. Drawn with minimap.mjs's pure model and drawing functions on a plain canvas, from
 // what the stage shows right now (live.ts), on a slow timer. No listeners: nothing on it responds.
 // It is the first thing to give way in the HQ column (§3): it never pushes the 결재 cards out of view —
-// it shrinks to the room left above them, and hides when even a small map would not fit.
+// it shrinks to the room left above them (and the blocks under them), and hides when even a small map
+// would not fit. Its `MAP` title is drawn as DOM text in the panel-title style (style.css).
 import { useEffect, useRef } from "react";
 import {
 	drawBase,
@@ -23,14 +24,63 @@ const GUIDE_EDGE = "#1b1512";
 
 const px = (v: string) => Number.parseFloat(v) || 0;
 
-/** Height the map may take without pushing the HQ queue (`.hq-wait`) past the column's bottom. */
+/**
+ * Height a block would have with all the room it wants. The blocks under the 결재 cards may shrink (their
+ * line lists are `overflow: hidden` columns that drop whole lines), so their box heights say nothing
+ * about the content: sum the title and the single-column list instead.
+ */
+function naturalHeight(el: HTMLElement): number {
+	if (!el.querySelector(".incidents")) return el.offsetHeight;
+	const cs = getComputedStyle(el);
+	const kids = Array.from(el.children).filter(
+		(k): k is HTMLElement =>
+			k instanceof HTMLElement && getComputedStyle(k).display !== "none",
+	);
+	let sum = px(cs.paddingTop) + px(cs.paddingBottom);
+	for (const k of kids) {
+		if (k.classList.contains("incidents")) {
+			const rows = Array.from(k.children).filter(
+				(r): r is HTMLElement =>
+					r instanceof HTMLElement && getComputedStyle(r).display !== "none",
+			);
+			sum +=
+				rows.reduce((n, r) => n + r.offsetHeight, 0) +
+				px(getComputedStyle(k).rowGap) * Math.max(0, rows.length - 1);
+		} else sum += k.offsetHeight;
+	}
+	return sum + px(cs.rowGap) * Math.max(0, kids.length - 1);
+}
+
+/**
+ * Height the map's canvas may take without pushing the rest of the HQ column (결재 cards, 쉬는 중, 기다리는
+ * 세션) past the column's bottom: the room left after every other block and the gaps between them, minus
+ * the map's own title.
+ */
 function roomAbove(wrap: HTMLElement): number {
 	const aside = wrap.closest(".hq");
-	const wait = aside?.querySelector<HTMLElement>(".hq-wait");
-	if (!(aside instanceof HTMLElement) || !wait) return MAX_H;
+	if (!(aside instanceof HTMLElement)) return MAX_H;
 	const cs = getComputedStyle(aside);
 	const inner = aside.clientHeight - px(cs.paddingTop) - px(cs.paddingBottom);
-	return Math.min(MAX_H, Math.floor(inner - wait.offsetHeight - px(cs.rowGap)));
+	let others = 0;
+	let blocks = 1; // the map itself
+	for (const el of Array.from(aside.children)) {
+		if (
+			el === wrap ||
+			!(el instanceof HTMLElement) ||
+			getComputedStyle(el).display === "none"
+		)
+			continue;
+		others += naturalHeight(el);
+		blocks++;
+	}
+	const title = wrap.querySelector<HTMLElement>(".town-map-title");
+	const head = title
+		? title.offsetHeight + px(getComputedStyle(wrap).rowGap)
+		: 0;
+	return Math.min(
+		MAX_H,
+		Math.floor(inner - others - px(cs.rowGap) * (blocks - 1) - head),
+	);
 }
 
 export default function TownMinimap() {
@@ -110,6 +160,7 @@ export default function TownMinimap() {
 	}, []);
 	return (
 		<div ref={wrapRef} className="town-map" aria-hidden="true" hidden>
+			<h2 className="town-map-title">MAP</h2>
 			<canvas ref={ref} className="town-map-canvas" />
 		</div>
 	);

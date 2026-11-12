@@ -109,6 +109,16 @@ TownRooControlsM2, six decorative townsfolk, the `d` key; replaced by `../patrol
      are disposed (the original hid it and kept it for reuse). On an always-on board actors come and go with
      every visit; hiding would grow GPU resources without bound. Shared shadow geometry / material untouched.
 
+6. **S4 (stage size, doc 12 §12)** — `pipeline-core.mjs`: `export const RT_W = 384` → `export let RT_W = 384` plus
+   `RT_W_MAX = 384` and `setRenderWidth(w)` (clamped 1..384). Every engine use of RT_W (camera aspect at creation,
+   sprites' pixel snapping, chooseIntegerScale) reads the live binding. RT_H stays a constant 288, so the texel
+   density (pixelWorldSize, worldPerPixel, the skyline texel, the orbit rig's snap steps) is the original's.
+   `../pipeline.ts` `fitStage` picks the width: the full 384 at the largest integer scale that fits; only when
+   that is 1× does it narrow (floor(column / 2), ≥ 320) to reach 2× (a 1366×768 board: 373×288 at 2×). It
+   updates the target and the live camera's aspect, and hands 384 back on dispose and on a failed start.
+   Letterbox (not engine): outside the integer-scaled picture the canvas is cleared to the board's page colour
+   #0f0c0b, not the preset's sky as pipeline.mjs did — the original's picture sat inside a dark stage.
+
 ## Re-implemented in TypeScript (outside engine/)
 
 - `../pipeline.ts` — `createPipelineTargets` (without the door-fade quad), the ring branch of
@@ -150,4 +160,4 @@ for f in $E/*.mjs; do n=$(basename $f); case $n in town-roo-art-m2.mjs) s=$O/app
 ```
 
 `town-roo-art-m2.mjs`, `town-art.mjs` (item 2), `facade-gen.mjs`, `alley-meshes.mjs`, `scene-ring.mjs` (item 4) and
-`sprites.mjs` (item 5) should print.
+`sprites.mjs` (item 5), `pipeline-core.mjs` (item 6) should print.

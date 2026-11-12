@@ -1,5 +1,5 @@
 // Hand-written declarations for the ported engine (agent-city; see PROVENANCE.md).
-import type { Camera, Object3D, Scene, Texture } from "three";
+import type { Camera, Object3D, PerspectiveCamera, Scene, Texture, Vector3 } from "three";
 import type { SpriteAtlas } from "./sprite-atlas.mjs";
 export interface Actor {
 	id: string;
@@ -38,3 +38,7 @@ export declare function createActorLayer(
 		frameFor?: (a: Actor) => unknown;
 	},
 ): ActorLayer;
+/** World position whose foot projects onto the nearest whole render-target pixel (RT_W × RT_H), same depth. */
+export declare function snapToPixel(camera: Camera, pos: Vector3, out?: Vector3): Vector3;
+/** World size of one render-target pixel at a view-space depth (depends on RT_H only). */
+export declare function worldPerPixel(camera: PerspectiveCamera, depth: number): number;

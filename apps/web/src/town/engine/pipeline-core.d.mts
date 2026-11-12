@@ -1,5 +1,9 @@
 // Hand-written declarations for the ported engine (agent-city; see PROVENANCE.md). Only what the TypeScript side imports.
-export declare const RT_W: 384;
+/** agent-city: a live binding (setRenderWidth); 384 unless the town narrowed it. */
+export declare let RT_W: number;
+export declare const RT_W_MAX: 384;
+/** Sets RT_W (1..RT_W_MAX); returns it. Cameras made later take the new aspect; existing ones must be updated. */
+export declare function setRenderWidth(w: number): number;
 export declare const RT_H: 288;
 export interface IntegerLayout {
 	scale: number;

@@ -21,6 +21,7 @@ import {
 	lampOf,
 	lotsKey,
 	PROJECT_SLOTS,
+	SIGN_BOARD_MAX_UNITS,
 	SIGN_MAX_TX,
 	signText,
 } from "./lots.ts";
@@ -182,11 +183,25 @@ describe("sign text", () => {
 		expect(signText("한글")).toBe("-");
 	});
 
-	test("cut to fit the frontage", () => {
-		const s = signText("a-very-long-project-name-that-goes-on");
-		expect(signTextWidth(s, 2)).toBeLessThanOrEqual(SIGN_MAX_TX);
-		expect("A-VERY-LONG-PROJECT-NAME-THAT-GOES-ON".startsWith(s)).toBe(true);
-		expect(s.length).toBeGreaterThan(10);
+	test("cut from the end to fit the frontage with a margin: starts at the first letter", () => {
+		for (const name of [
+			"a-very-long-project-name-that-goes-on",
+			"station0-ux-2026-review",
+			"station0-validation-notes-1",
+			"MMMMMMMMMMMMMMMMMMMM",
+		]) {
+			const s = signText(name);
+			const tw = signTextWidth(s, 2);
+			expect(tw).toBeLessThanOrEqual(SIGN_MAX_TX);
+			expect(name.toUpperCase().startsWith(s)).toBe(true);
+			expect(s.length).toBeGreaterThanOrEqual(8);
+			// both board styles stay inside the frontage's margin: the lit board (scene-ring: ceil((tw+12)/8)/2
+			// units) and the painted one (facade-gen: tw + 10 texels)
+			expect(Math.ceil((tw + 12) / 8) / 2).toBeLessThanOrEqual(
+				SIGN_BOARD_MAX_UNITS,
+			);
+			expect((tw + 10) / 16).toBeLessThanOrEqual(SIGN_BOARD_MAX_UNITS);
+		}
 	});
 
 	test("the pylon's label: 6 characters of the leaderboard font", () => {

@@ -202,8 +202,13 @@ watches the live board for 90 s and checks that it sends only GETs to loopback a
 `/ws`; `ab3` repeats the 1920×1080 cases with WebGL off (the 2D tiles fallback). It is read-only:
 loopback only, no browser profile, no AI features. The scripts are in `scripts/board-check/` and
 add no dependency. It checks whatever answers on `http://127.0.0.1:4317/`; on the cockpit that is
-the tunnel to the hub on spine, so it sees the deployed build, not an unmerged worktree — point a
-local hub or tunnel at that port to check a change before it ships. Captures and `result.json` go
+the tunnel to the hub on spine, so it sees the deployed build, not an unmerged worktree. To check a
+change before it ships, run the web dev server on another port (it proxies `/api` and `/ws` to the
+hub) and set `AGENTCITY_BOARD_URL` (`http://127.0.0.1:<port>/…` only), e.g.
+`AGENTCITY_BOARD_URL='http://127.0.0.1:5181/?scene=town' bun run check:board`. A query in the URL is
+kept and the cases add their own (`demo=1`). `ab1` and `ab3` are the checks to run against a dev
+server; `ab2` needs a built page (it reads the `/assets/index-*` chunk names, and the dev server's
+HMR WebSocket would count as a second socket), so point it at the hub-served build or at `vite preview` (`cd apps/web && bun run build && bunx vite preview --port 5184 --strictPort`; it inherits the dev proxy to the hub and passes). Captures and `result.json` go
 to `~/Documents/AgentCityCaptures/ab/` (outside the repo; `AGENTCITY_AB_OUT` may pick another
 folder under it). A `FAIL` makes the command exit 1; `KNOWN` marks an accepted limit and does not.
 Without `agent-browser` on `PATH` the check is skipped, says so, and exits 0; this repo never
@@ -264,6 +269,7 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `CODEX_BACKFILL_EVENT_FILTER` | collector   | `1` → during a file's initial backfill (until its first EOF) skip records older than that window. |
 | `AGENTCITY_HOOK_KILL_S`    | hook launcher  | Seconds before `bin/claude-hook` SIGKILLs a stuck hook (default `0.6`). Process env only. |
 | `AGENTCITY_BUN`            | hook launcher  | Bun binary for the hook (default `command -v bun`, else `~/.bun/bin/bun`). Process env only. |
+| `AGENTCITY_BOARD_URL`      | `check:board`  | Page the screen check opens (loopback only; default `http://127.0.0.1:4317/`). Process env only. |
 
 The collectors read only `HUB_URL`, `INGEST_TOKEN`, `AGENTCITY_*` (except the two launcher
 variables), `SPOOL_*` and `CODEX_*` from this checkout's `.env` — never the whole file; process env
@@ -302,7 +308,7 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `collector:heartbeat`         | Resident machine heartbeat: one beat every 30 s to `POST /ingest/heartbeat`.     |
 | `collector:launchd`           | Print-only: launchd job files for the Mac's resident processes → `~/.agentcity/launchd/`. See [Mac login jobs](#mac-login-jobs-launchd). |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
-| `check:board`                 | Screen check of `127.0.0.1:4317` through `agent-browser` (skipped without it). See [Development and checks](#development-and-checks). |
+| `check:board`                 | Screen check of `127.0.0.1:4317` (or `AGENTCITY_BOARD_URL`) through `agent-browser` (skipped without it). See [Development and checks](#development-and-checks). |
 
 **Machine heartbeat.** `collector:heartbeat` (run on each machine with `AGENTCITY_MACHINE` =
 `cockpit` / `forge` / `spine`) sends a beat every 30 s; `GET /api/machines` and the *Machines* strip

@@ -10,7 +10,7 @@ import { TownMinimapSlot, TownView } from "../town/TownView.tsx";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
 import { burnInShift } from "./burnin.ts";
 import { DEMO_LABEL } from "./demo-flag.ts";
-import { Hq } from "./Hq.tsx";
+import { Away, Hq } from "./Hq.tsx";
 import { toVillageModel, type VillageModel } from "./model.ts";
 import { Now } from "./Now.tsx";
 import { parseSessionWait, recentSessions } from "./sessions.ts";
@@ -153,8 +153,11 @@ export function BoardView({
 }) {
 	// `?scene=town`: the ring town in the middle column (design doc 12); otherwise the 3D campus.
 	const [scene] = useState(() => sceneOf(window.location.search));
+	const town = scene === "town";
 	return (
-		<div className={`board border-${model.status.border}`}>
+		<div
+			className={`board border-${model.status.border}${town ? " scene-town" : ""}`}
+		>
 			<header
 				className="board-top"
 				style={{
@@ -187,14 +190,19 @@ export function BoardView({
 				<Hq
 					model={model}
 					now={now}
-					top={scene === "town" ? <TownMinimapSlot /> : null}
+					top={town ? <TownMinimapSlot /> : null}
+					away={!town}
 				/>
-				{scene === "town" ? (
+				{town ? (
 					<TownView model={model} now={now} />
 				) : (
 					<CampusView model={model} now={now} />
 				)}
-				<Now model={model} now={now} />
+				<Now
+					model={model}
+					now={now}
+					below={town ? <Away model={model} now={now} /> : null}
+				/>
 			</div>
 			{error && <div className="board-error">{error}</div>}
 		</div>
