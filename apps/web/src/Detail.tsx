@@ -437,7 +437,13 @@ function EventList({
 					</li>
 				))}
 			</ol>
-			{shown.length === 0 && <p className="quiet dpad">사건 없음</p>}
+			{shown.length === 0 && (
+				<p className="quiet dpad">
+					{picked && (filter.repo || filter.provider)
+						? "이 세션의 사건 없음 — 저장소·provider 거르기에 걸렸을 수 있음"
+						: "사건 없음"}
+				</p>
+			)}
 		</section>
 	);
 }

@@ -36,13 +36,16 @@ export const COMPANIONS_MAX = 8;
 /** Claude model families the town has a look and a tag for. */
 const CLAUDE_FAMILIES = new Set(["opus", "sonnet", "haiku", "fable"]);
 
-/** `claude-opus-5-5` → `opus`; Codex → `codex`; anything else → null. */
+/** `claude-opus-5-5` / `claude-3-5-sonnet-…` → `opus` / `sonnet`; Codex → `codex`; anything else → null. */
 export function familyOf(
 	provider: string,
 	model: string | null,
 ): string | null {
 	if (provider === "codex") return "codex";
-	const m = /^(?:claude-)?([a-z]+)/.exec((model ?? "").toLowerCase());
+	// the family word anywhere (`claude-opus-5-5`, and older ids like `claude-3-5-sonnet-20241022`)
+	const m = /(?:^|[-_ ])(opus|sonnet|haiku|fable)(?:$|[-_ ])/.exec(
+		(model ?? "").toLowerCase().slice(0, 128),
+	);
 	const f = m?.[1] ?? "";
 	return CLAUDE_FAMILIES.has(f) ? f : null;
 }
