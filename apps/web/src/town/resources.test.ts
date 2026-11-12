@@ -13,8 +13,27 @@ import {
 	Sprite,
 	type Texture,
 } from "three";
+import { assignLots, buildLots } from "./lots.ts";
 import { createPipelineTargets, paletteColors } from "./pipeline.ts";
 import { buildTownWorld, type TownWorld } from "./world.ts";
+
+const repo = (id: string, active: number) => ({
+	repo_id: id,
+	label: id.split("/")[1] ?? id,
+	active_tasks: active,
+	monitors: [],
+	pending_requests: 0,
+	has_stopped: false,
+});
+const REPOS = [repo("a/alpha", 2), repo("b/beta-2", 0), repo("c/gamma", 4)];
+/** Three projects, five empty slots, HQ and the cafe: the real-data path. */
+const LOTS3 = buildLots(
+	assignLots(
+		new Map(),
+		REPOS.map((r) => r.repo_id),
+	),
+	REPOS,
+);
 
 function resourcesOf(roots: Object3D[]) {
 	const geos = new Set<BufferGeometry>();
@@ -67,7 +86,8 @@ function everything(world: TownWorld) {
 describe("ring town disposal (real three objects, no renderer)", () => {
 	for (const time of ["day", "dusk", "night"] as const) {
 		test(`${time}: every reachable resource is disposed exactly once`, () => {
-			const world = buildTownWorld({ time });
+			const world = buildTownWorld({ time, lots: LOTS3 });
+			for (const l of LOTS3) if (l.repo_id) world.setLitWindows(l.id, 1); // repaint in place
 			const { geos, mats, texs, targets } = everything(world);
 			expect(world.actors.sprites.size).toBe(1);
 			expect(geos.size).toBeGreaterThan(100);
@@ -97,35 +117,35 @@ describe("ring town disposal (real three objects, no renderer)", () => {
 		});
 	}
 
-	test("the pylon and the door lamps take a board view; a disposed world ignores it", () => {
-		const world = buildTownWorld({ time: "day" });
-		const view = {
-			title: "AGENT OFFICE",
-			rows: [
-				{
-					lot: "engineering",
-					label: "ENGINR",
-					deg: 0,
-					lastEvidenceS: null,
-					working: 1,
-					waiting: 0,
-					idle: 0,
-					unknown: 0,
-				},
-			],
+	test("door lamps take explicit states; a disposed world ignores them", () => {
+		const world = buildTownWorld({ time: "day", lots: LOTS3 });
+		const rows = LOTS3.map((l) => ({ lot: l.id, lamp: "off" as const }));
+		world.setLamps({
 			offline: false,
-		};
-		world.setBoard(view);
-		expect(world.ring.lampStates().engineering).toBe("working");
-		expect(world.ring.lampStates().qa).toBe("off");
+			rows: [
+				...rows.filter((r) => r.lot !== "engineering" && r.lot !== "qa"),
+				{ lot: "engineering", lamp: "stopped" },
+				{ lot: "qa", lamp: "waiting" },
+			],
+		});
+		expect(world.ring.lampStates().engineering).toBe("stopped");
+		expect(world.ring.lampStates().qa).toBe("waiting");
+		expect(world.ring.lampStates().research).toBe("off");
+		world.setLamps({ offline: true, rows });
+		expect(new Set(Object.values(world.ring.lampStates()))).toEqual(
+			new Set(["offline"]),
+		);
 		world.dispose();
-		world.setBoard({ ...view, offline: true });
-		expect(world.ring.lampStates().engineering).toBe("working");
+		world.setLamps({ offline: false, rows });
+		expect(world.ring.lampStates().qa).toBe("offline");
 	});
 
 	test("repeated build/dispose cycles leave every resource disposed", () => {
 		for (let i = 0; i < 3; i += 1) {
-			const world = buildTownWorld({ time: i % 2 ? "night" : "day" });
+			const world = buildTownWorld({
+				time: i % 2 ? "night" : "day",
+				lots: i % 2 ? LOTS3 : null,
+			});
 			const { geos, mats, texs, targets } = everything(world);
 			const live = new Set<object>([...geos, ...mats, ...texs]);
 			for (const r of live) r.addEventListener("dispose", () => live.delete(r));

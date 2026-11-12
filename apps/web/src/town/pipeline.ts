@@ -4,7 +4,7 @@
 // cleared to the sky colour. Owns no animation frame: the stage (stage.ts) drives it.
 //
 // Two lifetimes: the WebGL renderer and the targets live for the mount; the world (scene, pylon, rig,
-// atlas, actors) is rebuilt by setWorld() when its spec changes (time of day now, lot overrides in S2).
+// atlas, actors) is rebuilt by setWorld() when its spec changes (time of day, the lots' signs and facades).
 import {
 	ColorManagement,
 	LinearSRGBColorSpace,
@@ -24,6 +24,7 @@ import {
 	RT_H,
 	RT_W,
 } from "./engine/pipeline-core.mjs";
+import type { LampInput } from "./engine/scene-ring.mjs";
 import type { Actor } from "./engine/sprites.mjs";
 import {
 	buildTownWorld,
@@ -90,6 +91,8 @@ export interface TownPipeline {
 	/** Rebuilds the world when the spec's key changed; returns true if it did. */
 	setWorld(spec: WorldSpec): boolean;
 	setBoard(view: BoardView): void;
+	setLamps(input: LampInput): void;
+	setLitWindows(lotId: string, n: number): void;
 	/** One frame: actors staged, world → target → integer blit. */
 	render(actors: readonly Actor[]): void;
 	dispose(): void;
@@ -127,6 +130,7 @@ export function createTownPipeline(opts: {
 	const gl = renderer;
 	const rt = targets;
 	let board: BoardView | null = null;
+	let lamps: LampInput | null = null;
 	let layout = chooseIntegerScale(1, 1, opts.maxScale);
 	let winW = 1;
 	let winH = 1;
@@ -148,6 +152,7 @@ export function createTownPipeline(opts: {
 		world = next;
 		world.rig.snapTo(x, z);
 		if (board) world.setBoard(board);
+		if (lamps) world.setLamps(lamps);
 		return true;
 	}
 
@@ -181,6 +186,13 @@ export function createTownPipeline(opts: {
 		setBoard(view) {
 			board = view;
 			world.setBoard(view);
+		},
+		setLamps(input) {
+			lamps = input;
+			world.setLamps(input);
+		},
+		setLitWindows(lotId, n) {
+			world.setLitWindows(lotId, n);
 		},
 		render,
 		dispose() {

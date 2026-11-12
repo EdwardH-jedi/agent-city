@@ -36,7 +36,13 @@ const CURB_W = 0.25, SLAB = 0.625, MAT_DEPTH = 1;
 
 // Lit sign boards (COMING SOON, NO WUKKAS) use two glyphs textures.mjs's font does not have, drawn here on the same 5-row
 // grid; every other letter is textures.mjs's. Facade-gen's painted signs stay on its own font (signs it can draw).
-const SIGN_GLYPHS = { M: ['#...#', '##.##', '#.#.#', '#...#', '#...#'], U: ['#.#', '#.#', '#.#', '#.#', '###'] };
+const SIGN_GLYPHS = { M: ['#...#', '##.##', '#.#.#', '#...#', '#...#'], U: ['#.#', '#.#', '#.#', '#.#', '###'],
+  // agent-city: project names on the signs — the leaderboard's extra glyphs (V Y J Z, digits, '-'), so A-Z 0-9 - all draw
+  V: ['#.#', '#.#', '#.#', '#.#', '.#.'], Y: ['#.#', '#.#', '.#.', '.#.', '.#.'], J: ['..#', '..#', '..#', '#.#', '###'], Z: ['###', '..#', '.#.', '#..', '###'],
+  0: ['.#.', '#.#', '#.#', '#.#', '.#.'], 1: ['.#.', '##.', '.#.', '.#.', '###'], 2: ['##.', '..#', '.#.', '#..', '###'],
+  3: ['##.', '..#', '.#.', '..#', '##.'], 4: ['#.#', '#.#', '###', '..#', '..#'], 5: ['###', '#..', '##.', '..#', '##.'],
+  6: ['.##', '#..', '###', '#.#', '###'], 7: ['###', '..#', '.#.', '.#.', '.#.'], 8: ['###', '#.#', '###', '#.#', '###'],
+  9: ['###', '#.#', '###', '..#', '##.'], '-': ['...', '...', '###', '...', '...'] };
 const glyphW = (ch) => (SIGN_GLYPHS[ch] ? SIGN_GLYPHS[ch][0].length : textWidth(ch, 1));
 export function signTextWidth(text, s) { let w = 0; for (const ch of text) w += (glyphW(ch) + 1) * s; return w - s; }
 export function drawSignText(img, text, x, y, s, color) {
@@ -54,11 +60,13 @@ const facadeCanSign = (text) => { try { textWidth(text, 2); return true; } catch
 // (working green / waiting amber / idle grey); 'unknown' is a dim violet, 'offline' a dim red, 'off' an unlit lens.
 export const LAMP_COLORS = Object.freeze({
   working: [0x4c, 0xd0, 0x6a], waiting: [0xf0, 0xb0, 0x30], idle: [0xa8, 0xae, 0xb6], unknown: [0x7a, 0x6a, 0x9a],
-  offline: [0x9a, 0x2c, 0x2c], off: [0x2a, 0x2c, 0x32]
+  offline: [0x9a, 0x2c, 0x2c], off: [0x2a, 0x2c, 0x32],
+  stopped: [0xff, 0x4d, 0x4f]   // agent-city: a stopped project (the board's red, --b-red)
 });
 export function lampState(row, offline) {
   if (offline) return 'offline';
   if (!row) return 'off';
+  if (row.lamp) return LAMP_COLORS[row.lamp] ? row.lamp : 'off';   // agent-city: an explicit lamp state wins
   const n = (v) => (typeof v === 'number' && v > 0 ? v : 0);
   return n(row.working) ? 'working' : n(row.waiting) ? 'waiting' : n(row.idle) ? 'idle' : n(row.unknown) ? 'unknown' : 'off';
 }
@@ -68,7 +76,7 @@ export function lampState(row, offline) {
 // error < 0.001 units, i.e. < 1/60 texel); θ is interpolated as (cos θ, sin θ). Arc length along the centre line (`s`)
 // drives the centre-line dashes and the radial slab joints.
 const GRID = 4;                                                   // texels per grid cell
-export function makeRingGround(seed) {
+export function makeRingGround(seed, lots) {   // agent-city: lots = optional LOTS override (same positions)
   const R = RING_GROUND_RECT, W = texels(R.x1 - R.x0), H = texels(R.z1 - R.z0), img = createImage(W, H);
   const gx0 = R.x0 * PX_PER_UNIT, gz0 = R.z0 * PX_PER_UNIT;
   const GW = W / GRID + 1, GH = H / GRID + 1, OFF = new Float64Array(GW * GH), CS = new Float64Array(GW * GH), SN = new Float64Array(GW * GH);
@@ -76,7 +84,8 @@ export function makeRingGround(seed) {
     const x = (gx0 + i * GRID) / PX_PER_UNIT, z = (gz0 + j * GRID) / PX_PER_UNIT, th = ellipseTheta(x, z), k = j * GW + i;
     OFF[k] = ellipseOffset(x, z); CS[k] = Math.cos(th); SN[k] = Math.sin(th);
   }
-  const centre = arcTable(0), doors = LOTS.map((L) => doorOf(L)), matWall = new Map(LOTS.map((L) => [L.id, RAMPS[L.wall][2]]));
+  const LOTS_ = lots || LOTS;   // agent-city
+  const centre = arcTable(0), doors = LOTS_.map((L) => doorOf(L)), matWall = new Map(LOTS_.map((L) => [L.id, RAMPS[L.wall][2]]));
   const lerp = (arr, i, j, fx, fz) => {
     const k = j * GW + i;
     return (arr[k] * (1 - fx) + arr[k + 1] * fx) * (1 - fz) + (arr[k + GW] * (1 - fx) + arr[k + GW + 1] * fx) * fz;
@@ -169,12 +178,13 @@ export function buildRingMeshes(seed, look, opts) {
 
   // ---- lots: built as alley 'west' lots (facade on local +x, u from the local +z end), turned by facadeRotY ----
   // The group's origin is the anticlockwise front corner (u = 0): local +x -> the inward normal, local -z -> clockwise.
-  LOTS.forEach((L) => {
+  (opts.lots || LOTS).forEach((L) => {   // agent-city: opts.lots = optional LOTS override (same ids and positions)
     const r = lotRect(L), g = new Group();
     const painted = !L.boarded && facadeCanSign(L.sign);
     const b = {
       id: L.id, side: 'west', x0: -LOT_D, x1: 0, z0: -LOT_W, z1: 0, h: L.h, seed: L.seed, family: L.family, wall: L.wall,
-      awning: L.awning, door: L.door, sign: painted ? L.sign : null, entrance: !L.boarded
+      awning: L.awning, door: L.door, sign: painted ? L.sign : null, entrance: !L.boarded,
+      lit: L.lit, litFirst: L.litWindows   // agent-city: per-lot lit share and lit-window count (alley-meshes)
     };
     g.add(buildFacadeBuilding(b, seed, { look, track, note }));
     if (L.boarded) {
@@ -352,7 +362,7 @@ export function buildRingScene(preset, seed, horizonNdcY, opts) {
   base.position.y = GROUND_Y;
   base.name = 'ground:base';
   scene.add(base);
-  const R = RING_GROUND_RECT, groundImg = makeRingGround(seed), groundTex = pixelTexture(groundImg);
+  const R = RING_GROUND_RECT, groundImg = makeRingGround(seed, opts && opts.lots), groundTex = pixelTexture(groundImg);   // agent-city: opts.lots
   const groundGeo = new PlaneGeometry(R.x1 - R.x0, R.z1 - R.z0), groundMat = new MeshBasicMaterial({ map: groundTex, color: groundColor });
   const ground = new Mesh(groundGeo, groundMat);
   ground.rotation.x = -Math.PI / 2;

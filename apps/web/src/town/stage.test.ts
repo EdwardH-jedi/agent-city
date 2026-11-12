@@ -102,6 +102,9 @@ describe("town stage start", () => {
 		const fake = () => {
 			const restore = paletteColors();
 			return {
+				setWorld() {},
+				setLamps() {},
+				setLitWindows() {},
 				setBoard() {
 					throw new Error("boom: board");
 				},
@@ -165,6 +168,9 @@ describe("town stage start", () => {
 				createPipeline: () => {
 					const restore = paletteColors();
 					return {
+						setWorld() {},
+						setLamps() {},
+						setLitWindows() {},
 						setBoard() {},
 						resize() {},
 						dispose() {

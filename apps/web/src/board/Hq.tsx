@@ -3,6 +3,7 @@
 // the heading). The column never clips a card or a line in half: at most SIGN_SHOWN cards stand (the
 // rest are counted), and history lines are one short line each (§13.4) with a divider where the
 // date changes; lines that do not fit drop out whole (CSS column wrap).
+import type { ReactNode } from "react";
 import { PAUSED_HEADING, PAUSED_TEXT, SESSION_LIST_HEADING } from "./copy.ts";
 import { type Incident, incidentRows } from "./incidents.ts";
 import { signCards, type VillageModel } from "./model.ts";
@@ -32,7 +33,16 @@ function waited(iso: string, now: number): string {
 	return `${Math.floor(min / 60)}시간째`;
 }
 
-export function Hq({ model, now }: { model: VillageModel; now: number }) {
+export function Hq({
+	model,
+	now,
+	top,
+}: {
+	model: VillageModel;
+	now: number;
+	/** `?scene=town`: the town's minimap above the queue (design doc 12 §3). */
+	top?: ReactNode;
+}) {
 	const signs = signCards(model.visits);
 	const shown = signs.slice(0, SIGN_SHOWN);
 	const more = signs
@@ -40,6 +50,7 @@ export function Hq({ model, now }: { model: VillageModel; now: number }) {
 		.reduce((n, c) => n + c.project_ids.length, 0);
 	return (
 		<aside className="hq">
+			{top}
 			<section className="hq-wait" aria-label="HQ 대기">
 				<h2>HQ 대기 · Mac에서 처리</h2>
 				{signs.length === 0 ? (

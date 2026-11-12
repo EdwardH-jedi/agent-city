@@ -158,7 +158,7 @@ describe("the main screen cannot act on a run", () => {
 			/lazy\([\s\S]*?import\("\.\/TownScene\.tsx"\)\.catch\(/,
 		);
 		expect(town).not.toMatch(
-			/from "\.\/(TownScene|stage|pipeline|world|patrol|board-view)\.tsx?"|from "\.\/engine\/|from "three"/,
+			/from "\.\/(TownScene|TownMinimap|stage|pipeline|world|patrol|lots|live)\.tsx?"|from "\.\/engine\/|from "three"/,
 		);
 		// the board reaches the town only through TownView and the tiny URL module
 		expect(

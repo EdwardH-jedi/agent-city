@@ -43,10 +43,13 @@ export function buildFacadeBuilding(b, seed, ctx) {
   const WHITE = new Color(1, 1, 1), TINT = new Color().setRGB(...look.tint);
   const tinted = (c) => c.clone().multiply(TINT);
   const plain = look.lit === 0 && look.tint.every((v) => v === 1);
+  const litP = b.lit != null ? b.lit : look.lit;   // agent-city: per-building lit share (b.lit) over the preset's
   const len = b.z1 - b.z0, depth = b.x1 - b.x0, h = b.h, wall = b.wall, cz = (b.z0 + b.z1) / 2;
   const spec = facadeSpec(b, seed);
-  const facadeImg = makeFacade(spec), litImg = look.lit ? makeFacade(Object.assign({}, spec, { lit: look.lit })) : facadeImg;
-  const shownImg = plain ? facadeImg : tintImage(litImg, look.tint, facadeImg);
+  // agent-city: b.litFirst lights the facade's first windows (a count); paintLit(n) repaints for another count.
+  const facadeImg = makeFacade(spec);
+  const paintLit = (n) => { const li = litP || n ? makeFacade(Object.assign({}, spec, { lit: litP, litFirst: n })) : facadeImg; return { litImg: li, shownImg: litP === 0 && !n && look.tint.every((v) => v === 1) ? facadeImg : tintImage(li, look.tint, facadeImg) }; };
+  const { litImg, shownImg } = paintLit(b.litFirst | 0);
   note('facade:' + b.id, shownImg, litImg.windows);
   const facadeTex = track(pixelTexture(shownImg, ClampToEdgeWrapping));
   const bandImg = makeEndBand(spec);
@@ -82,6 +85,8 @@ export function buildFacadeBuilding(b, seed, ctx) {
   });
   mesh.userData.colliderTag = 'building:' + b.id;
   mesh.name = 'building:' + b.id;
+  // agent-city: repaint the facade with n lit windows in place (same texture, same size), no rebuild.
+  mesh.userData.setLitWindows = (n) => { facadeTex.image.data.set(flipRows(paintLit(n | 0).shownImg).data); facadeTex.needsUpdate = true; };
   return mesh;
 }
 

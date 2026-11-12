@@ -76,6 +76,31 @@ TownRooControlsM2, six decorative townsfolk, the `d` key; replaced by `../patrol
 
    Cases: ring-layout 8/8, orbit-camera 12/12, leaderboard 8/9, facade-gen 5/5, minimap 5/6.
 
+4. **S2 (real-data mapping, doc 12 §4)** — every changed line carries an `agent-city:` comment:
+   - `facade-gen.mjs` (3 lines): `context()` reads `o.litFirst` (a count); `windowState` and `glassRow` light a
+     window / pane when `ctx.windows.total < ctx.litFirst` (the first windows painted: the first floor above the
+     ground floor, left to right) or by the original hash. Without `litFirst` nothing changes.
+   - `alley-meshes.mjs` `buildFacadeBuilding` (+5 lines, 2 replaced): `b.lit` (per-building lit share, default the
+     preset's `look.lit`) and `b.litFirst`; the facade is painted through a local `paintLit(n)` (same steps as
+     before: reference unlit image, lit image, `tintImage` so lit panes stay untinted), and
+     `mesh.userData.setLitWindows(n)` repaints the same facade texture in place (no rebuild). The end bands never
+     get `litFirst` (they tile).
+   - `scene-ring.mjs`:
+     - `SIGN_GLYPHS` gains V Y J Z, 0–9 and `-` (the leaderboard's EXTRA_GLYPHS patterns), so a project name of
+       A–Z 0–9 `-` draws on the lit sign board.
+     - `LAMP_COLORS.stopped` = `[0xff, 0x4d, 0x4f]` (the board's `--b-red`).
+     - `lampState`: `if (row.lamp) return LAMP_COLORS[row.lamp] ? row.lamp : 'off'` after the offline / no-row
+       checks — an explicit lamp state wins (the city's priority stopped > waiting > working differs from the
+       pylon's counters).
+     - `makeRingGround(seed, lots)`, `buildRingMeshes` (`opts.lots || LOTS`), `buildRingScene` (passes
+       `opts.lots` to both): an optional LOTS override with the same ids and positions; the lot loop also passes
+       `lit: L.lit, litFirst: L.litWindows` to the facade.
+     - Not overridden: `ring-layout.mjs` PROPS (door benches / bins are placed at load from the original LOTS'
+       `boarded` flags, so filled lot-9 / lot-10 have none and empty department slots keep theirs), the hedges
+       and colliders (positions only).
+   - `minimap.d.mts` declares only the pure model / drawing functions (`ringModel`, `fitTransform`, `drawBase`,
+     `guideTriangle`); `minimapSection` stays undeclared and unimported (guard in scripts/no-run-actions.test.ts).
+
 ## Re-implemented in TypeScript (outside engine/)
 
 - `../pipeline.ts` — `createPipelineTargets` (without the door-fade quad), the ring branch of
@@ -101,4 +126,5 @@ for f in $E/*.mjs; do n=$(basename $f); case $n in town-roo-art-m2.mjs) s=$O/app
   diff <(sed "s#'../vendor/three.module.js'#'three'#" $s) $f >/dev/null || echo "differs: $n"; done
 ```
 
-Only `town-roo-art-m2.mjs` and `town-art.mjs` should print (the wrap in item 2).
+`town-roo-art-m2.mjs`, `town-art.mjs` (item 2) and, since S2, `facade-gen.mjs`, `alley-meshes.mjs`, `scene-ring.mjs`
+(item 4) should print.

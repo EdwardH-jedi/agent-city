@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CampusView } from "../campus/CampusView.tsx";
 import { machinesAt, runsAt } from "../merge.ts";
 import { sceneOf } from "../town/params.ts";
-import { TownView } from "../town/TownView.tsx";
+import { TownMinimapSlot, TownView } from "../town/TownView.tsx";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
 import { burnInShift } from "./burnin.ts";
 import { DEMO_LABEL } from "./demo-flag.ts";
@@ -184,7 +184,11 @@ export function BoardView({
 			</header>
 			{reconnecting && <div className="conn-band">화면 연결 끊김</div>}
 			<div className="board-body">
-				<Hq model={model} now={now} />
+				<Hq
+					model={model}
+					now={now}
+					top={scene === "town" ? <TownMinimapSlot /> : null}
+				/>
 				{scene === "town" ? (
 					<TownView model={model} now={now} />
 				) : (

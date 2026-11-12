@@ -2,8 +2,27 @@
 import type { Camera, Group, Mesh, Object3D, Scene, Texture } from "three";
 import type { BoardView } from "./leaderboard.mjs";
 import type { ScenePreset } from "./presets.mjs";
-export type LampState = "working" | "waiting" | "idle" | "unknown" | "offline" | "off";
+import type { RingLot } from "./ring-layout.mjs";
+export type LampState =
+	| "working"
+	| "waiting"
+	| "idle"
+	| "unknown"
+	| "offline"
+	| "off"
+	| "stopped";
 export declare const LAMP_COLORS: Readonly<Record<LampState, readonly [number, number, number]>>;
+/** agent-city: explicit lamp rows (scene-ring lampState reads `row.lamp` first). */
+export interface LampInput {
+	rows: { lot: string; lamp: LampState }[];
+	offline: boolean;
+}
+export declare function lampState(
+	row: { lamp?: LampState; working?: number | null; waiting?: number | null } | null | undefined,
+	offline: boolean,
+): LampState;
+/** Width in texels of a lit-sign string at scale s; throws on a character the sign font lacks. */
+export declare function signTextWidth(text: string, s: number): number;
 export interface RingSkyline {
 	readonly mesh: Mesh;
 	readonly texture: Texture;
@@ -22,10 +41,13 @@ export interface RingScene {
 	readonly ground: Mesh;
 	readonly groundTexture: Texture;
 	readonly skyTexture: Texture;
-	readonly meshes: RingMeshes;
+	readonly meshes: RingMeshes & {
+		/** collider tag (`building:<lot id>`, …) → the object standing there */
+		readonly colliders: ReadonlyMap<string, Object3D>;
+	};
 	readonly skyline: RingSkyline;
-	/** Door status lamps from a BoardView (or its rows); returns how many changed. */
-	setLamps(view: BoardView | BoardView["rows"]): number;
+	/** Door status lamps from a BoardView or lamp rows (an explicit `lamp` wins); returns how many changed. */
+	setLamps(view: BoardView | BoardView["rows"] | LampInput): number;
 	lampStates(): Record<string, LampState>;
 	dispose(): void;
 }
@@ -35,5 +57,7 @@ export declare function buildRingScene(
 	horizonNdcY: number | null | undefined,
 	opts?: {
 		pylon?: (o: { seed: number; look: ScenePreset; at: unknown }) => Object3D | { mesh: Object3D };
+		/** agent-city: LOTS override (same ids and positions); `litWindows` / `lit` per lot. */
+		lots?: readonly RingLot[];
 	},
 ): RingScene;

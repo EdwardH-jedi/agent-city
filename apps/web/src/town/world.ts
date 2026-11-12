@@ -1,7 +1,8 @@
 // The ring town's world: everything the original pipeline.mjs builds for preset 'ring' that needs no GL
 // context — the ring scene (engine/scene-ring.mjs) with the leaderboard pylon, the orbit rig, the sprite
 // atlas and the actor layer. Rebuilt whenever its spec changes (the time of day is baked into tints and
-// lit windows; S2 adds the lot overrides here). The renderer and its targets outlive it (pipeline.ts).
+// lit windows, the lots carry the projects' signs and facades). The renderer and its targets outlive it
+// (pipeline.ts); lamps, the pylon and lit windows change in place.
 // No DOM, no GL: the resource test builds and disposes it in plain Bun.
 import { Color, type Scene } from "three";
 import { horizonNdcY } from "./engine/camera-rig.mjs";
@@ -17,7 +18,11 @@ import {
 	type TimeOfDay,
 } from "./engine/presets.mjs";
 import * as RING from "./engine/ring-layout.mjs";
-import { buildRingScene, type RingScene } from "./engine/scene-ring.mjs";
+import {
+	buildRingScene,
+	type LampInput,
+	type RingScene,
+} from "./engine/scene-ring.mjs";
 import { buildSpriteAtlas, type SpriteAtlas } from "./engine/sprite-atlas.mjs";
 import {
 	type Actor,
@@ -25,13 +30,16 @@ import {
 	createActorLayer,
 } from "./engine/sprites.mjs";
 import { TownRooArtM2 } from "./engine/town-roo-art-m2.mjs";
+import { lotsKey, type TownLot } from "./lots.ts";
 
-/** What the world is built from. S2 extends this with the lot overrides (names, facades). */
+/** What the world is built from: the time of day and the ten lots (lots.ts buildLots; null = the original). */
 export interface WorldSpec {
 	time: TimeOfDay;
+	lots: readonly TownLot[] | null;
 }
 
-export const worldKey = (s: WorldSpec): string => s.time;
+export const worldKey = (s: WorldSpec): string =>
+	`${s.time}|${s.lots ? lotsKey(s.lots) : "original"}`;
 
 export interface TownWorld {
 	readonly spec: WorldSpec;
@@ -44,8 +52,12 @@ export interface TownWorld {
 	readonly actors: ActorLayer;
 	/** The letterbox colour (the preset's sky). */
 	readonly skyColor: Color;
-	/** Pylon faces and door lamps (pipeline.mjs setBoard). */
+	/** Pylon faces (pipeline.mjs setBoard). */
 	setBoard(view: BoardView): void;
+	/** Door lamps (an explicit state per lot; offline = the original offline look). */
+	setLamps(input: LampInput): void;
+	/** Repaints a lot's facade with n lit windows (no-op when unchanged). */
+	setLitWindows(lotId: string, n: number): void;
 	/** Camera transform + actor sprites for this frame (pipeline.mjs render(), before the GL passes). */
 	stage(actors: readonly Actor[]): void;
 	dispose(): void;
@@ -62,7 +74,11 @@ export function buildTownWorld(spec: WorldSpec): TownWorld {
 			board = createLeaderboard(o);
 			return board.mesh;
 		},
+		...(spec.lots ? { lots: spec.lots } : {}),
 	});
+	const litShown = new Map(
+		(spec.lots ?? []).map((l) => [l.id, l.litWindows ?? 0] as const),
+	);
 	const made = board as Leaderboard | null;
 	if (!made) throw new Error("ring scene built no pylon");
 	const rig = createOrbitRig(preset, RING);
@@ -104,7 +120,25 @@ export function buildTownWorld(spec: WorldSpec): TownWorld {
 		setBoard(view) {
 			if (disposed) return;
 			made.update(view);
-			ring.setLamps(view);
+		},
+		setLamps(input) {
+			if (disposed) return;
+			ring.setLamps(input);
+		},
+		setLitWindows(lotId, n) {
+			if (disposed || (litShown.get(lotId) ?? 0) === n) return;
+			const lot = ring.meshes.colliders.get(`building:${lotId}`);
+			let done = false;
+			lot?.traverse((o) => {
+				const set = o.userData.setLitWindows as
+					| ((k: number) => void)
+					| undefined;
+				if (!done && typeof set === "function") {
+					set(n);
+					done = true;
+				}
+			});
+			if (done) litShown.set(lotId, n);
 		},
 		stage,
 		dispose() {

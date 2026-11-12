@@ -58,7 +58,7 @@ function context(o) {
   const ramp = RAMPS[o.wall];
   if (!ramp || ramp.length < 4) throw new Error('unknown wall ramp: ' + o.wall);
   if (!FAMILY[o.family]) throw new Error('unknown facade family: ' + o.family);
-  return { family: o.family, ramp, acc: RAMPS[o.awning] || RAMPS.teal, seed: o.seed | 0, lit: o.lit || 0, windows: { total: 0, lit: 0 } };
+  return { family: o.family, ramp, acc: RAMPS[o.awning] || RAMPS.teal, seed: o.seed | 0, lit: o.lit || 0, litFirst: o.litFirst | 0, windows: { total: 0, lit: 0 } };   // agent-city: litFirst
 }
 // Lit-window colours (Phase D): warm room light (the lamp ramp), curtains glowing in front of it, cool office panes.
 const LIT_CURTAIN = [0xd8, 0x98, 0x4c], LIT_COOL = [[0xc4, 0xe0, 0xec], [0xe8, 0xf6, 0xfc]];
@@ -72,7 +72,7 @@ const nearDoor = (cx, dx) => cx + 6 < dx + 36 && cx + 26 > dx - 4;
 function course(img, y, w, colours) { colours.forEach((c, i) => fillRect(img, 0, y + i, w, 1, c)); }
 
 function windowState(ctx, x, y) {
-  const lit = hash01(ctx.seed, x, y) < ctx.lit;
+  const lit = ctx.windows.total < ctx.litFirst || hash01(ctx.seed, x, y) < ctx.lit;   // agent-city: the first litFirst windows lit
   ctx.windows.total++; if (lit) ctx.windows.lit++;
   if (lit) return 'lit';
   return hash01(ctx.seed + 1, x, y) < 0.3 ? 'curtain' : 'glass';
@@ -123,7 +123,7 @@ function plinth(img, w, H) { fillRect(img, 0, H - 5, w, 5, TRIM[1]); fillRect(im
 // Curtain-wall row: glazing rows y0..y0+glaze-1 in 16-texel panes, then a spandrel band down to y0+total-1.
 function glassRow(img, x0, y0, w, glaze, total, ctx) {
   for (let px = x0; px < x0 + w; px += 16) {
-    const lit = hash01(ctx.seed, px, y0) < ctx.lit;
+    const lit = ctx.windows.total < ctx.litFirst || hash01(ctx.seed, px, y0) < ctx.lit;   // agent-city: the first litFirst panes lit
     ctx.windows.total++; if (lit) ctx.windows.lit++;
     const cool = lit && hash01(ctx.seed + 5, px, y0) < 0.4 ? LIT_COOL : null;
     fillRect(img, px, y0, 16, glaze, lit ? (cool ? cool[0] : LAMP[2]) : GLASS[1]);

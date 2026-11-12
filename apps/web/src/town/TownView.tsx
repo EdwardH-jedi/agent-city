@@ -10,6 +10,7 @@ import {
 	useEffect,
 	useMemo,
 	useState,
+	useSyncExternalStore,
 } from "react";
 import type { VillageModel } from "../board/model.ts";
 import { Village2d } from "../board/Village2d.tsx";
@@ -37,6 +38,38 @@ const TownScene = lazy(
 		import("./TownScene.tsx").catch(() => ({ default: SceneMissing })),
 );
 
+const TownMinimap = lazy(
+	(): Promise<{ default: ComponentType }> =>
+		import("./TownMinimap.tsx").catch(() => ({ default: () => null })),
+);
+
+// Whether the town scene is up (its first frame drawn, not fallen back to 2D). The minimap slot in the
+// HQ column renders only then, so without WebGL (or before the scene's chunk loads) nothing is fetched.
+let sceneUp = false;
+const upListeners = new Set<() => void>();
+function setSceneUp(v: boolean) {
+	if (sceneUp === v) return;
+	sceneUp = v;
+	for (const f of upListeners) f();
+}
+const subscribeUp = (f: () => void) => {
+	upListeners.add(f);
+	return () => {
+		upListeners.delete(f);
+	};
+};
+
+/** The minimap for the top of the HQ column (`?scene=town`): a lazy chunk, mounted only while the town runs. */
+export function TownMinimapSlot() {
+	const up = useSyncExternalStore(subscribeUp, () => sceneUp);
+	if (!up) return null;
+	return (
+		<Suspense fallback={null}>
+			<TownMinimap />
+		</Suspense>
+	);
+}
+
 /** Only mounted while the scene is shown, so its OS listener goes when the 2D grid takes over. */
 function SceneHost({
 	model,
@@ -50,13 +83,23 @@ function SceneHost({
 	const [reduced, setReduced] = useState(prefersReducedMotion);
 	useEffect(() => watchReducedMotion(setReduced), []);
 	const scene = useMemo(() => toCampusModel(model), [model]);
+	useEffect(() => () => setSceneUp(false), []);
+	const unavailable = useMemo(
+		() => () => {
+			setSceneUp(false);
+			onUnavailable();
+		},
+		[onUnavailable],
+	);
+	const ready = useMemo(() => () => setSceneUp(true), []);
 	return (
 		<Suspense fallback={null}>
 			<TownScene
 				model={scene}
 				reducedMotion={reduced}
 				time={time}
-				onUnavailable={onUnavailable}
+				onUnavailable={unavailable}
+				onReady={ready}
 			/>
 		</Suspense>
 	);

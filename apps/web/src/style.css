@@ -886,6 +886,17 @@ tr.st-waiting td {
 	display: block;
 	image-rendering: pixelated;
 }
+/* the town's minimap at the top of the HQ column (`?scene=town`; restyled in S4) */
+.town-map {
+	flex: none;
+}
+.town-map[hidden] {
+	display: none;
+}
+.town-map-canvas {
+	display: block;
+	image-rendering: pixelated;
+}
 .campus-folded {
 	position: absolute;
 	right: 20px;

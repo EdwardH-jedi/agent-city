@@ -27,6 +27,9 @@ export interface RingLot {
 	readonly theta: number;
 	readonly doorX: number;
 	readonly doorZ: number;
+	/** agent-city overrides (scene-ring opts.lots): lit-window count and lit share of the facade. */
+	readonly litWindows?: number;
+	readonly lit?: number;
 }
 export declare const LOTS: readonly RingLot[];
 export declare const SPAWN: {
