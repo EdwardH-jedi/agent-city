@@ -25,16 +25,17 @@ def save(path,obj): path.write_text(json.dumps(obj,ensure_ascii=False,indent=2)+
 try:
     if MODE=='ab3': command(['--args','--disable-webgl','open'])
     else: command(['open'])
-    cases=[(1920,1080,False),(1920,1080,True)]
-    if MODE=='ab1': cases.extend([(1366,768,False),(1366,768,True)])
-    for width,height,demo in cases:
-        name=f'{MODE}-{width}x{height}-'+('demo' if demo else 'live')
+    cases=[(1920,1080,False,None),(1920,1080,True,None)]
+    # 16 A4-2: ab1 also opens the busy and calm demo cases (many sessions and waits; nothing waiting)
+    if MODE=='ab1': cases.extend([(1366,768,False,None),(1366,768,True,None),(1920,1080,True,'busy'),(1920,1080,True,'calm')])
+    for width,height,demo,case in cases:
+        name=f'{MODE}-{width}x{height}-'+('demo' if demo else 'live')+(f'-{case}' if case else '')
         case_dir=OUT/name;case_dir.mkdir(parents=True,exist_ok=True)
         record={'name':name,'mode':MODE,'checks':[]}
         try:
             command(['set','viewport',str(width),str(height)])
             command(['errors','--clear']);command(['console','--clear'])
-            command(['open',ab.board_url(demo=demo)])
+            command(['open',ab.board_url(demo=demo,case=case)])
             ready='Boolean(document.querySelector(".board-sentence") && (document.querySelector(".campus canvas") || document.querySelector(".town-stage canvas") || document.querySelector(".tiles")) && '+('document.querySelector(".demo-band")' if demo else 'document.querySelector(".bm-online")')+')'
             wait,code=command(['wait','--fn',ready,'--timeout','15000'],required=False)
             save(case_dir/'wait.json',{'exit':code,**wait})
@@ -55,12 +56,16 @@ try:
                 record['detail']={'applicable':False,'reason':'Demo has no detail view (11 AB1 table and section 8).'}
             else:
                 command(['press','D'])
-                detail,detail_code=command(['wait','--fn','location.hash === "#/detail" && Boolean(document.querySelector("table"))','--timeout','2000'],required=False)
+                detail,detail_code=command(['wait','--fn','location.hash === "#/detail" && Boolean(document.querySelector(".detail .dpanel"))','--timeout','2000'],required=False)
                 route,_=command(['eval','--stdin'],stdin='({url:location.href,tables:document.querySelectorAll("table").length,board:Boolean(document.querySelector(".board"))})')
                 record['detail']={'applicable':True,'wait':detail,'exit':detail_code,**route['data']['result']}
                 back_ok=False
                 if detail.get('success'):
                     detail_snap,_=command(['snapshot']);save(case_dir/'detail-snapshot.json',detail_snap)
+                    # 16 A3: the detail screen in the board's panel look (measure-detail.js)
+                    dm,_=command(['eval','--stdin'],stdin=(HERE/'measure-detail.js').read_text())
+                    record['checks'].extend(dm['data']['result']['checks'])
+                    command(['screenshot',str(case_dir/'detail.png')])
                     command(['press','D'])
                     back,_=command(['wait','--fn','location.hash !== "#/detail" && Boolean(document.querySelector(".board-sentence"))','--timeout','2000'],required=False)
                     back_ok=back.get('success',False)

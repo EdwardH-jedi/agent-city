@@ -3,6 +3,8 @@
 // only when a WebGL context can be made; if the chunk cannot be loaded, WebGL cannot start, or its
 // context is lost, the 2D grid takes over for good (until reload). This file imports no engine and no
 // three: the first screen's text never waits for the town.
+
+import type { Session } from "@agent-city/schema";
 import {
 	type ComponentType,
 	lazy,
@@ -13,6 +15,8 @@ import {
 	useSyncExternalStore,
 } from "react";
 import type { VillageModel } from "../board/model.ts";
+import { parseSessionWait } from "../board/sessions.ts";
+import type { TailEvent } from "../board/tail.ts";
 import { Village2d } from "../board/Village2d.tsx";
 import {
 	prefersReducedMotion,
@@ -23,6 +27,7 @@ import {
 	type CampusSceneProps,
 	toCampusModel,
 } from "../campus/presentation.ts";
+import { townCrew } from "./crew.ts";
 import { type TimeOfDay, timeOfDayAt } from "./params.ts";
 
 type TownSceneProps = CampusSceneProps & { time: TimeOfDay };
@@ -41,6 +46,11 @@ const TownScene = lazy(
 const TownMinimap = lazy(
 	(): Promise<{ default: ComponentType }> =>
 		import("./TownMinimap.tsx").catch(() => ({ default: () => null })),
+);
+
+const PixelTitle = lazy(
+	(): Promise<{ default: ComponentType<{ text: string }> }> =>
+		import("./pixel-title.tsx").catch(() => ({ default: () => null })),
 );
 
 // Whether the town scene is up (its first frame drawn, not fallen back to 2D). The minimap slot in the
@@ -70,19 +80,51 @@ export function TownMinimapSlot() {
 	);
 }
 
+/**
+ * A panel title in the town's pixel font (15 §2): a lazy chunk, drawn only while the town runs (the
+ * scene's chunk has the font already). Before that, and without WebGL, the head shows the DOM word.
+ */
+export function TownPixelWord({ text }: { text: string }) {
+	const up = useSyncExternalStore(subscribeUp, () => sceneUp);
+	if (!up) return null;
+	return (
+		<Suspense fallback={null}>
+			<PixelTitle text={text} />
+		</Suspense>
+	);
+}
+
 /** Only mounted while the scene is shown, so its OS listener goes when the 2D grid takes over. */
 function SceneHost({
 	model,
+	now,
+	sessions,
+	events,
 	time,
 	onUnavailable,
 }: {
 	model: VillageModel;
+	now: number;
+	sessions: readonly Session[];
+	events: readonly TailEvent[];
 	time: TimeOfDay;
 	onUnavailable: () => void;
 }) {
 	const [reduced, setReduced] = useState(prefersReducedMotion);
 	useEffect(() => watchReducedMotion(setReduced), []);
-	const scene = useMemo(() => toCampusModel(model), [model]);
+	// `?session_wait=` as the board reads it (when an old wait walks to the cafe)
+	const [sessionWaitMs] = useState(() =>
+		parseSessionWait(window.location.search),
+	);
+	// the SESSIONS panel's sessions as people (16 A1): the same sessions and events, nothing fetched
+	const scene = useMemo(
+		() =>
+			toCampusModel(
+				model,
+				townCrew({ sessions, events, model, now, sessionWaitMs }),
+			),
+		[model, sessions, events, now, sessionWaitMs],
+	);
 	useEffect(() => () => setSceneUp(false), []);
 	const unavailable = useMemo(
 		() => () => {
@@ -117,7 +159,18 @@ function DoorBubble({ model }: { model: VillageModel }) {
 	);
 }
 
-export function TownView({ model, now }: { model: VillageModel; now: number }) {
+export function TownView({
+	model,
+	now,
+	sessions = [],
+	events = [],
+}: {
+	model: VillageModel;
+	now: number;
+	/** The sessions and events useHub holds (the SESSIONS panel's), for the crew. */
+	sessions?: readonly Session[];
+	events?: readonly TailEvent[];
+}) {
 	const [gl, setGl] = useState(webglAvailable);
 	const fallBack = useMemo(() => () => setGl(false), []);
 	// `?time=` pins the look; otherwise the local hour picks it, re-read with the board's clock.
@@ -128,7 +181,14 @@ export function TownView({ model, now }: { model: VillageModel; now: number }) {
 			className={`village town${model.status.dim ? " village-dim" : ""}`}
 			aria-label="프로젝트 마을"
 		>
-			<SceneHost model={model} time={time} onUnavailable={fallBack} />
+			<SceneHost
+				model={model}
+				now={now}
+				sessions={sessions}
+				events={events}
+				time={time}
+				onUnavailable={fallBack}
+			/>
 			<DoorBubble model={model} />
 			{model.village.folded > 0 && (
 				<p className="quiet campus-folded">조용함 {model.village.folded}곳</p>

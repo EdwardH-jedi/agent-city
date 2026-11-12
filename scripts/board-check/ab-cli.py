@@ -39,9 +39,11 @@ def parse_board_url(raw):
 BOARD_PARTS = parse_board_url(os.environ.get('AGENTCITY_BOARD_URL', '') or 'http://127.0.0.1:4317/')
 BOARD_URL = urlunsplit(BOARD_PARTS)
 
-def board_url(*, demo=False):
-    query = [(k, v) for k, v in parse_qsl(BOARD_PARTS.query, keep_blank_values=True) if k != 'demo']
+def board_url(*, demo=False, case=None):
+    # `case` (16 A4-2): a demo case (`busy`, `calm`); it replaces a case the base URL may carry
+    query = [(k, v) for k, v in parse_qsl(BOARD_PARTS.query, keep_blank_values=True) if k != 'demo' and not (case and k == 'case')]
     if demo: query.append(('demo', '1'))
+    if demo and case: query.append(('case', case))
     return urlunsplit(BOARD_PARTS._replace(query=urlencode(query)))
 
 def invoke(args, *, input_text=None, timeout=45, namespace=None):

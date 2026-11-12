@@ -30,6 +30,13 @@ describe("City cannot act on a run", () => {
 		expect(hub).not.toMatch(/method\s*:/);
 		expect(hub).not.toMatch(ACTION_WORDS);
 		expect(code("apps/web/src/App.tsx")).not.toMatch(/method\s*:/);
+		// the detail screen (16 A3): its controls only filter what is shown; it sends nothing
+		const detail = code("apps/web/src/Detail.tsx");
+		expect(detail).not.toMatch(/method\s*:/);
+		expect(detail).not.toMatch(
+			/fetch\(|XMLHttpRequest|WebSocket|<form|onSubmit/,
+		);
+		expect(detail).not.toMatch(ACTION_WORDS);
 	});
 
 	test("the read API has no write route and no action path", () => {
@@ -188,12 +195,16 @@ describe("the main screen cannot act on a run", () => {
 		expect(hub).toMatch(/await fetch\(path\)/);
 	});
 
-	test("sessions (decision D4) come from useHub too, and the board never reads a session's folder or branch (D5)", () => {
+	test("sessions (decision D4) come from useHub too; only session-panel.ts reads a session's folder or branch (D5, D10)", () => {
 		expect(FILES.some((f) => f.endsWith("board/sessions.ts"))).toBe(true);
 		const sessions = code("apps/web/src/board/sessions.ts");
 		expect(sessions).not.toMatch(/useHub|fetch\(|WebSocket/);
 		expect(code("apps/web/src/board/Board.tsx")).toMatch(/hub\.sessions/);
-		for (const f of FILES) {
+		// decision D10 (15 §3): one pure module reads them — the folder only to make tail paths relative
+		// (never drawn), the branch as a project's tag; no component reads either
+		const READS = new Set(["apps/web/src/board/session-panel.ts"]);
+		expect(code("apps/web/src/board/session-panel.ts")).toMatch(/\.cwd\b/);
+		for (const f of FILES.filter((x) => !READS.has(x))) {
 			expect({ f, hit: /\.(cwd|branch)\b/.exec(code(f))?.[0] }).toEqual({
 				f,
 				hit: undefined,
@@ -201,33 +212,31 @@ describe("the main screen cannot act on a run", () => {
 		}
 	});
 
-	test("nothing on screen is smaller than 16px", () => {
+	test("nothing on screen is smaller than 10.5px; the status sentence is the one big line (28px)", () => {
 		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
 		const board = css.slice(css.indexOf("/* ── board"));
 		expect(board.length).toBeGreaterThan(100);
-		const sizes = [...board.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) =>
-			Number(m[1]),
-		);
+		const sizes = [
+			...board.matchAll(/font-size:\s*(?:calc\()?([\d.]+)px/g),
+		].map((m) => Number(m[1]));
 		expect(sizes.length).toBeGreaterThan(5);
-		expect(Math.min(...sizes)).toBeGreaterThanOrEqual(16);
-		expect(Math.max(...sizes)).toBeGreaterThanOrEqual(44); // the status sentence
+		expect(Math.min(...sizes)).toBeGreaterThanOrEqual(10.5);
+		expect(Math.max(...sizes)).toBe(28); // the status sentence
 	});
 
-	test("§13.3: three text sizes only (48 · 24–28 · 16–18) and two weights", () => {
+	test("decision D10 (15 §1): panel text 10.5–14px × --ui, the sentence 28px unscaled, two weights", () => {
 		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
 		const board = css.slice(css.indexOf("/* ── board"));
-		const sizes = new Set(
-			[...board.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1])),
+		const decls = [...board.matchAll(/font-size:\s*([^;]+);/g)].map((m) =>
+			(m[1] as string).trim(),
 		);
-		for (const px of sizes)
-			expect({
-				px,
-				ok: px === 48 || (px >= 24 && px <= 28) || (px >= 16 && px <= 18),
-			}).toEqual({
-				px,
-				ok: true,
-			});
-		expect(sizes.has(48)).toBe(true);
+		const fixed = decls.filter((d) => !d.startsWith("calc("));
+		expect(fixed).toEqual(["28px"]);
+		for (const d of decls.filter((x) => x.startsWith("calc("))) {
+			const m = /^calc\(([\d.]+)px \* var\(--ui\)\)$/.exec(d);
+			const px = m ? Number(m[1]) : Number.NaN;
+			expect({ d, ok: px >= 10.5 && px <= 14 }).toEqual({ d, ok: true });
+		}
 		const weights = new Set(
 			[...board.matchAll(/font-weight:\s*(\w+)/g)].map((m) => m[1]),
 		);

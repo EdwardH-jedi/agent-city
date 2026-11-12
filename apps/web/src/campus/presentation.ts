@@ -30,6 +30,33 @@ export interface CampusVisitor {
 	created_at: string;
 }
 
+/**
+ * Where a session's figure stands in the town (16 A1): `work` in front of its building (active),
+ * `door` at its building's door (waiting, its lead at the HQ), `cafe` in front of the cafe (resting, or
+ * a wait whose HQ visit is over).
+ */
+export type CrewPlace = "work" | "door" | "cafe";
+
+/** One session drawn as a person in the town (town/crew.ts; the campus ignores it). */
+export interface CampusCrew {
+	/** The session id (its look and spot are fixed by it). */
+	id: string;
+	/** Its building in the town (where it works or waits; a resting one walks from it), or null. */
+	repo_id: string | null;
+	place: CrewPlace;
+	/** When it took this place (ISO): a walk to it starts here, so a reload does not replay it. */
+	since: string;
+	/** When the session started (ISO): a working one seen for the first time walks out of its door only then. */
+	started_at: string;
+	provider: string;
+	/** `opus`, `sonnet`, `haiku`, `fable`, … from the session's model; null when unknown. */
+	family: string | null;
+	/** The name tag (`OPUS`, `CODEX`), or null for none. */
+	tag: string | null;
+	/** Small companions (running subagents), 0–2. */
+	companions: number;
+}
+
 export interface CampusModel {
 	repos: CampusRepo[];
 	visitors: CampusVisitor[];
@@ -39,6 +66,8 @@ export interface CampusModel {
 	still: boolean;
 	/** The one bubble at the HQ door. */
 	door: { label: string; text: string } | null;
+	/** The sessions as people (16 A1, the town only); absent = none. */
+	crew?: CampusCrew[];
 }
 
 /** Props of the lazily loaded scene (CampusScene.tsx); here so the view needs no import of it. */
@@ -52,7 +81,10 @@ export interface CampusSceneProps {
 }
 
 /** Pure: the village model → the scene model. Only the buildings that stand in the 2D grid (≤ 8). */
-export function toCampusModel(v: VillageModel): CampusModel {
+export function toCampusModel(
+	v: VillageModel,
+	crew?: CampusCrew[],
+): CampusModel {
 	const shown = new Set(v.village.shown.map((p) => p.id));
 	return {
 		repos: v.village.shown.map((p) => ({
@@ -78,5 +110,6 @@ export function toCampusModel(v: VillageModel): CampusModel {
 		door: v.door
 			? { label: projectLabel(v.door.project_id), text: v.door.text }
 			: null,
+		...(crew ? { crew } : {}),
 	};
 }

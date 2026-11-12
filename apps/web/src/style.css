@@ -302,11 +302,16 @@ tr.st-waiting td {
 }
 
 /* ── board ──────────────────────────────────────────────────────────────────
-   Main screen for a monitor seen from 1.5–2 m (design doc §3, §13). Dark on purpose: it stays on all
-   night. One background colour; yellow / red / green only for state. Three text sizes only: the status
-   sentence 48px, 결재 cards and the bubble 24–28px, everything else 16–18px. Two weights (400, 700). */
+   Main screen (design doc §3, decision D10 / doc 15). Dark on purpose: it stays on all night. One
+   background colour; yellow / red / green only for state. The status sentence is the one big line (28 px);
+   every other text is the original town's panel scale — body 12–13 px, dim notes 11–11.5 px, tags and
+   terminal lines 10.5–11 px — times `--ui` (1, or 1.15 / 1.3 from `?ui=`). Two weights (400, 700).
+   Column widths come from board/layout.ts (`--col-l`, `--col-r`, `--top-h`): the stage's integer scale
+   first, the two panels share the rest. */
 .board {
 	--b-bg: #0e1013;
+	--b-panel: #15181d;
+	--b-edge: #2a2f38;
 	--b-line: #2a2f38;
 	--b-fg: #f1f2f4;
 	--b-muted: #9aa1ac;
@@ -314,13 +319,20 @@ tr.st-waiting td {
 	--b-yellow: #f5c518;
 	--b-red: #ff4d4f;
 	--b-ok: #4ade80;
+	--b-title-font:
+		ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+	--b-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+	--ui: 1;
+	--col-l: 384px;
+	--col-r: 384px;
+	--top-h: 56px;
 	position: fixed;
 	inset: 0;
 	display: grid;
-	grid-template-rows: 80px 1fr;
+	grid-template-rows: var(--top-h) 1fr;
 	background: var(--b-bg);
 	color: var(--b-fg);
-	font-size: 16px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 400;
 	line-height: 1.35;
 	overflow: hidden;
@@ -340,10 +352,7 @@ tr.st-waiting td {
 	border-color: var(--b-yellow);
 }
 .board h2 {
-	font-size: 18px;
-	font-weight: 700;
-	margin: 0 0 10px;
-	color: var(--b-muted);
+	margin: 0;
 }
 .board b {
 	font-weight: 700;
@@ -351,15 +360,17 @@ tr.st-waiting td {
 .board-top {
 	display: flex;
 	align-items: center;
-	gap: 28px;
-	padding: 0 28px;
+	gap: 20px;
+	padding: 0 24px;
 	border-bottom: 1px solid var(--b-line);
 	transition: transform 1s;
+	min-width: 0;
 }
+/* the one big line (not scaled by --ui) */
 .board-sentence {
-	font-size: 48px;
+	font-size: 28px;
 	font-weight: 700;
-	line-height: 80px;
+	line-height: var(--top-h);
 	white-space: nowrap;
 }
 .border-red .board-sentence {
@@ -370,23 +381,24 @@ tr.st-waiting td {
 }
 .board-machines {
 	display: flex;
-	gap: 12px;
+	gap: 8px;
 	list-style: none;
 	margin: 0 auto 0 0;
 	padding: 0;
 }
 .bm {
-	padding: 4px 14px;
+	padding: 2px 10px;
 	border: 1px solid var(--b-line);
 	border-radius: 999px;
 	color: var(--b-muted);
-	font-size: 18px;
+	font-size: calc(12.5px * var(--ui));
+	white-space: nowrap;
 }
 .bm-dot {
 	display: inline-block;
-	width: 10px;
-	height: 10px;
-	margin-right: 8px;
+	width: 8px;
+	height: 8px;
+	margin-right: 6px;
 	border-radius: 50%;
 	background: currentColor;
 }
@@ -399,37 +411,42 @@ tr.st-waiting td {
 .bm-offline {
 	color: var(--b-red);
 }
+/* never observed (`forge 모름`): dim, not hidden (07 §7) */
+.bm-unobserved {
+	color: var(--b-dim);
+}
 .board-counts {
-	font-size: 18px;
+	font-size: calc(13px * var(--ui));
 	display: flex;
 	align-items: baseline;
-	gap: 8px;
+	gap: 6px;
 	white-space: nowrap;
 }
 .board-link {
-	font-size: 16px;
+	font-size: calc(12px * var(--ui));
 	color: var(--b-muted);
+	white-space: nowrap;
 }
 .demo-band {
-	padding: 4px 14px;
+	padding: 2px 10px;
 	white-space: nowrap;
 	border: 1px solid var(--b-muted);
-	border-radius: 6px;
+	border-radius: 3px;
 	color: var(--b-fg);
-	font-size: 18px;
+	font-size: calc(12px * var(--ui));
 	font-weight: 700;
 }
 .conn-band {
 	position: fixed;
-	top: 80px;
+	top: var(--top-h);
 	left: 50%;
 	transform: translateX(-50%);
 	z-index: 5;
-	padding: 6px 24px;
+	padding: 4px 18px;
 	background: var(--b-bg);
 	border: 2px solid var(--b-yellow);
-	border-radius: 0 0 10px 10px;
-	font-size: 18px;
+	border-radius: 0 0 6px 6px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 700;
 }
 .board-error {
@@ -437,71 +454,141 @@ tr.st-waiting td {
 	bottom: 12px;
 	left: 24px;
 	color: var(--b-muted);
-	font-size: 16px;
+	font-size: calc(12px * var(--ui));
 }
-/* §13.7: left 320, right 300, the village takes the rest */
+/* 15 §1: left and right share what the stage leaves (board/layout.ts); the middle takes the rest */
 .board-body {
 	display: grid;
-	grid-template-columns: 320px minmax(0, 1fr) 300px;
+	grid-template-columns: var(--col-l) minmax(0, 1fr) var(--col-r);
 	min-height: 0;
 }
+/* the side columns: a stack of panel boxes, the original's dock (8 px apart, nothing nested) */
 .hq,
 .now {
-	padding: 18px 16px;
+	padding: 8px;
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
-	gap: 18px;
+	gap: 8px;
 	min-height: 0;
+	min-width: 0;
 }
-.hq {
-	border-right: 1px solid var(--b-line);
+.hq > section,
+.now > section,
+.town-map {
+	background: var(--b-panel);
+	border: 1px solid var(--b-edge);
+	min-width: 0;
 }
-.now {
-	border-left: 1px solid var(--b-line);
+/* a panel's head strip: the title, then a dim note (original `.m32-head`, `.tui-panel-head`) */
+.phead {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 28px;
+	padding: 4px 8px 4px 10px;
+	border-bottom: 1px solid var(--b-line);
+	min-width: 0;
+}
+.phead[hidden] {
+	display: none;
+}
+.ptitle {
+	flex: none;
+	position: relative;
+	display: flex;
+	align-items: center;
+	height: calc(14px * var(--ui));
+	font-family: var(--b-title-font), system-ui, -apple-system, sans-serif;
+	font-size: calc(11px * var(--ui));
+	font-weight: 700;
+	line-height: calc(14px * var(--ui));
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: var(--b-muted);
+}
+/* the pixel title is drawn: the DOM word stays for screen readers, out of sight (no layout change) */
+.ptitle:has(.ptitle-px) .ptitle-text {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+.ptitle-px-box,
+.ptitle-px {
+	display: block;
+	image-rendering: pixelated;
+}
+.psub {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: calc(11.5px * var(--ui));
+	color: var(--b-dim);
 }
 .hq-empty,
 .quiet {
 	color: var(--b-muted);
-	font-size: 18px;
+	font-size: calc(12px * var(--ui));
 	margin: 0;
 }
+.hq-empty {
+	padding: 6px 10px;
+}
+/* 15 §2: HQ 대기 never shrinks; 자리 비운 사이 gives way first, then 쉬는 중 (each keeps one line: its list's
+   min-height), then the map (TownMinimap.tsx). Lists drop whole lines (flex-wrap, below). */
 .hq-wait {
 	flex: none;
 	display: flex;
 	flex-direction: column;
-	gap: 10px;
 }
-.hq-wait h2 {
-	margin: 0;
+.hq-paused {
+	flex: 0 1 auto;
+	/* the head strip (max(28 px, title + 9 px)), the box's border, one row */
+	min-height: calc(
+		max(28px, 14px * var(--ui) + 9px) +
+		2px +
+		26px *
+		var(--ui) *
+		1.35 +
+		16px
+	);
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
 }
 /* a list that never cuts a row in half: what does not fit wraps into a second column out of sight */
 .cards,
-.incidents,
-.now-list {
+.incidents {
 	list-style: none;
 	margin: 0;
-	padding: 0;
+	padding: 6px 10px;
 	display: flex;
 	flex-direction: column;
 	flex-wrap: wrap;
 	align-content: flex-start;
 	column-gap: 64px;
-	row-gap: 14px;
+	row-gap: 6px;
 	overflow: hidden;
 	min-height: 0;
 }
 .cards > li,
-.incidents > li,
-.now-list > li {
+.incidents > li {
 	width: 100%;
 	flex: none;
 }
-.card {
-	border-left: 6px solid var(--b-line);
-	padding: 4px 0 4px 14px;
+/* HQ 대기 / 쉬는 중 rows: the original's two-line row (name + tag + time, then one dim line) */
+.card,
+.prow {
+	border-left: 2px solid transparent;
+	padding: 1px 0 1px 8px;
 	display: grid;
-	gap: 4px;
+	gap: 2px;
+	min-width: 0;
 }
 .card-folder {
 	border-left-color: var(--b-yellow);
@@ -510,11 +597,12 @@ tr.st-waiting td {
 	border-left-color: var(--b-red);
 }
 .card-project {
-	font-size: 24px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 700;
 	display: flex;
-	justify-content: space-between;
-	gap: 8px;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
 }
 .card-names {
 	min-width: 0;
@@ -524,44 +612,96 @@ tr.st-waiting td {
 }
 .card-wait {
 	flex: none;
-	font-size: 18px;
+	margin-left: auto;
+	font-size: calc(11px * var(--ui));
 	font-weight: 400;
 	color: var(--b-muted);
 }
-.card-text {
-	font-size: 26px;
-	overflow-wrap: anywhere;
-}
-.card code {
-	font-size: 16px;
+.card-text,
+.prow-text {
+	font-size: calc(12px * var(--ui));
 	color: var(--b-muted);
-	overflow-wrap: anywhere;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.prow-text {
+	color: var(--b-dim);
+}
+/* a small bordered tag (original `.tui-tag` / `.m32-pill`) */
+.tag {
+	flex: none;
+	padding: 0 5px;
+	font-size: calc(10.5px * var(--ui));
+	font-weight: 400;
+	line-height: 1.5;
+	color: var(--b-muted);
+	border: 1px solid var(--b-edge);
+	border-radius: 3px;
+	white-space: nowrap;
+}
+.card-folder .tag-wait {
+	color: var(--b-yellow);
+	border-color: #8a6430;
+}
+.card-binder .tag-wait {
+	color: var(--b-red);
+	border-color: #8a3a33;
 }
 .hq-away {
-	flex: 1;
-	min-height: 0;
+	flex: 1 100 auto;
+	min-height: calc(
+		max(28px, 14px * var(--ui) + 9px) +
+		2px +
+		12px *
+		var(--ui) *
+		1.35 +
+		13px
+	);
+	overflow: hidden;
 	display: flex;
 	flex-direction: column;
 }
 .incidents {
 	flex: 1;
-	row-gap: 6px;
+	row-gap: 3px;
+}
+.hq-away .incidents {
+	min-height: calc(12px * var(--ui) * 1.35 + 13px);
+}
+/* the list starts with a date divider (`어제`): its one line is the divider and the first event */
+.hq-away .incidents.lead-day {
+	min-height: calc(23px * var(--ui) * 1.35 + 22px);
+}
+.hq-away:has(.lead-day) {
+	min-height: calc(
+		max(28px, 14px * var(--ui) + 9px) +
+		2px +
+		23px *
+		var(--ui) *
+		1.35 +
+		22px
+	);
+}
+.hq-paused .incidents {
+	min-height: calc(26px * var(--ui) * 1.35 + 16px);
 }
 /* §13.4: one dim line each, `17:03 docs T3 통과`, ellipsis when long */
 .inc {
 	display: flex;
-	gap: 10px;
+	gap: 8px;
 	color: var(--b-muted);
-	font-size: 16px;
+	font-size: calc(12px * var(--ui));
 	white-space: nowrap;
 	overflow: hidden;
 }
 .inc-time {
 	flex: none;
+	font-variant-numeric: tabular-nums;
 }
 .inc-project {
 	flex: none;
-	max-width: 110px;
+	max-width: 40%;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
@@ -571,46 +711,200 @@ tr.st-waiting td {
 	text-overflow: ellipsis;
 }
 .inc-day {
-	margin-top: 4px;
-	padding-top: 4px;
+	margin-top: 2px;
+	padding-top: 2px;
 	border-top: 1px solid var(--b-line);
 	color: var(--b-dim);
-	font-size: 16px;
+	font-size: calc(11px * var(--ui));
 }
-/* §13.5: two lines per run */
-.now-line {
-	font-size: 18px;
+/* ── SESSIONS (15 §3): project groups, session rows, terminal tails. Row heights are the numbers in
+   board/session-panel.ts PX (text rows × --ui), so the model can fold the list to fit without measuring. */
+.sessions {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+.sess-list {
+	list-style: none;
+	margin: 0;
+	padding: 4px 8px;
+	min-height: 0;
+	overflow: hidden;
+}
+.sess-group + .sess-group {
+	margin-top: 8px;
+}
+.sess-proj {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: calc(20px * var(--ui));
+	min-width: 0;
+	font-size: calc(13px * var(--ui));
 	font-weight: 700;
+	line-height: calc(20px * var(--ui));
+}
+.sess-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* a repo-less group named by its folder (16 A4-3): dim, it is not a project */
+.sess-name.sess-nameless {
+	color: var(--b-muted);
+	font-weight: 400;
+}
+.sess-proj .tag {
+	max-width: 55%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* the run's phase: one thin bar under the project (filled to the current phase of nine) */
+.sess-phase {
+	height: 4px;
+	margin: 1px 0;
+	background: var(--b-line);
+}
+.sess-phase > i {
+	display: block;
+	height: 100%;
+	background: var(--b-ok);
+}
+.sess-rows {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.sess-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: calc(18px * var(--ui));
+	padding-left: 4px;
+	min-width: 0;
+	font-size: calc(12px * var(--ui));
+	line-height: calc(18px * var(--ui));
+	white-space: nowrap;
+}
+.sess-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--b-dim);
+}
+.st-active .sess-dot {
+	background: var(--b-ok);
+}
+.st-waiting .sess-dot {
+	background: var(--b-yellow);
+}
+/* a wait whose HQ visit is over, and a session resting after 15 quiet minutes: dim, nothing yellow */
+.st-waited .sess-dot {
+	background: var(--b-dim);
+}
+.sess-who {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.st-idle .sess-who,
+.st-waited .sess-who {
+	color: var(--b-muted);
+}
+.st-stale .sess-who {
+	color: var(--b-dim);
+}
+.sess-sub {
+	flex: none;
+	font-size: calc(11px * var(--ui));
+	color: var(--b-muted);
+}
+.sess-age {
+	flex: none;
+	margin-left: auto;
+	font-size: calc(11px * var(--ui));
+	color: var(--b-dim);
+	font-variant-numeric: tabular-nums;
+}
+.sess-line .tag {
+	line-height: calc(14px * var(--ui));
+}
+.sess-row .tag-waiting,
+.sess-proj .tag-wait {
+	color: var(--b-yellow);
+	border-color: #8a6430;
+}
+.sess-proj .tag-stop {
+	color: var(--b-red);
+	border-color: #8a3a33;
+}
+.sess-proj .tag-run {
+	color: var(--b-ok);
+	border-color: #2f7a40;
+}
+.sess-row .tag-idle,
+.sess-row .tag-waited,
+.sess-proj .tag-pause,
+.sess-proj .tag-branch {
+	color: var(--b-dim);
+	border-color: var(--b-line);
+}
+/* the terminal tail: monospace, newest line at the bottom, a blinking cursor while the session works */
+.sess-tail {
+	list-style: none;
+	margin: 0 0 2px 16px;
+	padding: 4px 6px;
+	background: #0b0908;
+	border-left: 1px solid var(--b-line);
+	font-family: var(--b-mono);
+	font-size: calc(10.5px * var(--ui));
+	line-height: calc(15px * var(--ui));
+	color: var(--b-muted);
+	min-width: 0;
+}
+.sess-tail > li {
+	height: calc(15px * var(--ui));
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
-.now-age {
-	font-weight: 400;
-	color: var(--b-muted);
+.tail-n {
+	color: var(--b-dim);
 }
-.phases {
-	display: grid;
-	grid-template-columns: repeat(9, 1fr);
-	gap: 3px;
-	margin-top: 6px;
+.tail-live > li:last-child::after {
+	content: "";
+	display: inline-block;
+	width: 0.55em;
+	height: 1em;
+	margin-left: 2px;
+	vertical-align: -0.15em;
+	background: var(--b-muted);
+	animation: tail-cursor 1.1s steps(1) infinite;
 }
-.phase {
-	height: 12px;
-	border-radius: 2px;
-	background: var(--b-line);
+@keyframes tail-cursor {
+	50% {
+		opacity: 0;
+	}
 }
-.phase-done {
-	background: #2f7d4f;
+@media (prefers-reduced-motion: reduce) {
+	.tail-live > li:last-child::after {
+		animation: none;
+	}
 }
-.phase-now {
-	background: var(--b-ok);
+.sess-more {
+	margin: 0;
+	padding-left: 16px;
+	height: calc(16px * var(--ui));
+	font-size: calc(11px * var(--ui));
+	line-height: calc(16px * var(--ui));
+	color: var(--b-dim);
 }
-.now-slow .phase-now {
-	background: var(--b-yellow);
-}
-.now-stale {
-	opacity: 0.6;
+.sess-more-groups {
+	padding: 0 8px 4px;
 }
 
 /* ── the village (2D tile grid, §13.10) ───────────────────────────────────── */
@@ -630,7 +924,7 @@ tr.st-waiting td {
 	filter: saturate(0.35) brightness(0.6);
 }
 .tile-name {
-	font-size: 18px;
+	font-size: calc(13px * var(--ui));
 	font-weight: 700;
 	white-space: nowrap;
 	overflow: hidden;
@@ -733,8 +1027,8 @@ tr.st-waiting td {
 	max-width: min(720px, 100%);
 	padding: 6px 16px;
 	border: 2px solid var(--b-fg);
-	border-radius: 14px;
-	font-size: 24px;
+	border-radius: 10px;
+	font-size: calc(14px * var(--ui));
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -852,7 +1146,7 @@ tr.st-waiting td {
 	border-radius: 6px;
 	background: #0e1013cc;
 	color: var(--b-fg);
-	font-size: 18px;
+	font-size: calc(12px * var(--ui));
 	font-weight: 700;
 }
 .cmp-bubble {
@@ -861,10 +1155,10 @@ tr.st-waiting td {
 	text-overflow: ellipsis;
 	padding: 6px 16px;
 	border: 2px solid var(--b-fg);
-	border-radius: 14px;
+	border-radius: 10px;
 	background: #0e1013e6;
 	color: var(--b-fg);
-	font-size: 24px;
+	font-size: calc(14px * var(--ui));
 }
 .cmp-bubble[hidden] {
 	display: none;
@@ -899,10 +1193,10 @@ tr.st-waiting td {
 	white-space: nowrap;
 	padding: 6px 16px;
 	border: 2px solid var(--b-fg);
-	border-radius: 14px;
+	border-radius: 10px;
 	background: #0e1013e6;
 	color: var(--b-fg);
-	font-size: 24px;
+	font-size: calc(14px * var(--ui));
 	pointer-events: none;
 }
 /* the town's minimap at the top of the HQ column (the town; restyled in S4) */
@@ -926,14 +1220,12 @@ tr.st-waiting td {
 	animation: none;
 }
 
-/* ── the ring town's frame (`.board.scene-town`, design doc 12 §3) ───────────────────────────────────────
-   Colours, borders and title look come from the original town's panels (app/town-panels.css: page
+/* ── the ring town's frame (`.board.scene-town`, design doc 12 §3, 15) ─────────────────────────────────────
+   Colours, borders and the panel look come from the original town's panels (app/town-panels.css: page
    #0f0c0b, panel #19140f, edge #6b5a48, line #3a2f27, ink #efe6d4 / #b9ab92 / #8f826e, buttons #2a221d,
-   status yellow #f0b030 and green #4cd06a). The original draws Latin panel titles ("MAP") as a 5-px bitmap
-   font on a canvas; no webfont file exists, so the titles here are DOM text in a monospace stack with wide
-   letter-spacing (Korean text keeps the board font). Sizes stay on the three tiers (48 / 24-28 / 16-18) and
-   weights on two (400 / 700). The column boxes stay 320 / rest / 300 wide: the inset panel is a ::before
-   inside each column, not a margin. */
+   status yellow #f0b030 and green #4cd06a). Each section of a side column is one of the original's panel
+   boxes (head strip + body); the titles are drawn in the town's 5-px pixel font while the town runs
+   (town/pixel-title.tsx), DOM text in a monospace stack otherwise. */
 .board.scene-town {
 	--b-bg: #0f0c0b;
 	--b-panel: #19140f;
@@ -945,8 +1237,6 @@ tr.st-waiting td {
 	--b-yellow: #f0b030;
 	--b-ok: #4cd06a;
 	--b-btn: #2a221d;
-	--b-title-font:
-		ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 }
 .scene-town .board-top {
 	background: #181310;
@@ -955,10 +1245,10 @@ tr.st-waiting td {
 .scene-town .bm {
 	background: var(--b-btn);
 	border-radius: 3px;
-	padding: 4px 12px;
+	padding: 2px 9px;
 }
 .scene-town .board-link {
-	padding: 4px 12px;
+	padding: 2px 9px;
 	background: var(--b-btn);
 	border: 1px solid var(--b-line);
 	border-radius: 3px;
@@ -969,82 +1259,324 @@ tr.st-waiting td {
 	color: var(--b-fg);
 	background: var(--b-btn);
 	border: 1px solid var(--b-edge);
-	border-radius: 3px;
 	letter-spacing: 0.05em;
 }
 .scene-town .conn-band {
 	background: var(--b-panel);
 	border-radius: 0 0 3px 3px;
 }
-/* the side columns: an inset panel with the original's edge colour, behind the content */
 .scene-town .hq,
 .scene-town .now {
-	position: relative;
-	isolation: isolate;
-	border: 0;
 	background: var(--b-bg);
-}
-.scene-town .hq {
-	padding: 20px 18px 20px 22px;
-	gap: 12px;
-}
-.scene-town .now {
-	padding: 20px 22px 20px 18px;
-}
-/* the 결재 block never shrinks; the blocks under it drop whole lines before anything is cut in half */
-.scene-town .hq > .hq-wait ~ .hq-wait {
-	flex: 0 1 auto;
-	min-height: 0;
-	overflow: hidden;
-}
-.scene-town .hq::before,
-.scene-town .now::before {
-	content: "";
-	position: absolute;
-	z-index: -1;
-	top: 8px;
-	bottom: 8px;
-	background: var(--b-panel);
-	border: 1px solid var(--b-edge);
-}
-.scene-town .hq::before {
-	left: 8px;
-	right: 4px;
-}
-.scene-town .now::before {
-	left: 4px;
-	right: 8px;
-}
-/* panel titles: the head strip of the original's panels */
-.scene-town h2,
-.scene-town .town-map-title {
-	margin: 0 0 4px;
-	padding: 0 0 7px;
-	border-bottom: 1px solid var(--b-line);
-	font-family: var(--b-title-font), system-ui, -apple-system, sans-serif;
-	font-size: 16px;
-	font-weight: 700;
-	letter-spacing: 0.08em;
-	color: var(--b-muted);
-}
-.scene-town .hq-wait h2 {
-	margin: 0;
 }
 .scene-town .town-map {
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
 }
 .scene-town .town-map[hidden] {
 	display: none;
 }
-.scene-town .town-map-title {
+.town-map-canvas {
+	margin: 4px auto;
+}
+
+/* ── the detail screen (#/detail, Detail.tsx; 16 A3): the board's panel look ──────────────────────
+   Board colours and type scale (every text calc(10.5–14px × --ui)), panel boxes with a head strip, no
+   page scroll: each panel scrolls inside itself, never sideways. */
+.detail {
+	grid-template-rows: 56px 1fr;
+}
+.detail-top {
+	gap: 16px;
+}
+.detail-title {
+	margin: 0;
+	font-size: calc(14px * var(--ui));
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	white-space: nowrap;
+}
+.detail-beat {
+	margin-left: 6px;
+	color: var(--b-dim);
+	font-size: calc(11px * var(--ui));
+}
+.detail-conn.conn-open {
+	color: var(--b-ok);
+}
+.detail-conn.conn-connecting,
+.detail-conn.conn-reconnecting {
+	color: var(--b-yellow);
+}
+.detail-body {
+	display: grid;
+	grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1.35fr);
+	gap: 8px;
+	padding: 8px;
+	min-height: 0;
+	overflow: hidden;
+}
+.detail-col {
+	display: grid;
+	grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+	gap: 8px;
+	min-height: 0;
+	min-width: 0;
+}
+.dpanel {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	min-width: 0;
+	background: var(--b-panel);
+	border: 1px solid var(--b-edge);
+}
+.dscroll {
+	flex: 1;
+	min-height: 0;
+	overflow-x: hidden;
+	overflow-y: auto;
+	margin: 0;
+	padding: 4px 8px 8px;
+	list-style: none;
+}
+.dpad {
+	padding: 6px 10px;
+}
+.detail .dim {
+	color: var(--b-dim);
+}
+.detail .tag {
+	margin-left: 6px;
+	font-size: calc(10.5px * var(--ui));
+}
+/* runs: Runs.tsx's two tables (text only), narrowed to the column */
+.detail-runs section {
+	margin-bottom: 8px;
+}
+.detail-runs h2 {
+	margin: 4px 0;
+	font-size: calc(12px * var(--ui));
+	font-weight: 700;
+	color: var(--b-muted);
+}
+.detail-runs .muted {
+	margin: 0;
+	color: var(--b-dim);
+	font-size: calc(12px * var(--ui));
+}
+.detail-runs table,
+.dtable {
+	width: 100%;
+	table-layout: fixed;
+	border-collapse: collapse;
+	font-size: calc(11px * var(--ui));
+}
+.detail-runs th {
+	text-align: left;
+	font-weight: 400;
+	color: var(--b-dim);
+	font-size: calc(10.5px * var(--ui));
+	padding: 2px 4px;
+	border-bottom: 1px solid var(--b-line);
+}
+.detail .detail-runs th,
+.detail .detail-runs td,
+.detail .dtable td {
+	white-space: normal;
+}
+.detail .detail-runs td,
+.detail .dtable td {
+	padding: 3px 4px;
+	border-bottom: 1px solid var(--b-line);
+	vertical-align: top;
+	overflow-wrap: anywhere;
+	color: var(--b-fg);
+}
+.detail-runs .run-state {
+	color: var(--b-muted);
+}
+.detail-runs .run-waiting_owner .run-state,
+.detail-runs .run-hold .run-state {
+	color: var(--b-yellow);
+}
+.detail-runs .run-running .run-state {
+	color: var(--b-ok);
+}
+.detail-runs .run-report {
+	color: var(--b-dim);
+}
+/* repos */
+.dgroup {
+	margin: 6px 0 2px;
+	font-size: calc(12px * var(--ui));
+	font-weight: 700;
+	color: var(--b-muted);
+}
+.dtable .dname {
+	width: 46%;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.dtable .num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	color: var(--b-muted);
+}
+.dtable .has-live .dname {
+	color: var(--b-ok);
+}
+.dci {
+	color: var(--b-dim);
+}
+.dci.ci-success {
+	color: var(--b-ok);
+}
+.dci.ci-failure {
+	color: var(--b-red);
+}
+.dci.ci-pending {
+	color: var(--b-yellow);
+}
+/* sessions: rows like the right panel's, a row picks its events */
+.dcheck {
+	padding: 4px 10px 0;
+	font-size: calc(11px * var(--ui));
+	color: var(--b-muted);
+}
+.dsess > li {
 	margin: 0;
 }
-.scene-town .hq-away {
-	margin-top: 0;
+.drow {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	min-width: 0;
+	padding: 2px 4px;
+	border: 1px solid transparent;
+	background: none;
+	color: var(--b-fg);
+	font: inherit;
+	font-size: calc(12px * var(--ui));
+	line-height: calc(18px * var(--ui));
+	text-align: left;
+	white-space: nowrap;
+	cursor: pointer;
 }
-/* the run list keeps its size; 자리 비운 사이 takes what is left under it and drops whole lines */
-.scene-town .now-list {
+.drow:hover,
+.drow:focus-visible {
+	border-color: var(--b-line);
+	outline: none;
+}
+.drow.picked {
+	border-color: var(--b-muted);
+	background: #1c2027;
+}
+.dwho {
 	flex: none;
+}
+.dwhere {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--b-muted);
+	font-size: calc(11.5px * var(--ui));
+}
+.dage {
+	flex: none;
+	margin-left: auto;
+	color: var(--b-dim);
+	font-size: calc(11px * var(--ui));
+	font-variant-numeric: tabular-nums;
+}
+.dstat.st-waiting {
+	color: var(--b-yellow);
+	border-color: #8a6430;
+}
+.dstat.st-active {
+	color: var(--b-ok);
+	border-color: #2f7a40;
+}
+.drow.st-stale .dwho,
+.drow.st-ended .dwho {
+	color: var(--b-dim);
+}
+/* events: terminal lines (cleaned like the tails: tail.ts eventLine) */
+.dfilters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 6px 8px 2px;
+}
+.dfilters select,
+.dclear {
+	max-width: 100%;
+	background: var(--b-bg);
+	color: var(--b-fg);
+	border: 1px solid var(--b-line);
+	font: inherit;
+	font-size: calc(11.5px * var(--ui));
+	padding: 2px 4px;
+}
+.dclear {
+	cursor: pointer;
+	color: var(--b-yellow);
+}
+.devents {
+	background: #0b0908;
+	margin: 4px 8px 8px;
+	padding: 4px 6px;
+	border-left: 1px solid var(--b-line);
+	font-family: var(--b-mono);
+	font-size: calc(10.5px * var(--ui));
+	line-height: calc(15px * var(--ui));
+}
+.devents > li {
+	display: flex;
+	gap: 8px;
+	min-width: 0;
+	white-space: nowrap;
+}
+.dtime {
+	flex: none;
+	width: 4.5em;
+	color: var(--b-dim);
+	text-align: right;
+}
+.dprov {
+	flex: none;
+	width: 4.5em;
+	color: var(--b-muted);
+}
+.dprov.prov-codex {
+	color: #7fb3d5;
+}
+.dtype {
+	flex: none;
+	width: 2.5em;
+	color: var(--b-dim);
+}
+.dline {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--b-fg);
+}
+.drepo {
+	flex: none;
+	max-width: 9em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--b-dim);
+}
+/* one session picked: one long terminal, lines may wrap so nothing is cut */
+.dterm > li {
+	white-space: normal;
+}
+.dterm .dline {
+	overflow-wrap: anywhere;
+	color: var(--b-muted);
 }

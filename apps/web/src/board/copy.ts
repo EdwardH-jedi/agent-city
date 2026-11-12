@@ -128,7 +128,77 @@ export const PAUSED_TEXT = "오늘 몫은 끝났습니다. 남은 작업이 있�
 
 /** Decision D4: a Claude Code / Codex session waiting for input. */
 export const SESSION_WAIT_TEXT = "입력을 기다리고 있습니다.";
-export const SESSION_LIST_HEADING = "기다리는 세션";
+
+/**
+ * The short tag on an HQ 대기 row and a project row (design doc 15 §2, §3): the code in a few Korean
+ * words. The code itself is never on the main screen; the detail view (D) has it.
+ */
+const TAG_OF_CODE: Readonly<Record<string, string>> = {
+	GOAL_RECORDED: "계획 필요",
+	AWAITING_PLAN_APPROVAL: "계획 승인",
+	PLAN_APPROVED: "실행 대기",
+	AWAITING_OWNER_INTEGRATION: "통합 대기",
+	DRAFT_REQUIRES_OWNER_COMMIT: "commit 필요",
+	APPROVAL_STALE: "범위 바뀜",
+	SOURCE_HEAD_CHANGED: "범위 바뀜",
+	PATH_NOT_ALLOWED: "범위 바뀜",
+	WORKTREE_IDENTITY_CHANGED: "범위 바뀜",
+	MODEL_CHAIN_EXHAUSTED: "모델 소진",
+	PIPELINE_TOKEN_BUDGET_EXHAUSTED: "예산 소진",
+	BUDGET_EXHAUSTED: "예산 소진",
+	REVIEW_BUDGET_EXHAUSTED: "예산 소진",
+	PLANNER_USAGE_UNKNOWN: "사용량 확인",
+	MISSION_USAGE_UNVERIFIED: "사용량 확인",
+	SANDBOX_CREDENTIALS_CHANGED: "안전 규칙",
+	POLICY_VIOLATION: "안전 규칙",
+	CHECK_SANDBOX_DENIED: "안전 규칙",
+	PERMISSION_PROFILE_DISABLED: "안전 규칙",
+	RUNNING_AGENTS_OR_OPEN_FILES: "저장소 사용 중",
+	DIRTY_WORKTREE: "저장소 사용 중",
+	REPOSITORY_RESERVED: "저장소 사용 중",
+	GIT_OPERATION_IN_PROGRESS: "저장소 사용 중",
+	DISPATCHER_RUN_LOCK_PRESENT: "저장소 사용 중",
+	FAILED_PROCESS_RECONCILE: "복구 확인",
+	MISSION_RECONCILIATION_REQUIRED: "복구 확인",
+	PLANNER_INTERRUPTED: "복구 확인",
+	EVENT_LOG_TORN: "복구 확인",
+	DISPATCH_STOPPED: "중간에 멈춤",
+	PRESERVED_ON_HOLD: "일부만 끝냄",
+};
+export const SESSION_WAIT_TAG = "입력 대기";
+export const PAUSED_TAG = "쉬는 중";
+
+/** Every code the sentence table knows has a tag (copy.test.ts holds the two tables together). */
+export const tagOfCode = (code: string | null): string | null =>
+	code ? (TAG_OF_CODE[code] ?? null) : null;
+
+/**
+ * The tag of an HQ 대기 row: a session waiting for input (its visit ids are `session:<id>`) → 입력 대기;
+ * a known code → its words; a 멈춤 (binder) the table does not know → 멈춤; anything else → 확인 필요.
+ */
+export function hqTag(card: {
+	ids: readonly string[];
+	code: string | null;
+	carry: "folder" | "binder";
+}): string {
+	if (card.ids.length > 0 && card.ids.every((id) => id.startsWith("session:")))
+		return SESSION_WAIT_TAG;
+	return (
+		tagOfCode(card.code) ??
+		(card.carry === "binder" ? SHORT.stopped : SHORT.unknown)
+	);
+}
+
+/** How long, in one short word: `방금`, `12분`, `6시간`, `3일`. Empty for a bad time. */
+export function elapsedKo(iso: string, now: number): string {
+	const t = Date.parse(iso);
+	if (Number.isNaN(t)) return "";
+	const min = Math.max(0, Math.floor((now - t) / 60_000));
+	if (min < 1) return "방금";
+	if (min < 60) return `${min}분`;
+	const h = Math.floor(min / 60);
+	return h < 48 ? `${h}시간` : `${Math.floor(h / 24)}일`;
+}
 
 /** The provider's name on screen (`docs · Claude`). */
 export const PROVIDER_NAME: Readonly<Record<string, string>> = {

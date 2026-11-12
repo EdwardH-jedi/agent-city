@@ -2,7 +2,15 @@
 // running now. It only reads (useHub, GET + /ws) and draws; there is nothing to click and no way to act.
 // `?demo=1` draws the same screen from made-up data instead (DemoBoard.tsx, a lazy chunk): no request,
 // no sound, and the screen says "예시 데이터".
-import { useEffect, useMemo, useRef, useState } from "react";
+
+import type { Session } from "@agent-city/schema";
+import {
+	type CSSProperties,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { CampusView } from "../campus/CampusView.tsx";
 import { machinesAt, runsAt } from "../merge.ts";
 import { sceneOf } from "../town/params.ts";
@@ -10,9 +18,10 @@ import { TownMinimapSlot, TownView } from "../town/TownView.tsx";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
 import { burnInShift } from "./burnin.ts";
 import { DEMO_LABEL } from "./demo-flag.ts";
-import { Away, Hq } from "./Hq.tsx";
+import { Hq } from "./Hq.tsx";
+import { type BoardColumns, boardColumns, uiScaleOf } from "./layout.ts";
 import { toVillageModel, type VillageModel } from "./model.ts";
-import { Now } from "./Now.tsx";
+import { Sessions, WIDE_MIN } from "./Sessions.tsx";
 import { parseSessionWait, recentSessions } from "./sessions.ts";
 import {
 	isAudible,
@@ -22,6 +31,7 @@ import {
 	quietEndHour,
 	type SoundMemory,
 } from "./sound.ts";
+import type { MemEvent } from "./tail-memory.ts";
 import { currentRuns } from "./types.ts";
 import { emptyWatch, stepWatch } from "./visits.ts";
 
@@ -34,6 +44,26 @@ export function useClock(ms: number): number {
 		return () => clearInterval(t);
 	}, [ms]);
 	return now;
+}
+
+/** The column widths for the window (15 §1), recomputed when it is resized. */
+function useBoardColumns(): BoardColumns {
+	const [cols, setCols] = useState(() =>
+		boardColumns(window.innerWidth, window.innerHeight),
+	);
+	useEffect(() => {
+		const fit = () => {
+			const next = boardColumns(window.innerWidth, window.innerHeight);
+			setCols((c) =>
+				c.left === next.left && c.top === next.top && c.body === next.body
+					? c
+					: next,
+			);
+		};
+		window.addEventListener("resize", fit);
+		return () => window.removeEventListener("resize", fit);
+	}, []);
+	return cols;
 }
 
 export function Board({ hub }: { hub: HubData }) {
@@ -126,9 +156,19 @@ export function Board({ hub }: { hub: HubData }) {
 			reconnecting={hub.conn === "reconnecting"}
 			error={hub.error}
 			demo={false}
+			sessions={hub.sessions}
+			events={hub.events}
 		/>
 	);
 }
+
+/**
+ * The right panel's list height (px): the column under the top band less its padding (8 + 8), the panel
+ * box's border (2), its head strip (style.css `.phead`: max(28 px, title + 9 px)) and the list's padding
+ * (4 + 4), and 2 px of slack for rounding.
+ */
+const listBudget = (body: number, ui: number): number =>
+	body - 16 - 2 - Math.max(28, 14 * ui + 9) - 8 - 2;
 
 const MACHINE_WORD: Record<VillageModel["machines"][number]["status"], string> =
 	{
@@ -144,19 +184,34 @@ export function BoardView({
 	reconnecting,
 	error,
 	demo,
+	sessions,
+	events,
 }: {
 	model: VillageModel;
 	now: number;
 	reconnecting: boolean;
 	error: string | null;
 	demo: boolean;
+	/** The right panel's sessions and their events (what useHub holds; nothing more is fetched). */
+	sessions: readonly Session[];
+	events: readonly MemEvent[];
 }) {
 	// The ring town in the middle column (design doc 12, the default); `?scene=campus`: the 3D campus.
 	const [scene] = useState(() => sceneOf(window.location.search));
 	const town = scene === "town";
+	const cols = useBoardColumns();
+	// `?ui=1.15` / `?ui=1.3`: one scale for every panel text size (15 §1); not the sentence, not the columns
+	const [ui] = useState(() => uiScaleOf(window.location.search));
+	const frame = {
+		"--col-l": `${cols.left}px`,
+		"--col-r": `${cols.right}px`,
+		"--top-h": `${cols.top}px`,
+		"--ui": String(ui),
+	} as CSSProperties;
 	return (
 		<div
 			className={`board border-${model.status.border}${town ? " scene-town" : ""}`}
+			style={frame}
 		>
 			<header
 				className="board-top"
@@ -191,17 +246,27 @@ export function BoardView({
 					model={model}
 					now={now}
 					top={town ? <TownMinimapSlot /> : null}
-					away={!town}
+					pixel={town}
 				/>
 				{town ? (
-					<TownView model={model} now={now} />
+					<TownView
+						model={model}
+						now={now}
+						sessions={sessions}
+						events={events}
+					/>
 				) : (
 					<CampusView model={model} now={now} />
 				)}
-				<Now
+				<Sessions
 					model={model}
+					sessions={sessions}
+					events={events}
 					now={now}
-					below={town ? <Away model={model} now={now} /> : null}
+					budget={listBudget(cols.body, ui)}
+					ui={ui}
+					wide={cols.left + cols.middle + cols.right >= WIDE_MIN}
+					pixel={town}
 				/>
 			</div>
 			{error && <div className="board-error">{error}</div>}

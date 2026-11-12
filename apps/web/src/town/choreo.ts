@@ -21,15 +21,35 @@ import {
 	type VisitBook,
 	walkDurationMs,
 } from "../campus/visits.ts";
-import { type OrbitRig, TELEPORT_U } from "./engine/orbit-camera.mjs";
+import {
+	type OrbitRig,
+	TELEPORT_U,
+	turnBetween,
+	yawOfDir,
+} from "./engine/orbit-camera.mjs";
 import {
 	arcTable,
 	doorOf,
 	ellipseNormal,
+	ellipseTangent,
 	LOTS,
 	offsetPoint,
 } from "./engine/ring-layout.mjs";
-import { LAP_S, PATROL_SPEED, patrolPose, patrolTimeAt } from "./patrol.ts";
+import {
+	ENTRY_THETA,
+	EXIT_THETA,
+	LAP_S,
+	onRouteRing,
+	PATROL_SPEED,
+	PLAZA_END_S,
+	PLAZA_LOOP_R,
+	PLAZA_START_S,
+	patrolPose,
+	patrolTimeAtS,
+	routeAt,
+	routeNearest,
+	routeSlice,
+} from "./patrol.ts";
 
 export const HQ_LOT = "sportsgang";
 /** The outer pavement lane the leads walk (between the curb lamps at 2.9 and the door benches at 3.85). */
@@ -324,12 +344,14 @@ const dist2 = (a: XZ, b: XZ) => Math.hypot(a.x - b.x, a.z - b.z);
 
 // ── the kangaroo ───────────────────────────────────────────────────────────────
 
-/** Patrol on the centre line at scene time `sceneMs` (+ the state's phase shift). */
+/** The patrol (patrol.ts route) at scene time `sceneMs` (+ the state's phase shift). */
 export function patrolAt(sceneMs: number): {
 	x: number;
 	z: number;
 	dir: [number, number];
 	walked: number;
+	/** Distance along the route. */
+	s: number;
 } {
 	const t = (((sceneMs / 1000) % LAP_S) + LAP_S) % LAP_S;
 	const p = patrolPose(t);
@@ -360,23 +382,64 @@ export function thetaNear(x: number, z: number): number {
 	return ((best % TAU) + TAU) % TAU;
 }
 
-/** From (x, z): onto the centre line, the near way to the HQ, then onto the HQ stand. */
+/**
+ * From (x, z) to the HQ stand. On the plaza stretch of the route (16 A2) it follows the route out of the
+ * plaza — back to where it came in or on to where it goes out, whichever is the shorter walk — never
+ * straight across the grass, the plaza lamps and the inner trees; from the boulevard, onto the centre line
+ * and the near way round, as before.
+ */
 export function rooToHq(from: XZ): Path {
+	const s = routeNearest(from.x, from.z);
+	const on = routeAt(s);
+	const here = { x: from.x, z: from.z };
+	if (
+		s > PLAZA_START_S &&
+		s < PLAZA_END_S &&
+		Math.hypot(on.x - from.x, on.z - from.z) < 1.5
+	) {
+		const via = (pts: XZ[], theta: number) =>
+			path([
+				here,
+				...pts,
+				...arcPoints(CENTRE, 0, theta, shorterArc(CENTRE, theta, HQ.theta)),
+				HQ_STAND,
+			]);
+		const back = via(routeSlice(PLAZA_START_S, s).reverse(), ENTRY_THETA);
+		const on2 = via(routeSlice(s, PLAZA_END_S), EXIT_THETA);
+		return back.length <= on2.length ? back : on2;
+	}
 	const th = thetaNear(from.x, from.z);
 	const arc = shorterArc(CENTRE, th, HQ.theta);
-	return path([
-		{ x: from.x, z: from.z },
-		...arcPoints(CENTRE, 0, th, arc),
-		HQ_STAND,
-	]);
+	return path([here, ...arcPoints(CENTRE, 0, th, arc), HQ_STAND]);
 }
 
-/** From (x, z) straight onto the nearest centre-line point (where the patrol picks up again). */
-export function rooToLine(from: XZ): { path: Path; theta: number } {
+/**
+ * From (x, z) back onto the route (where the patrol picks up again): straight onto it when it is near (the
+ * plaza stretch included); else straight onto the centre line, and if
+ * that point is in the quarter the plaza stretch cuts (by the HQ), on along the centre line to the nearer
+ * end of that quarter. Returns the walk and the route distance it ends at.
+ */
+export function rooToRoute(from: XZ): { path: Path; s: number } {
+	const here = { x: from.x, z: from.z };
+	// already by the route (the plaza stretch included): straight onto it
+	const near = routeNearest(from.x, from.z);
+	const on = routeAt(near);
+	if (Math.hypot(on.x - from.x, on.z - from.z) < 1.5)
+		return { path: path([here, { x: on.x, z: on.z }]), s: near };
 	const theta = thetaNear(from.x, from.z);
+	if (onRouteRing(theta)) {
+		const p = offsetPoint(theta, 0);
+		return { path: path([here, p]), s: routeNearest(p.x, p.z) };
+	}
+	const toEntry = shorterArc(CENTRE, theta, ENTRY_THETA);
+	const toExit = shorterArc(CENTRE, theta, EXIT_THETA);
+	const useEntry = Math.abs(toEntry) <= Math.abs(toExit);
 	return {
-		path: path([{ x: from.x, z: from.z }, offsetPoint(theta, 0)]),
-		theta,
+		path: path([
+			here,
+			...arcPoints(CENTRE, 0, theta, useEntry ? toEntry : toExit),
+		]),
+		s: useEntry ? PLAZA_START_S : PLAZA_END_S,
 	};
 }
 
@@ -604,15 +667,15 @@ function leavePatrol(
 	return { mode: "to-hq", path: p, t0: tA, shiftMs: st.shiftMs, cam: st.cam };
 }
 
-/** Walk from `here` onto the centre line; the patrol continues from that point when it gets there. */
+/** Walk from `here` onto the route; the patrol continues from that point when it gets there. */
 function back(here: XZ, now: number, cam: number): RooState {
-	const { path: p, theta } = rooToLine(here);
+	const { path: p, s } = rooToRoute(here);
 	const arrive = now + walkMs(p);
 	return {
 		mode: "back",
 		path: p,
 		t0: now,
-		rejoinShiftMs: patrolTimeAt(theta) * 1000 - arrive,
+		rejoinShiftMs: patrolTimeAtS(s) * 1000 - arrive,
 		cam,
 	};
 }
@@ -638,10 +701,62 @@ export function followRig(
 ): "snap" | "follow" {
 	const [fx, fz] = rig.focus;
 	if (gapMs > SNAP_GAP_MS || Math.hypot(at.x - fx, at.z - fz) > TELEPORT_U) {
+		const wasPlaza = rig.mode === "plaza";
 		rig.snapTo(at.x, at.z);
+		// a snap into the plaza from outside it (a reload, a rebuilt world): the rig would freeze whatever yaw
+		// it had; the view goes straight to where the stage steers it there (the pylon, or the boulevard on the
+		// way out). Already in the plaza (every frame while reports are stopped, a tab coming back) the rig
+		// keeps its view: a snap never turns it.
+		if (rig.mode === "plaza" && !wasPlaza) rig.snapYaw(plazaTarget(at));
 		return "snap";
 	}
 	rig.setYaw(rig.yawFor(at));
 	rig.update(dtSec, at.x, at.z);
+	steerPlaza(rig, at, dtSec);
 	return "follow";
+}
+
+/** How fast (°/s) the stage turns the rig's frozen plaza view (toward the pylon, then the boulevard). */
+export const PLAZA_TURN_DEG_S = 20;
+/** The boulevard's clockwise direction where the plaza footpath out meets it. */
+const EXIT_YAW = (() => {
+	const t = ellipseTangent(EXIT_THETA);
+	return yawOfDir(t.x, t.z);
+})();
+/** The footpath out of the plaza: its unit direction from the centre. */
+const EXIT_RAY = (() => {
+	const p = offsetPoint(EXIT_THETA, 0);
+	const l = Math.hypot(p.x, p.z);
+	return { x: p.x / l, z: p.z / l };
+})();
+
+/**
+ * The view on the plaza stretch (16 A2). The rig freezes its yaw in the plaza (plaza mode); the stage turns
+ * that frozen view with the rig's own snapYaw, at PLAZA_TURN_DEG_S — toward the pylon while the kangaroo
+ * walks in and round it (the title and the numbers face the camera), and on the footpath out toward the
+ * boulevard's clockwise direction, so on leaving the plaza the rig keeps travelling clockwise (it picks the
+ * direction nearest its view; left sideways it picked the wrong one and swung round). The engine is
+ * unchanged.
+ */
+/** Where the stage turns the frozen plaza view at (x, z): the boulevard on the footpath out, else the pylon. */
+export function plazaTarget(at: XZ): number {
+	const along = at.x * EXIT_RAY.x + at.z * EXIT_RAY.z;
+	const across = Math.abs(at.x * EXIT_RAY.z - at.z * EXIT_RAY.x);
+	return along > PLAZA_LOOP_R - 0.01 && across < 0.01
+		? EXIT_YAW
+		: yawOfDir(-at.x, -at.z);
+}
+
+export function steerPlaza(rig: OrbitRig, at: XZ, dtSec: number): void {
+	if (rig.mode !== "plaza") return;
+	const d = turnBetween(rig.yawDeg, plazaTarget(at));
+	const cap = PLAZA_TURN_DEG_S * Math.max(0, dtSec);
+	// within half a degree it holds
+	if (Math.abs(d) < 0.5 || cap === 0) return;
+	const was = rig.yawDeg;
+	const next = was + Math.max(-cap, Math.min(cap, d));
+	rig.snapYaw(next);
+	// the rig's clearance would turn that view back (the camera would stand too far out): clearance wins and
+	// the view holds where it is — pushing past it every frame made it shimmer back and forth
+	if (Math.abs(turnBetween(rig.yawFor(at), next)) > 0.05) rig.snapYaw(was);
 }

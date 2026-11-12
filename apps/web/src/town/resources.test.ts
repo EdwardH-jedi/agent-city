@@ -90,6 +90,31 @@ function everything(world: TownWorld) {
 				phase: 0,
 			},
 		},
+		// a session's figure and its name tag (16 A1): runtime frames owned by the world's crew frames
+		{
+			id: "crew:0",
+			kind: "npc",
+			x: 4,
+			z: 16,
+			key: "crew|Opus|0|south|idle|0|0",
+			shadow: true,
+			sprite: {
+				kind: "crew",
+				look: { style: "Opus", variant: 0 },
+				facing: "south",
+				action: "idle",
+				phase: 0,
+				small: false,
+			},
+		},
+		{
+			id: "tag:0",
+			kind: "npc",
+			x: 4,
+			z: 16,
+			key: "tag|Opus|OPUS",
+			sprite: { kind: "tag", text: "OPUS", style: "Opus" },
+		},
 	]);
 	const targets = createPipelineTargets();
 	const r = resourcesOf([world.scene, targets.blitScene]);
@@ -108,8 +133,9 @@ describe("ring town disposal (real three objects, no renderer)", () => {
 			const world = buildTownWorld({ time, lots: LOTS3 });
 			for (const l of LOTS3) if (l.repo_id) world.setLitWindows(l.id, 1); // repaint in place
 			const { geos, mats, texs, targets } = everything(world);
-			expect(world.actors.sprites.size).toBe(2);
+			expect(world.actors.sprites.size).toBe(4);
 			expect(world.leads.size).toBe(1);
+			expect(world.crew.size).toBe(2);
 			expect(geos.size).toBeGreaterThan(100);
 			expect(mats.size).toBeGreaterThan(100);
 			expect(texs.size).toBeGreaterThan(50);

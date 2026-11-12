@@ -133,6 +133,20 @@ export function createPipelineTargets() {
 	};
 }
 
+/**
+ * A rebuilt world's new rig takes over where the old one was: its focus, and — inside the plaza, where the
+ * rig freezes its view and the stage has turned it to the pylon (choreo.ts steerPlaza) — the same view
+ * (16 A2 review: a time-of-day or sign change mid-plaza must not swing the camera). On the ring the rig
+ * finds its own view from the travel direction, as before.
+ */
+export function carryRig(
+	from: { x: number; z: number; yaw: number; plaza: boolean },
+	rig: TownWorld["rig"],
+): void {
+	rig.snapTo(from.x, from.z);
+	if (from.plaza && rig.mode === "plaza") rig.snapYaw(from.yaw);
+}
+
 export interface TownPipeline {
 	readonly renderer: WebGLRenderer;
 	readonly world: TownWorld;
@@ -211,11 +225,14 @@ export function createTownPipeline(opts: {
 	function setWorld(spec: WorldSpec): boolean {
 		if (disposed || worldKey(spec) === worldKey(world.spec)) return false;
 		const next = buildTownWorld(spec);
-		const [x, z] = world.rig.focus;
+		const prev = world.rig;
+		const [x, z] = prev.focus;
+		const yaw = prev.yawDeg;
+		const plaza = prev.mode === "plaza";
 		world.dispose();
 		world = next;
 		applyWidth(layout.rtW);
-		world.rig.snapTo(x, z);
+		carryRig({ x, z, yaw, plaza }, world.rig);
 		if (board) world.setBoard(board);
 		if (lamps) world.setLamps(lamps);
 		return true;
