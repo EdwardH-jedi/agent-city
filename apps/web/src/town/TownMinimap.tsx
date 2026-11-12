@@ -38,7 +38,10 @@ const px = (v: string) => Number.parseFloat(v) || 0;
  * about the content: sum the title and the single-column list instead.
  */
 function naturalHeight(el: HTMLElement): number {
-	if (!el.querySelector(".incidents")) return el.offsetHeight;
+	// a block that gives way before the map (15 §2: 자리 비운 사이, then 쉬는 중) counts only its floor:
+	// its head and its list's min-height (one line); its own box may have grown to fill the column
+	const floor = el.dataset.yield === "1";
+	if (!floor && !el.querySelector(".incidents")) return el.offsetHeight;
 	const cs = getComputedStyle(el);
 	const kids = Array.from(el.children).filter(
 		(k): k is HTMLElement =>
@@ -50,7 +53,9 @@ function naturalHeight(el: HTMLElement): number {
 		px(cs.borderTopWidth) +
 		px(cs.borderBottomWidth);
 	for (const k of kids) {
-		if (k.classList.contains("incidents")) {
+		if (k.classList.contains("incidents") && floor) {
+			sum += px(getComputedStyle(k).minHeight);
+		} else if (k.classList.contains("incidents")) {
 			const rows = Array.from(k.children).filter(
 				(r): r is HTMLElement =>
 					r instanceof HTMLElement && getComputedStyle(r).display !== "none",
@@ -67,8 +72,8 @@ function naturalHeight(el: HTMLElement): number {
 }
 
 /**
- * Height the map's canvas may take without pushing the rest of the HQ column (결재 cards, 쉬는 중, 기다리는
- * 세션) past the column's bottom: the room left after every other block and the gaps between them, with
+ * Height the map's canvas may take without pushing the rest of the HQ column (HQ rows, 쉬는 중, 자리 비운
+ * 사이) past the column's bottom: the room left after every other block and the gaps between them, with
  * the map's own title (`titled`) and without it (`bare`).
  */
 function roomAbove(wrap: HTMLElement): { titled: number; bare: number } {

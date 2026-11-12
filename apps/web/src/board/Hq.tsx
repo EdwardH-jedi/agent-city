@@ -1,19 +1,31 @@
-// Left column: the 결재 cards waiting at the HQ, and (?scene=campus only) what happened while the owner
-// was away. In the town (default scene) that history is `Away`, drawn in the right column under 지금 진행.
-// Text only — the owner acts in Agent Office on the Mac, never here ("Mac에서 처리" is said once, in
-// the heading). The column never clips a card or a line in half: at most SIGN_SHOWN cards stand (the
-// rest are counted), and history lines are one short line each (§13.4) with a divider where the
-// date changes; lines that do not fit drop out whole (CSS column wrap).
+// Left column (design doc 15 §2): MAP (the town's minimap), HQ 대기, 쉬는 중, 자리 비운 사이 — each one of the
+// original town's panel boxes. Text only — the owner acts in Agent Office on the Mac, never here
+// ("Mac에서 처리" is said once, in the HQ head).
+//
+// HQ 대기 and 쉬는 중 are the original's two-line rows: the project (bold), a small tag (`통합 대기`) and
+// how long on the right; under it one dim line, cut with an ellipsis. A 2-px bar on the left says the
+// state (yellow: 결재 · 입력 대기, red: 멈춤); 쉬는 중 has none (D2). Office's code is never on this screen
+// (the detail view D has it). The 기다리는 세션 list of D4 is gone: the right panel's 입력 대기 rows
+// stand for it (D10).
+//
+// The column never clips an HQ row: at most SIGN_SHOWN rows stand (the rest are counted). When the
+// column is short, 자리 비운 사이 gives way first (flex-shrink 100 : 1 against 쉬는 중; each drops whole
+// lines and keeps at least one — its list's min-height), then the map (TownMinimap.tsx sizes itself to
+// what is left after their one-line floors; `data-yield` marks the blocks that give way).
 import type { ReactNode } from "react";
-import { PAUSED_HEADING, PAUSED_TEXT, SESSION_LIST_HEADING } from "./copy.ts";
+import {
+	elapsedKo,
+	hqTag,
+	PAUSED_HEADING,
+	PAUSED_TAG,
+	PAUSED_TEXT,
+} from "./copy.ts";
 import { type Incident, incidentRows } from "./incidents.ts";
 import { signCards, type VillageModel } from "./model.ts";
 import { PanelHead } from "./PanelHead.tsx";
 import { projectLabel } from "./types.ts";
 
 export const SIGN_SHOWN = 3;
-/** Rows of 기다리는 세션 before `외 N` (old waits never go stale on the hub; §13.8 at 1366×768). */
-export const WAITING_SHOWN = 3;
 
 const hhmm = (iso: string) => {
 	const d = new Date(iso);
@@ -26,33 +38,22 @@ const hhmm = (iso: string) => {
 			});
 };
 
-function waited(iso: string, now: number): string {
-	const t = Date.parse(iso);
-	if (Number.isNaN(t)) return "";
-	const min = Math.max(0, Math.floor((now - t) / 60_000));
-	if (min < 1) return "방금";
-	if (min < 60) return `${min}분째`;
-	return `${Math.floor(min / 60)}시간째`;
-}
-
 export function Hq({
 	model,
 	now,
 	top,
-	away = true,
 	pixel = false,
 }: {
 	model: VillageModel;
 	now: number;
 	/** The town (default scene): its minimap above the queue (design doc 12 §3). */
 	top?: ReactNode;
-	/** false: 자리 비운 사이 is drawn elsewhere (`<Away>` in the right column, the town). */
-	away?: boolean;
 	/** Titles in the town's pixel font (the town scene). */
 	pixel?: boolean;
 }) {
 	const signs = signCards(model.visits);
 	const shown = signs.slice(0, SIGN_SHOWN);
+	const waiting = signs.reduce((n, c) => n + c.ids.length, 0);
 	const more = signs
 		.slice(SIGN_SHOWN)
 		.reduce((n, c) => n + c.project_ids.length, 0);
@@ -63,7 +64,7 @@ export function Hq({
 				<PanelHead
 					title="HQ"
 					label="HQ 대기"
-					sub={`대기 ${signs.reduce((n, c) => n + c.ids.length, 0)} · Mac에서 처리`}
+					sub={`대기 ${waiting} · Mac에서 처리`}
 					pixel={pixel}
 				/>
 				{signs.length === 0 ? (
@@ -76,24 +77,25 @@ export function Hq({
 									<span className="card-names">
 										{v.project_ids.map(projectLabel).join(" · ")}
 									</span>
-									<span className="card-wait">{waited(v.since, now)}</span>
+									<span className="tag tag-wait">{hqTag(v)}</span>
+									<span className="card-wait">{elapsedKo(v.since, now)}</span>
 								</div>
-								<div className="card-text">{v.text}</div>
-								{v.code && <code>{v.code}</code>}
+								<div className="card-text" title={v.text}>
+									{v.text}
+								</div>
 							</li>
 						))}
 					</ul>
 				)}
 				{more > 0 && <p className="hq-empty">외 {more}건</p>}
 			</section>
-			<Paused model={model} pixel={pixel} />
-			<WaitingSessions model={model} now={now} pixel={pixel} />
-			{away && <Away model={model} now={now} pixel={pixel} />}
+			<Paused model={model} now={now} pixel={pixel} />
+			<Away model={model} now={now} pixel={pixel} />
 		</aside>
 	);
 }
 
-/** 자리 비운 사이: one short line per event (§13.4), at most six. Same markup wherever it stands. */
+/** 자리 비운 사이: one short line per event (§13.4), at most six, a divider where the date changes. */
 export function Away({
 	model,
 	now,
@@ -103,8 +105,9 @@ export function Away({
 	now: number;
 	pixel?: boolean;
 }) {
+	const rows = incidentRows(model.incidents, now);
 	return (
-		<section className="hq-away" aria-label="자리 비운 사이">
+		<section className="hq-away" aria-label="자리 비운 사이" data-yield="1">
 			<PanelHead
 				title="LOG"
 				label="자리 비운 사이"
@@ -114,8 +117,10 @@ export function Away({
 			{model.incidents.length === 0 ? (
 				<p className="hq-empty">없음</p>
 			) : (
-				<ol className="incidents">
-					{incidentRows(model.incidents, now).map((row) =>
+				<ol
+					className={`incidents${rows[0]?.kind === "day" ? " lead-day" : ""}`}
+				>
+					{rows.map((row) =>
 						row.kind === "day" ? (
 							<li key={`day|${row.label}`} className="inc-day">
 								{row.label}
@@ -134,39 +139,10 @@ export function Away({
 }
 
 /**
- * Decision D2: runs resting between loops, under HQ 대기 — no sound, no border colour, dim text. The
- * sentence is said once for all of them; the names are one line.
+ * Decision D2: runs resting between loops — no sound, no border colour, no colour bar. One row per
+ * project: the name, `쉬는 중`, since when; under it the sentence (said on every row, dim).
  */
-function Paused({ model, pixel }: { model: VillageModel; pixel: boolean }) {
-	if (model.paused.length === 0) return null;
-	const names = [
-		...new Set(model.paused.map((p) => projectLabel(p.project_id))),
-	];
-	return (
-		<section className="hq-wait" aria-label="쉬는 중">
-			<PanelHead
-				title="PAUSED"
-				label="쉬는 중"
-				sub={PAUSED_HEADING}
-				pixel={pixel}
-			/>
-			<ol className="incidents">
-				<li className="inc">
-					<span className="inc-text">{names.join(" · ")}</span>
-				</li>
-				<li className="inc">
-					<span className="inc-text">{PAUSED_TEXT}</span>
-				</li>
-			</ol>
-		</section>
-	);
-}
-
-/**
- * Decision D4: sessions still waiting for input after their 30 minutes at the HQ — one dim line each
- * (`42분째 docs Claude`), no sound, no border colour. At most WAITING_SHOWN, then `외 N`.
- */
-function WaitingSessions({
+function Paused({
 	model,
 	now,
 	pixel,
@@ -175,30 +151,33 @@ function WaitingSessions({
 	now: number;
 	pixel: boolean;
 }) {
-	const list = model.waitingSessions;
-	if (list.length === 0) return null;
-	const shown = list.slice(0, WAITING_SHOWN);
+	if (model.paused.length === 0) return null;
+	const byProject = new Map<string, string>();
+	for (const p of model.paused) {
+		const since = byProject.get(p.project_id);
+		if (!since || p.since < since) byProject.set(p.project_id, p.since);
+	}
 	return (
-		<section className="hq-wait" aria-label={SESSION_LIST_HEADING}>
+		<section className="hq-paused" aria-label="쉬는 중" data-yield="1">
 			<PanelHead
-				title="WAITING"
-				label={SESSION_LIST_HEADING}
-				sub={SESSION_LIST_HEADING}
+				title="PAUSED"
+				label={PAUSED_HEADING}
+				sub={`쉬는 중 · ${byProject.size}`}
 				pixel={pixel}
 			/>
-			<ol className="incidents">
-				{shown.map((w) => (
-					<li key={w.id} className="inc">
-						<span className="inc-time">{waited(w.since, now)}</span>
-						<span className="inc-project">{projectLabel(w.project_id)}</span>
-						<span className="inc-text">{w.provider_label}</span>
+			<ol className="incidents prows">
+				{[...byProject].map(([project, since]) => (
+					<li key={project} className="prow">
+						<div className="card-project">
+							<span className="card-names">{projectLabel(project)}</span>
+							<span className="tag">{PAUSED_TAG}</span>
+							<span className="card-wait">{elapsedKo(since, now)}</span>
+						</div>
+						<div className="prow-text" title={PAUSED_TEXT}>
+							{PAUSED_TEXT}
+						</div>
 					</li>
 				))}
-				{list.length > shown.length && (
-					<li className="inc">
-						<span className="inc-text">외 {list.length - shown.length}</span>
-					</li>
-				)}
 			</ol>
 		</section>
 	);

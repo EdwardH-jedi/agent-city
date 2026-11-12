@@ -539,8 +539,25 @@ tr.st-waiting td {
 .hq-empty {
 	padding: 6px 10px;
 }
+/* 15 §2: HQ 대기 never shrinks; 자리 비운 사이 gives way first, then 쉬는 중 (each keeps one line: its list's
+   min-height), then the map (TownMinimap.tsx). Lists drop whole lines (flex-wrap, below). */
 .hq-wait {
 	flex: none;
+	display: flex;
+	flex-direction: column;
+}
+.hq-paused {
+	flex: 0 1 auto;
+	/* the head strip (max(28 px, title + 9 px)), the box's border, one row */
+	min-height: calc(
+		max(28px, 14px * var(--ui) + 9px) +
+		2px +
+		26px *
+		var(--ui) *
+		1.35 +
+		16px
+	);
+	overflow: hidden;
 	display: flex;
 	flex-direction: column;
 }
@@ -566,11 +583,14 @@ tr.st-waiting td {
 	width: 100%;
 	flex: none;
 }
-.card {
-	border-left: 2px solid var(--b-line);
-	padding: 2px 0 2px 8px;
+/* HQ 대기 / 쉬는 중 rows: the original's two-line row (name + tag + time, then one dim line) */
+.card,
+.prow {
+	border-left: 2px solid transparent;
+	padding: 1px 0 1px 8px;
 	display: grid;
 	gap: 2px;
+	min-width: 0;
 }
 .card-folder {
 	border-left-color: var(--b-yellow);
@@ -582,8 +602,9 @@ tr.st-waiting td {
 	font-size: calc(13px * var(--ui));
 	font-weight: 700;
 	display: flex;
-	justify-content: space-between;
-	gap: 8px;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
 }
 .card-names {
 	min-width: 0;
@@ -593,29 +614,79 @@ tr.st-waiting td {
 }
 .card-wait {
 	flex: none;
+	margin-left: auto;
 	font-size: calc(11px * var(--ui));
 	font-weight: 400;
 	color: var(--b-muted);
 }
-.card-text {
+.card-text,
+.prow-text {
 	font-size: calc(12px * var(--ui));
 	color: var(--b-muted);
-	overflow-wrap: anywhere;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
-.card code {
-	font-size: calc(11px * var(--ui));
+.prow-text {
 	color: var(--b-dim);
-	overflow-wrap: anywhere;
+}
+/* a small bordered tag (original `.tui-tag` / `.m32-pill`) */
+.tag {
+	flex: none;
+	padding: 0 5px;
+	font-size: calc(10.5px * var(--ui));
+	font-weight: 400;
+	line-height: 1.5;
+	color: var(--b-muted);
+	border: 1px solid var(--b-edge);
+	border-radius: 3px;
+	white-space: nowrap;
+}
+.card-folder .tag-wait {
+	color: var(--b-yellow);
+	border-color: #8a6430;
+}
+.card-binder .tag-wait {
+	color: var(--b-red);
+	border-color: #8a3a33;
 }
 .hq-away {
-	flex: 1;
-	min-height: 0;
+	flex: 1 100 auto;
+	min-height: calc(
+		max(28px, 14px * var(--ui) + 9px) +
+		2px +
+		12px *
+		var(--ui) *
+		1.35 +
+		13px
+	);
+	overflow: hidden;
 	display: flex;
 	flex-direction: column;
 }
 .incidents {
 	flex: 1;
 	row-gap: 3px;
+}
+.hq-away .incidents {
+	min-height: calc(12px * var(--ui) * 1.35 + 13px);
+}
+/* the list starts with a date divider (`어제`): its one line is the divider and the first event */
+.hq-away .incidents.lead-day {
+	min-height: calc(23px * var(--ui) * 1.35 + 22px);
+}
+.hq-away:has(.lead-day) {
+	min-height: calc(
+		max(28px, 14px * var(--ui) + 9px) +
+		2px +
+		23px *
+		var(--ui) *
+		1.35 +
+		22px
+	);
+}
+.hq-paused .incidents {
+	min-height: calc(26px * var(--ui) * 1.35 + 16px);
 }
 /* §13.4: one dim line each, `17:03 docs T3 통과`, ellipsis when long */
 .inc {
@@ -1045,12 +1116,6 @@ tr.st-waiting td {
 .scene-town .hq,
 .scene-town .now {
 	background: var(--b-bg);
-}
-/* the 결재 block never shrinks; the blocks under it drop whole lines before anything is cut in half */
-.scene-town .hq > .hq-wait ~ .hq-wait {
-	flex: 0 1 auto;
-	min-height: 0;
-	overflow: hidden;
 }
 .scene-town .town-map {
 	display: flex;

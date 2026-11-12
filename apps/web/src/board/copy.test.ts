@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
 	codeShort,
+	elapsedKo,
 	eventPhrase,
 	eventShort,
+	hqTag,
 	STOP_PHRASES,
 	stopPhrase,
+	tagOfCode,
 	UNKNOWN_TEXT,
 } from "./copy.ts";
 
@@ -168,5 +171,42 @@ describe("short words for 자리 비운 사이 (§13.4)", () => {
 		expect(codeShort("DISPATCH_STOPPED")).toBe("중간에 멈춤");
 		expect(codeShort("SOMETHING_NEW")).toBeNull();
 		expect(codeShort(null)).toBeNull();
+	});
+});
+
+describe("HQ and project tags (15 §2: a code becomes a few Korean words)", () => {
+	test("every code the sentence table knows has a tag, and no tag holds a code", () => {
+		for (const code of Object.keys(STOP_PHRASES)) {
+			const tag = tagOfCode(code);
+			expect({ code, tag: typeof tag }).toEqual({ code, tag: "string" });
+			expect(tag).not.toMatch(/[A-Z]{2,}_/);
+		}
+	});
+	test("a waiting session's row says 입력 대기; known codes their words; the rest 멈춤 or 확인 필요", () => {
+		expect(
+			hqTag({ ids: ["session:claude:x"], code: null, carry: "folder" }),
+		).toBe("입력 대기");
+		expect(
+			hqTag({
+				ids: ["m:r:wf"],
+				code: "AWAITING_OWNER_INTEGRATION",
+				carry: "folder",
+			}),
+		).toBe("통합 대기");
+		expect(
+			hqTag({ ids: ["m:r:wf"], code: "SOMETHING_NEW", carry: "binder" }),
+		).toBe("멈춤");
+		expect(hqTag({ ids: ["m:r:wf"], code: null, carry: "folder" })).toBe(
+			"확인 필요",
+		);
+	});
+	test("elapsed: 방금 / N분 / N시간 / N일", () => {
+		const now = Date.parse("2026-11-12T12:00:00Z");
+		const ago = (ms: number) => new Date(now - ms).toISOString();
+		expect(elapsedKo(ago(20_000), now)).toBe("방금");
+		expect(elapsedKo(ago(12 * 60_000), now)).toBe("12분");
+		expect(elapsedKo(ago(6 * 3_600_000 + 5), now)).toBe("6시간");
+		expect(elapsedKo(ago(72 * 3_600_000), now)).toBe("3일");
+		expect(elapsedKo("nope", now)).toBe("");
 	});
 });

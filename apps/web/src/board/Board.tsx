@@ -16,7 +16,7 @@ import { TownMinimapSlot, TownView } from "../town/TownView.tsx";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
 import { burnInShift } from "./burnin.ts";
 import { DEMO_LABEL } from "./demo-flag.ts";
-import { Away, Hq } from "./Hq.tsx";
+import { Hq } from "./Hq.tsx";
 import { type BoardColumns, boardColumns, uiScaleOf } from "./layout.ts";
 import { toVillageModel, type VillageModel } from "./model.ts";
 import { Now } from "./Now.tsx";
@@ -228,7 +228,6 @@ export function BoardView({
 					model={model}
 					now={now}
 					top={town ? <TownMinimapSlot /> : null}
-					away={!town}
 					pixel={town}
 				/>
 				{town ? (
@@ -236,12 +235,7 @@ export function BoardView({
 				) : (
 					<CampusView model={model} now={now} />
 				)}
-				<Now
-					model={model}
-					now={now}
-					below={town ? <Away model={model} now={now} pixel /> : null}
-					pixel={town}
-				/>
+				<Now model={model} now={now} pixel={town} />
 			</div>
 			{error && <div className="board-error">{error}</div>}
 		</div>
