@@ -26,6 +26,7 @@ import {
 	patrolTimeAtS,
 	routeAt,
 } from "./patrol.ts";
+import { carryRig } from "./pipeline.ts";
 import { buildTownWorld } from "./world.ts";
 
 afterEach(() => setRenderWidth(384));
@@ -184,6 +185,31 @@ describe("the rig on the plaza stretch: no shimmer, no turn on a snap (A2 review
 			expect(Math.abs(turnBetween(rig.yawDeg, before))).toBeLessThan(0.5);
 		} finally {
 			world.dispose();
+		}
+	});
+});
+
+describe("a world rebuilt mid-plaza (a time-of-day or sign change) keeps the view (A2 review)", () => {
+	test("the new rig takes the old one's focus and frozen view", () => {
+		const a = buildTownWorld({ time: "day", lots: null });
+		const b = buildTownWorld({ time: "night", lots: null });
+		try {
+			const dt = 1 / 30;
+			let t = patrolTimeAtS(PLAZA_START_S) - 5;
+			followRig(a.rig, patrolPose(t), 9_999, 0);
+			const mid = patrolTimeAtS((PLAZA_START_S + PLAZA_END_S) / 2);
+			while (t < mid) {
+				t += dt;
+				followRig(a.rig, patrolPose(t), dt * 1000, dt);
+			}
+			expect(a.rig.mode).toBe("plaza");
+			const [x, z] = a.rig.focus;
+			carryRig({ x, z, yaw: a.rig.yawDeg, plaza: true }, b.rig);
+			followRig(b.rig, patrolPose(t + dt), dt * 1000, dt);
+			expect(Math.abs(turnBetween(b.rig.yawDeg, a.rig.yawDeg))).toBeLessThan(1);
+		} finally {
+			a.dispose();
+			b.dispose();
 		}
 	});
 });
