@@ -28,6 +28,7 @@ import type { LampInput } from "./engine/scene-ring.mjs";
 import type { Actor } from "./engine/sprites.mjs";
 import {
 	buildTownWorld,
+	type CameraShot,
 	type TownWorld,
 	type WorldSpec,
 	worldKey,
@@ -94,7 +95,7 @@ export interface TownPipeline {
 	setLamps(input: LampInput): void;
 	setLitWindows(lotId: string, n: number): void;
 	/** One frame: actors staged, world → target → integer blit. */
-	render(actors: readonly Actor[]): void;
+	render(actors: readonly Actor[], shot?: CameraShot | null): void;
 	dispose(): void;
 }
 
@@ -156,9 +157,9 @@ export function createTownPipeline(opts: {
 		return true;
 	}
 
-	function render(actors: readonly Actor[]): void {
+	function render(actors: readonly Actor[], shot?: CameraShot | null): void {
 		if (disposed) return;
-		world.stage(actors);
+		world.stage(actors, shot);
 		gl.setScissorTest(false);
 		gl.autoClear = true;
 		gl.setRenderTarget(rt.target);

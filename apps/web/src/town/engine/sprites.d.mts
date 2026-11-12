@@ -9,8 +9,11 @@ export interface Actor {
 	y?: number;
 	/** Atlas key, e.g. `roo|north|walk|2`. */
 	key: string;
-	lockedScale?: boolean;
+	/** true = fixed pixel size; agent-city: a number 0..1 mixes it with the world size. */
+	lockedScale?: boolean | number;
 	shadow?: boolean;
+	/** agent-city: what a runtime frame (frameFor) is drawn from. */
+	sprite?: unknown;
 }
 export interface ActorRow {
 	id: string;
@@ -28,5 +31,10 @@ export declare function createActorLayer(
 	scene: Scene,
 	atlas: SpriteAtlas,
 	tint: readonly [number, number, number] | null,
-	opts?: { playerPxPerTexel?: number; upright?: boolean; frameFor?: (a: Actor) => unknown },
+	opts?: {
+		playerPxPerTexel?: number;
+		upright?: boolean;
+		/** A frame for a key the atlas lacks: { texture, cx, cy } (pipeline.mjs agentFrame). */
+		frameFor?: (a: Actor) => unknown;
+	},
 ): ActorLayer;

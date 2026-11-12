@@ -58,3 +58,14 @@ export interface ArcTable {
 	lenAt(theta: number): number;
 }
 export declare function arcTable(offset: number): ArcTable;
+/** A lot's door: centre on the frontage, outward normal, tangent. */
+export declare function doorOf(lot: string | RingLot): {
+	readonly id: string;
+	readonly x: number;
+	readonly z: number;
+	readonly nx: number;
+	readonly nz: number;
+	readonly tx: number;
+	readonly tz: number;
+	readonly theta: number;
+};

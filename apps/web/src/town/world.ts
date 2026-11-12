@@ -4,7 +4,13 @@
 // lit windows, the lots carry the projects' signs and facades). The renderer and its targets outlive it
 // (pipeline.ts); lamps, the pylon and lit windows change in place.
 // No DOM, no GL: the resource test builds and disposes it in plain Bun.
-import { Color, type Scene } from "three";
+import {
+	Color,
+	PerspectiveCamera,
+	Quaternion,
+	type Scene,
+	Vector3,
+} from "three";
 import { horizonNdcY } from "./engine/camera-rig.mjs";
 import {
 	type BoardView,
@@ -29,7 +35,9 @@ import {
 	type ActorLayer,
 	createActorLayer,
 } from "./engine/sprites.mjs";
+import { TownArt } from "./engine/town-art.mjs";
 import { TownRooArtM2 } from "./engine/town-roo-art-m2.mjs";
+import { createLeadFrames, type LeadFrames } from "./lead-sprites.ts";
 import { lotsKey, type TownLot } from "./lots.ts";
 
 /** What the world is built from: the time of day and the ten lots (lots.ts buildLots; null = the original). */
@@ -58,9 +66,21 @@ export interface TownWorld {
 	setLamps(input: LampInput): void;
 	/** Repaints a lot's facade with n lit windows (no-op when unchanged). */
 	setLitWindows(lotId: string, n: number): void;
-	/** Camera transform + actor sprites for this frame (pipeline.mjs render(), before the GL passes). */
-	stage(actors: readonly Actor[]): void;
+	/** The leads' runtime frames (TownArt, made on demand). */
+	readonly leads: LeadFrames;
+	/**
+	 * Camera transform + actor sprites for this frame (pipeline.mjs render(), before the GL passes).
+	 * `shot` blends the orbit camera toward a fixed shot (0 = orbit, 1 = the shot).
+	 */
+	stage(actors: readonly Actor[], shot?: CameraShot | null): void;
 	dispose(): void;
+}
+
+/** A fixed camera: where it stands, what it looks at, and how far the orbit camera has blended to it. */
+export interface CameraShot {
+	position: { x: number; y: number; z: number };
+	lookAt: { x: number; y: number; z: number };
+	blend: number;
 }
 
 /** Same seed the original passes (none → 1). */
@@ -84,16 +104,32 @@ export function buildTownWorld(spec: WorldSpec): TownWorld {
 	const rig = createOrbitRig(preset, RING);
 	// S1 packs no townsfolk (doc 12 §4: no decorative people); the leads arrive in S2/S3.
 	const atlas = buildSpriteAtlas({ rooArt: TownRooArtM2, npcs: [] });
+	const leads = createLeadFrames(TownArt);
 	const actors = createActorLayer(ring.scene, atlas, preset.actorTint, {
 		playerPxPerTexel: preset.playerPxPerTexel,
 		upright: preset.upright,
+		frameFor: (a) => leads.frameFor(a),
 	});
+	const shotCam = new PerspectiveCamera();
+	const q0 = new Quaternion();
+	const p1 = new Vector3();
 	const skyColor = new Color(preset.backdrop ?? preset.sky);
 	let disposed = false;
 
-	function stage(list: readonly Actor[]): void {
+	function stage(list: readonly Actor[], shot?: CameraShot | null): void {
 		const snapped = rig.apply();
-		ring.skyline.follow(rig.camera);
+		const cam = rig.camera;
+		const b = shot ? Math.max(0, Math.min(1, shot.blend)) : 0;
+		if (shot && b > 0) {
+			shotCam.position.set(shot.position.x, shot.position.y, shot.position.z);
+			shotCam.lookAt(shot.lookAt.x, shot.lookAt.y, shot.lookAt.z);
+			q0.copy(cam.quaternion);
+			p1.set(shot.position.x, shot.position.y, shot.position.z);
+			cam.position.lerp(p1, b);
+			cam.quaternion.slerpQuaternions(q0, shotCam.quaternion, b);
+			cam.updateMatrixWorld(true);
+		}
+		ring.skyline.follow(cam);
 		// pipeline.mjs (M2.9.1): the guide the camera is locked on is drawn at the snapped focus, so it
 		// holds one screen pixel while the world scrolls in whole-pixel steps.
 		const f = rig.focus;
@@ -116,6 +152,7 @@ export function buildTownWorld(spec: WorldSpec): TownWorld {
 		board: made,
 		atlas,
 		actors,
+		leads,
 		skyColor,
 		setBoard(view) {
 			if (disposed) return;
@@ -146,6 +183,7 @@ export function buildTownWorld(spec: WorldSpec): TownWorld {
 			disposed = true;
 			// pipeline.mjs dispose order: actors, pylon, world
 			actors.dispose();
+			leads.dispose();
 			made.dispose();
 			ring.dispose();
 		},

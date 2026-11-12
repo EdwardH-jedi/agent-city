@@ -23,6 +23,10 @@ export interface OrbitRig {
 	readonly mode: "orbit" | "plaza";
 	readonly dir: 1 | -1;
 }
+/** Signed shortest turn from a to b in degrees, in (-180, 180]. */
+export declare function turnBetween(a: number, b: number): number;
+/** Yaw (degrees, 0 = north / -z) of a ground direction. */
+export declare function yawOfDir(dx: number, dz: number): number;
 export declare const TURN_RATE_DEG: number;
 export declare const TELEPORT_U: number;
 export declare function createOrbitRig(

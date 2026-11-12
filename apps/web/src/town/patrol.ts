@@ -40,6 +40,14 @@ export function patrolPose(t: number): PatrolPose {
 	return { x: p.x, z: p.z, dir: [tan.x, tan.z], walked };
 }
 
+/** Patrol time (seconds, 0 ≤ t < LAP_S) at which the patrol passes the centre-line point at θ. */
+export function patrolTimeAt(theta: number): number {
+	const d =
+		(((CENTRE.lenAt(theta) - START_S) % CENTRE.length) + CENTRE.length) %
+		CENTRE.length;
+	return d / PATROL_SPEED;
+}
+
 /** World → camera frame (right, down-screen); yaw in radians, camera-rig convention (ring-world.mjs). */
 export function worldToView(
 	wx: number,

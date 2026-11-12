@@ -28,3 +28,7 @@ export declare function buildSpriteAtlas(opts: {
 	npcs?: readonly AtlasNpc[];
 }): SpriteAtlas;
 export declare const rooKey: (direction: string, action: string, frame: number) => string;
+/** TownArt display frame at which each phase of an action starts (walk 0/8/16/24, idle 0/168). */
+export declare function phaseStartFrames(art: unknown, action: string): number[];
+/** Hue-rotates clothing and hair (keeps outlines, skin and greys); returns a new array. */
+export declare function recolorRGBA(rgba: Uint8Array | Uint8ClampedArray, deg: number): Uint8Array;

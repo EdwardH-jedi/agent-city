@@ -886,6 +886,25 @@ tr.st-waiting td {
 	display: block;
 	image-rendering: pixelated;
 }
+/* the one bubble at the HQ door, over the top of the town's stage (newest report) */
+.town-bubble {
+	position: absolute;
+	top: 16px;
+	left: 50%;
+	transform: translateX(-50%);
+	max-width: 80%;
+	margin: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	padding: 6px 16px;
+	border: 2px solid var(--b-fg);
+	border-radius: 14px;
+	background: #0e1013e6;
+	color: var(--b-fg);
+	font-size: 24px;
+	pointer-events: none;
+}
 /* the town's minimap at the top of the HQ column (`?scene=town`; restyled in S4) */
 .town-map {
 	flex: none;

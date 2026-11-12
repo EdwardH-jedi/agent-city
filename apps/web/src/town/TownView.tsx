@@ -105,6 +105,18 @@ function SceneHost({
 	);
 }
 
+/** The one bubble at the HQ door (the newest report), above the stage while the town runs. Words, so not aria-hidden. */
+function DoorBubble({ model }: { model: VillageModel }) {
+	const up = useSyncExternalStore(subscribeUp, () => sceneUp);
+	const door = useMemo(() => toCampusModel(model).door, [model]);
+	if (!up || !door) return null;
+	return (
+		<p className="town-bubble">
+			<b>{door.label}</b> {door.text}
+		</p>
+	);
+}
+
 export function TownView({ model, now }: { model: VillageModel; now: number }) {
 	const [gl, setGl] = useState(webglAvailable);
 	const fallBack = useMemo(() => () => setGl(false), []);
@@ -117,6 +129,7 @@ export function TownView({ model, now }: { model: VillageModel; now: number }) {
 			aria-label="프로젝트 마을"
 		>
 			<SceneHost model={model} time={time} onUnavailable={fallBack} />
+			<DoorBubble model={model} />
 			{model.village.folded > 0 && (
 				<p className="quiet campus-folded">조용함 {model.village.folded}곳</p>
 			)}

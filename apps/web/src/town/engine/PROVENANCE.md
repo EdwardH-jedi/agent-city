@@ -101,6 +101,14 @@ TownRooControlsM2, six decorative townsfolk, the `d` key; replaced by `../patrol
    - `minimap.d.mts` declares only the pure model / drawing functions (`ringModel`, `fitTransform`, `drawBase`,
      `guideTriangle`); `minimapSection` stays undeclared and unimported (guard in scripts/no-run-actions.test.ts).
 
+5. **S3 (choreography)** — `sprites.mjs` `createActorLayer`, 2 places, marked `agent-city:`:
+   - `lockedScale` may be a number 0..1: the sprite's scale mixes the locked pixel size (1) with the world size
+     (0), so the kangaroo changes size continuously while the camera blends between following it and the HQ shot
+     (`true` / falsy behave as before).
+   - An actor no longer listed in `sync()` is removed from the scene and its material and atlas-texture clone
+     are disposed (the original hid it and kept it for reuse). On an always-on board actors come and go with
+     every visit; hiding would grow GPU resources without bound. Shared shadow geometry / material untouched.
+
 ## Re-implemented in TypeScript (outside engine/)
 
 - `../pipeline.ts` — `createPipelineTargets` (without the door-fade quad), the ring branch of
@@ -118,6 +126,21 @@ TownRooControlsM2, six decorative townsfolk, the `d` key; replaced by `../patrol
 - `../stage.ts` — `scene-switch.mjs` `renderRing`'s frame order: `rig.setYaw(rig.yawFor(p))`,
   `rig.update(dt, x, z)`, facing from `rig.yawDeg`, `setActors`, `render`.
 
+- `../choreo.ts` + `../lead-sprites.ts` (S3, doc 12 §5) — no engine edit. The leads are TownArt people drawn
+  through `createActorLayer`'s runtime-frame path (`frameFor`, as pipeline.mjs's `agentFrame`), one 32 × 40
+  texture per (look, facing, action, phase), made on demand and disposed with the world; the walk phase
+  every 0.45 units walked and the idle blink are ring-world.mjs's townsfolk rules. TownArt has no
+  walking-while-carrying pose, so a 결재 lead's folder / binder is a coded 5 × 7 pixel block painted into its
+  frame. Declarations added: `doorOf` (ring-layout), `yawOfDir` (orbit-camera), `phaseStartFrames` /
+  `recolorRGBA` (sprite-atlas), `getAnimation` (town-art), `Actor.sprite` (sprites), `turnBetween`
+  (orbit-camera).
+  Time rule: a lead's head start is wall clock − `created_at` (clamped to 60 s, campus/visits.ts), so a reload
+  lands it where it was; its walk then runs on the scene clock (wall minus still stretches), so reports
+  stopping freeze it and it resumes from the same spot. The kangaroo is a state machine stepped on the scene
+  clock (patrol → to-hq → at-hq → back → patrol, each from where it is); its patrol phase is scene time plus a
+  shift set when it rejoins the line, so after a reload it starts on the plain scene-time patrol (or at the HQ
+  if a 결재 lead is already there).
+
 ## Re-check against the original
 
 ```sh
@@ -126,5 +149,5 @@ for f in $E/*.mjs; do n=$(basename $f); case $n in town-roo-art-m2.mjs) s=$O/app
   diff <(sed "s#'../vendor/three.module.js'#'three'#" $s) $f >/dev/null || echo "differs: $n"; done
 ```
 
-`town-roo-art-m2.mjs`, `town-art.mjs` (item 2) and, since S2, `facade-gen.mjs`, `alley-meshes.mjs`, `scene-ring.mjs`
-(item 4) should print.
+`town-roo-art-m2.mjs`, `town-art.mjs` (item 2), `facade-gen.mjs`, `alley-meshes.mjs`, `scene-ring.mjs` (item 4) and
+`sprites.mjs` (item 5) should print.

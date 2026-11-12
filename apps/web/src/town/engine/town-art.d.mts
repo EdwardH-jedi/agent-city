@@ -10,5 +10,6 @@ export interface TownArtApi {
 		readonly pivotY: number;
 	};
 	listStyles(): unknown;
+	getAnimation(action: string): { timeline: { phase: number; frames: number }[] };
 }
 export declare const TownArt: TownArtApi;

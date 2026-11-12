@@ -71,7 +71,26 @@ const kangaroo = {
 
 function everything(world: TownWorld) {
 	world.rig.update(0, kangaroo.x, kangaroo.z);
-	world.stage([kangaroo]); // the actor layer makes its sprite (material + atlas map clone) on first sync
+	// the actor layer makes its sprites on first sync: the kangaroo (atlas map clone) and a lead (a
+	// runtime TownArt frame, owned by the world's lead frames)
+	world.stage([
+		kangaroo,
+		{
+			id: "lead:v1",
+			kind: "npc",
+			x: 2,
+			z: 16,
+			key: "lead|o/alpha|folder|south|walk|0",
+			shadow: true,
+			sprite: {
+				repo_id: "o/alpha",
+				carry: "folder",
+				facing: "south",
+				action: "walk",
+				phase: 0,
+			},
+		},
+	]);
 	const targets = createPipelineTargets();
 	const r = resourcesOf([world.scene, targets.blitScene]);
 	const bg = world.scene.background as Texture | null;
@@ -89,7 +108,8 @@ describe("ring town disposal (real three objects, no renderer)", () => {
 			const world = buildTownWorld({ time, lots: LOTS3 });
 			for (const l of LOTS3) if (l.repo_id) world.setLitWindows(l.id, 1); // repaint in place
 			const { geos, mats, texs, targets } = everything(world);
-			expect(world.actors.sprites.size).toBe(1);
+			expect(world.actors.sprites.size).toBe(2);
+			expect(world.leads.size).toBe(1);
 			expect(geos.size).toBeGreaterThan(100);
 			expect(mats.size).toBeGreaterThan(100);
 			expect(texs.size).toBeGreaterThan(50);
@@ -153,6 +173,50 @@ describe("ring town disposal (real three objects, no renderer)", () => {
 			targets.dispose();
 			expect(live.size).toBe(0);
 		}
+	});
+});
+
+describe("actors that come and go", () => {
+	test("50 distinct lead ids, then none: every sprite, material and texture clone released; frames kept per look", () => {
+		const world = buildTownWorld({ time: "day", lots: LOTS3 });
+		const made: { dispose: number }[] = [];
+		const lead = (i: number) => ({
+			id: `lead:v${i}`,
+			kind: "npc" as const,
+			x: 2,
+			z: 16,
+			key: "lead|o/alpha|-|south|idle|0",
+			shadow: true,
+			sprite: {
+				repo_id: "o/alpha",
+				carry: null,
+				facing: "south" as const,
+				action: "idle" as const,
+				phase: 0,
+			},
+		});
+		const childrenBefore = world.scene.children.length;
+		for (let i = 0; i < 50; i += 1) {
+			world.stage([lead(i)]);
+			for (const s of world.actors.sprites.values()) {
+				const sp = s.sprite as unknown as {
+					material: { addEventListener(t: string, f: () => void): void };
+				};
+				const rec = { dispose: 0 };
+				sp.material.addEventListener("dispose", () => {
+					rec.dispose += 1;
+				});
+				made.push(rec);
+			}
+		}
+		expect(world.actors.sprites.size).toBe(1);
+		world.stage([]);
+		expect(world.actors.sprites.size).toBe(0);
+		expect(world.scene.children.length).toBe(childrenBefore);
+		// every material made for a lead was released exactly once (listeners stacked on the live one count once each)
+		expect(made.every((r) => r.dispose >= 1)).toBe(true);
+		expect(world.leads.size).toBe(1); // one look, one frame
+		world.dispose();
 	});
 });
 

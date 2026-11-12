@@ -126,8 +126,10 @@ export function createActorLayer(scene, atlas, tint, opts) {
       s.sprite.position.copy(snapped);
       s.sprite.visible = true;
       const depth = -tmp.clone().applyMatrix4(camera.matrixWorldInverse).z;
-      if (a.lockedScale) {
-        const k = playerPx * worldPerPixel(camera, depth);
+      // agent-city: lockedScale may be a number 0..1 that mixes the locked pixel size into the world size
+      const lock = a.lockedScale === true ? 1 : Math.max(0, Math.min(1, +a.lockedScale || 0));
+      if (lock) {
+        const k = lock * playerPx * worldPerPixel(camera, depth) + (1 - lock) / 16;
         s.sprite.scale.set(CELL_W * k, CELL_H * k, 1);
       } else {
         s.sprite.scale.set(CELL_W / 16, CELL_H / 16, 1);   // 1 world unit = 16 texels
@@ -153,7 +155,9 @@ export function createActorLayer(scene, atlas, tint, opts) {
       const px = toPixels(camera, snapped);
       rows.push({ id: a.id, key: a.key, px: px[0], py: px[1], depth, heightPx: screenH / worldPerPixel(camera, depth), shadow: !!a.shadow });
     }
-    sprites.forEach((s, id) => { if (!live.has(id)) { s.sprite.visible = false; if (s.shadow) s.shadow.visible = false; } });
+    // agent-city: an actor no longer listed is removed and released (was: hidden and kept), so ids that come and go
+    // (one per visit on an always-on board) never accumulate sprites, materials or texture clones.
+    sprites.forEach((s, id) => { if (!live.has(id)) { scene.remove(s.sprite); if (s.shadow) scene.remove(s.shadow); s.material.dispose(); s.map.dispose(); sprites.delete(id); } });
     return rows;
   }
   function dispose() {
