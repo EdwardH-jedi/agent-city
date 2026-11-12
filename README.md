@@ -264,8 +264,10 @@ has no GitHub Actions workflow; run the checks locally for the change under revi
 headless Chrome through the `agent-browser` CLI and reads numbers off the page: `ab1` (default)
 checks the column rule, the panel text scale, scroll, the 자리 비운 사이 rows, HQ rows, the SESSIONS caps
 (no absolute path in a tail, no scroll in the right panel), the demo label, console errors and the `D`
-detail round trip, at 1920×1080 and 1366×768, live and `?demo=1` (add `?ui=1.3` to the URL to check
-the larger text); `ab2`
+detail round trip (the detail screen: its four panels, text scale, no sideways scroll, no user path in
+its text or tooltips, a picked session's terminal — the one click it makes), at 1920×1080 and
+1366×768, live and `?demo=1`, and the `?case=busy` / `?case=calm` demo cases at 1920×1080 (add
+`?ui=1.3` to the URL to check the larger text); `ab2`
 watches the live board for 90 s and checks that it sends only GETs to loopback and opens one
 `/ws`; `ab3` repeats the 1920×1080 cases with WebGL off (the 2D tiles fallback). It is read-only:
 loopback only, no browser profile, no AI features. The scripts are in `scripts/board-check/` and

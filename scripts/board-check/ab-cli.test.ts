@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location('ab_cli', ${JSON.stringify(join(HE
 m = importlib.util.module_from_spec(spec)
 try:
     spec.loader.exec_module(m)
-    print(json.dumps({'ok': True, 'plain': m.board_url(), 'demo': m.board_url(demo=True)}))
+    print(json.dumps({'ok': True, 'plain': m.board_url(), 'demo': m.board_url(demo=True), 'busy': m.board_url(demo=True, case='busy')}))
 except ValueError as e:
     print(json.dumps({'ok': False, 'error': str(e)}))
 `;
@@ -28,6 +28,7 @@ function probe(url: string | undefined) {
 		ok: boolean;
 		plain?: string;
 		demo?: string;
+		busy?: string;
 		error?: string;
 	};
 }
@@ -39,6 +40,13 @@ describe.skipIf(!python)("AGENTCITY_BOARD_URL", () => {
 		const town = probe("http://127.0.0.1:5181/?scene=town");
 		expect(town.plain).toBe("http://127.0.0.1:5181/?scene=town");
 		expect(town.demo).toBe("http://127.0.0.1:5181/?scene=town&demo=1");
+		// a demo case (16 A4-2) is added to the demo URL and replaces one the base URL carries
+		expect(town.busy).toBe(
+			"http://127.0.0.1:5181/?scene=town&demo=1&case=busy",
+		);
+		expect(probe("http://127.0.0.1:5181/?case=calm").busy).toBe(
+			"http://127.0.0.1:5181/?demo=1&case=busy",
+		);
 		// an existing demo is replaced, not doubled
 		expect(probe("http://127.0.0.1:5181/?demo=1&scene=town").plain).toBe(
 			"http://127.0.0.1:5181/?scene=town",

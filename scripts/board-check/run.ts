@@ -1,9 +1,11 @@
 // `bun run check:board [ab1|ab2|ab3|all]` — runs the agent-browser screen checks against
 // http://127.0.0.1:4317/ (or AGENTCITY_BOARD_URL, loopback only; a query such as ?scene=campus is kept
-// and the cases add their own, e.g. demo=1). Read-only: GETs and the D key only; captures go to
+// and the cases add their own, e.g. demo=1). Read-only: GETs, the D key and, on the detail screen, a click
+// on a session row (it filters events already held); captures go to
 // ~/Documents/AgentCityCaptures/ab/ (outside the repo). Needs the `agent-browser` CLI on PATH;
 // without it the check is skipped (exit 0) and says so. Nothing is installed by this script.
-//   ab1  board at 1920×1080 and 1366×768, live and demo, D round trip   (default)
+//   ab1  board at 1920×1080 and 1366×768, live and demo, the busy and calm demo cases at 1920×1080, D
+//        round trip with the detail screen's measures (default)
 //   ab2  90 s live observation (needs a built page: vite preview or the hub, not the dev server): GET-only, loopback-only, WebSocket lifecycle
 //   ab3  ab1's 1920×1080 cases with WebGL disabled (2D tiles fallback)
 //   all  ab1, ab2, ab3 in turn
