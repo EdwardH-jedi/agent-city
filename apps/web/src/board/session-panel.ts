@@ -124,24 +124,43 @@ export function cwdLookup(
  * name the redaction would touch; at most 40 characters. Null: the group stays 미지정. The folder itself is
  * never drawn.
  */
+/** A control character or one that turns the text's direction (it could hide or reorder the label). */
+const oddChar = (ch: string): boolean => {
+	const c = ch.codePointAt(0) ?? 0;
+	return (
+		c < 0x20 ||
+		c === 0x7f ||
+		c === 0x200e ||
+		c === 0x200f ||
+		(c >= 0x202a && c <= 0x202e) ||
+		(c >= 0x2066 && c <= 0x2069)
+	);
+};
+
 export function folderLabel(cwd: string | null): string | null {
 	if (!cwd) return null;
 	const parts = cwd.split(/[\\/]+/).filter(Boolean);
-	const first = (parts[0] ?? "").toLowerCase();
-	const home =
-		first === "users" || first === "home"
-			? 2
-			: /^[a-z]:$/.test(first) && (parts[1] ?? "").toLowerCase() === "users"
-				? 3
-				: first.startsWith("~")
-					? 1
-					: 0;
+	// `..` could climb back to a home folder; a home folder anywhere (`/System/Volumes/Data/Users/x`,
+	// `/mnt/c/Users/x`, `/var/home/x`, `\\server\Users\x`) or `~`: no name from it or above it
+	if (parts.some((p) => p === "..")) return null;
+	const lower = parts.map((p) => p.toLowerCase());
+	let home = lower[0]?.startsWith("~") ? 1 : 0;
+	lower.forEach((p, i) => {
+		if (p === "users" || p === "home") home = Math.max(home, i + 2);
+	});
 	if (parts.length <= home) return null;
 	const name = parts[parts.length - 1] ?? "";
-	if (!name || name.startsWith("~") || name === "." || name === "..")
+	// no blank, control or direction-changing characters, no `~`, no `.`
+	if (
+		!name.trim() ||
+		name.startsWith("~") ||
+		name === "." ||
+		[...name].some(oddChar)
+	)
 		return null;
 	if (redact(name) !== name) return null;
-	return name.length > 40 ? `${name.slice(0, 39)}…` : name;
+	const chars = [...name];
+	return chars.length > 40 ? `${chars.slice(0, 39).join("")}…` : name;
 }
 
 /** Order in a group and what folds last (lower stays): a yellow wait, working, an old wait, resting. */
@@ -216,14 +235,14 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 	const { sessions, tails, model, now, ui } = input;
 	const counts = { active: 0, waiting: 0, idle: 0 };
 	const drafts = new Map<string, Draft>();
-	const draft = (project: string, label?: string): Draft => {
+	const draft = (project: string): Draft => {
 		let d = drafts.get(project);
 		if (!d) {
 			d = {
 				group: {
 					project_id: project,
-					label: label ?? projectLabel(project),
-					...(project === UNASSIGNED || label ? { unassigned: true } : {}),
+					label: projectLabel(project),
+					...(project === UNASSIGNED ? { unassigned: true } : {}),
 					tag: null,
 					phase: null,
 					rows: [],
@@ -241,6 +260,8 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 		if (iso > d.last) d.last = iso;
 	};
 
+	// the repo-less sessions' folder names, newest last activity first (16 A4-3)
+	const folders = new Map<string, number>();
 	// visible sessions (the same rule the town's crew uses: visibleSessions)
 	const branchOf = new Map<string, { at: string; branch: string }>();
 	for (const {
@@ -252,11 +273,17 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 		if (resting) counts.idle++;
 		else if (status === "active") counts.active++;
 		else if (!waitedSince) counts.waiting++;
-		// no repo: one group per folder, named by the folder's last name (dim), or 미지정
-		const folder = s.repo_id ? null : folderLabel(s.cwd);
-		const project =
-			s.repo_id ?? (folder ? `${UNASSIGNED}:${folder}` : UNASSIGNED);
-		const d = draft(project, folder ?? undefined);
+		// no repo: the one 미지정 group (one of GROUP_CAP, as before), named after its sessions' folders (dim)
+		const project = s.repo_id ?? UNASSIGNED;
+		const d = draft(project);
+		if (!s.repo_id) {
+			const folder = folderLabel(s.cwd);
+			if (folder)
+				folders.set(
+					folder,
+					Math.max(folders.get(folder) ?? 0, Date.parse(s.last_event_at) || 0),
+				);
+		}
 		const tail = tails.get(s.id);
 		d.group.rows.push({
 			id: s.id,
@@ -274,6 +301,17 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 		const b = branchOf.get(project);
 		if (s.branch && (!b || s.last_event_at > b.at))
 			branchOf.set(project, { at: s.last_event_at, branch: s.branch });
+	}
+
+	const unassigned = drafts.get(UNASSIGNED);
+	if (unassigned && folders.size > 0) {
+		const names = [...folders.entries()]
+			.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+			.map(([n]) => n);
+		unassigned.group.label =
+			names.length > 1
+				? `${names[0]} 외 ${names.length - 1}`
+				: (names[0] as string);
 	}
 
 	// runs: running (phase), paused, waiting for the owner (strongest last, so it wins the tag)

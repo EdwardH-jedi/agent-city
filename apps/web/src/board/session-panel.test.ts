@@ -424,7 +424,7 @@ describe("the demo's cases (?demo=1&case=…)", () => {
 });
 
 describe("repo-less sessions by folder (16 A4-3)", () => {
-	test("one dim group per folder, named by its last name; no folder or a home folder: 미지정", () => {
+	test("one dim 미지정 group (one of GROUP_CAP), named after its folders, newest first", () => {
 		const p = panel([
 			sess(null, "active", 1_000, { cwd: "/Users/demo/work/scratchpad" }),
 			sess(null, "active", 2_000, { cwd: "/Users/demo/work/scratchpad" }),
@@ -433,20 +433,35 @@ describe("repo-less sessions by folder (16 A4-3)", () => {
 			sess(null, "active", 5_000, { cwd: null }),
 			sess("o/a", "active", 6_000, { cwd: "/Users/demo/work/a" }),
 		]);
-		const groups = p.groups.map((g) => [
-			g.label,
-			g.unassigned ?? false,
-			g.rows.length,
-		]);
-		expect(groups).toContainEqual(["scratchpad", true, 2]);
-		expect(groups).toContainEqual(["try-out", true, 1]);
-		expect(groups).toContainEqual(["미지정", true, 2]);
-		expect(groups).toContainEqual(["a", false, 1]);
-		// the user's name never becomes a label
-		expect(p.groups.some((g) => g.label === "demo")).toBe(false);
+		const groups = p.groups.map((g) => [g.label, g.unassigned ?? false]);
+		expect(groups).toContainEqual(["scratchpad 외 1", true]);
+		expect(groups).toContainEqual(["a", false]);
+		expect(p.groups).toHaveLength(2);
+		expect(p.groups.some((g) => g.label.includes("demo"))).toBe(false);
+		// one folder only: just its name; no usable folder: 미지정
+		expect(
+			panel([sess(null, "active", 1_000, { cwd: "/tmp/one" })]).groups[0]
+				?.label,
+		).toBe("one");
+		expect(
+			panel([sess(null, "active", 1_000, { cwd: "/Users/demo" })]).groups[0]
+				?.label,
+		).toBe("미지정");
 	});
 
-	test("folderLabel: never a home folder or above, never a secret-looking name, at most 40 characters", () => {
+	test("many repo-less folders never push a project out (review A4 P2)", () => {
+		const list = [
+			sess("o/a", "active", 60_000),
+			...Array.from({ length: 8 }, (_, i) =>
+				sess(null, "active", 1_000, { cwd: `/tmp/scratch${i}` }),
+			),
+		];
+		const p = panel(list);
+		expect(p.groups.map((g) => g.label)).toContain("a");
+		expect(p.groups.filter((g) => g.unassigned)).toHaveLength(1);
+	});
+
+	test("folderLabel: never a home folder or above (anywhere in the path), never odd characters", () => {
 		expect(folderLabel("/Users/demo/work/orchard")).toBe("orchard");
 		expect(folderLabel("/Users/demo/work/orchard/")).toBe("orchard");
 		expect(folderLabel("C:\\Users\\demo\\proj")).toBe("proj");
@@ -455,9 +470,20 @@ describe("repo-less sessions by folder (16 A4-3)", () => {
 			"/Users/demo/",
 			"/home/demo",
 			"C:\\Users\\demo",
+			"/System/Volumes/Data/Users/demo",
+			"/Volumes/disk/Users/demo",
+			"/mnt/c/Users/demo",
+			"/cygdrive/c/Users/demo",
+			"/var/home/demo",
+			"/export/home/demo",
+			"\\\\server\\Users\\demo",
+			"/Users/demo/../other",
 			"~",
 			"~demo",
 			"/",
+			"/tmp/ ",
+			"/tmp/a\u202eb",
+			"/tmp/a\u0000b",
 			"",
 			null,
 		])
@@ -465,5 +491,9 @@ describe("repo-less sessions by folder (16 A4-3)", () => {
 		const fake = ["ghp_", "a".repeat(36)].join("");
 		expect(folderLabel(`/tmp/${fake}`)).toBeNull();
 		expect(folderLabel(`/tmp/${"x".repeat(60)}`)?.length).toBe(40);
+		// cut by characters, never half an emoji
+		const cut = folderLabel(`/tmp/${"👍".repeat(50)}`) ?? "";
+		expect([...cut]).toHaveLength(40);
+		expect(cut.endsWith("👍…")).toBe(true);
 	});
 });

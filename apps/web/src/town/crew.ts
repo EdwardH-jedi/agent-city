@@ -43,7 +43,7 @@ export function familyOf(
 ): string | null {
 	if (provider === "codex") return "codex";
 	// the family word anywhere (`claude-opus-5-5`, and older ids like `claude-3-5-sonnet-20241022`)
-	const m = /(?:^|[-_ ])(opus|sonnet|haiku|fable)(?:$|[-_ ])/.exec(
+	const m = /(?:^|[^a-z])(opus|sonnet|haiku|fable)(?:$|[^a-z])/.exec(
 		(model ?? "").toLowerCase().slice(0, 128),
 	);
 	const f = m?.[1] ?? "";

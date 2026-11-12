@@ -195,6 +195,9 @@ describe("looks and tags", () => {
 		expect(familyOf("claude", "claude-3-5-sonnet-20241022")).toBe("sonnet");
 		expect(familyOf("claude", "opus")).toBe("opus");
 		expect(familyOf("claude", "claude-opusx-1")).toBeNull();
+		expect(familyOf("claude", "opus[1m]")).toBe("opus");
+		expect(familyOf("claude", "sonnet:latest")).toBe("sonnet");
+		expect(familyOf("claude", "claude-opus.5")).toBe("opus");
 		expect(familyOf("claude", "gpt-x")).toBeNull();
 		expect(familyOf("claude", null)).toBeNull();
 		expect(familyOf("codex", "gpt-6-astra")).toBe("codex");
