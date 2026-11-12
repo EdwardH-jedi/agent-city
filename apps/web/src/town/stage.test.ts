@@ -200,7 +200,16 @@ describe("town stage start", () => {
 
 describe("the HQ shot's five minutes count from the 결재 lead's real arrival", () => {
 	// a 결재 visitor that began `ageMs` ago: does the first frame show the HQ shot (blend 1) or the patrol (0)?
-	function firstBlend(ageMs: number): number {
+	/**
+	 * A 결재 visitor that began `ageMs` ago: the blend of the first frame (1 = HQ shot, 0 = patrol), then,
+	 * if `laterMs` is given, of a frame after the wall clock moved on that far and a new model (the same
+	 * visitor) came in.
+	 */
+	function blendsOf(ageMs: number, laterMs?: number): number[] {
+		const realNow = Date.now;
+		const t0 = realNow();
+		let wall = t0;
+		Date.now = () => wall;
 		const dom = fakeDom();
 		let frame: ((ts: number) => void) | null = null;
 		stubGlobal("requestAnimationFrame", (f: (ts: number) => void) => {
@@ -227,7 +236,7 @@ describe("the HQ shot's five minutes count from the 결재 lead's real arrival",
 					kind: "sign",
 					carry: "folder",
 					repo_id: "o/a",
-					created_at: new Date(Date.now() - ageMs).toISOString(),
+					created_at: new Date(t0 - ageMs).toISOString(),
 				},
 			],
 		};
@@ -251,15 +260,34 @@ describe("the HQ shot's five minutes count from the 결재 lead's real arrival",
 					}) as unknown as TownPipeline,
 			},
 		);
-		(frame as ((ts: number) => void) | null)?.(1000);
-		stage.dispose();
-		world.dispose();
-		return blends[0] ?? Number.NaN;
+		try {
+			(frame as ((ts: number) => void) | null)?.(1000);
+			if (laterMs !== undefined) {
+				wall = t0 + laterMs;
+				stage.update({
+					model: { ...m, visitors: [...m.visitors] },
+					reducedMotion: false,
+					time: "day",
+				});
+				(frame as ((ts: number) => void) | null)?.(1000 + laterMs);
+			}
+		} finally {
+			Date.now = realNow;
+			stage.dispose();
+			world.dispose();
+		}
+		return blends;
 	}
+	const firstBlend = (ageMs: number) => blendsOf(ageMs)[0] ?? Number.NaN;
 
 	test("arrived 2 minutes ago: the HQ shot; 2 hours ago: the patrol (the lead still stands at the door)", () => {
 		expect(firstBlend(2 * 60_000)).toBe(1);
 		expect(firstBlend(2 * 3600_000)).toBe(0);
 		expect(firstBlend(HQ_HOLD_MS + 60_000)).toBe(0);
+	});
+
+	test("a later model does not re-measure the visit's age: 4 min old, 50 s later still the HQ shot", () => {
+		// re-measured, the lead would count as having arrived 4 min 50 s ago and the stay would be over
+		expect(blendsOf(4 * 60_000, 50_000)).toEqual([1, 1]);
 	});
 });

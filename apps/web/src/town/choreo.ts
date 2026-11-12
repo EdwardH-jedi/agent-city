@@ -409,6 +409,11 @@ export interface KangarooInput {
 	 * Absent → 0.
 	 */
 	lateMsOf?(v: Visit): number;
+	/**
+	 * Scene time the visit became a 결재 when it did so in place (a run's 보고 lead turning into its 결재
+	 * lead keeps the visit id, `seen_at` and head start). Absent → it was one from the start.
+	 */
+	signedAtOf?(v: Visit): number;
 	reducedMotion: boolean;
 }
 
@@ -416,12 +421,25 @@ export interface KangarooInput {
 export const arrivesAt = (v: Visit, walkMs: number): number =>
 	v.seen_at + walkMs - v.head_start_ms;
 
-/** Scene time the kangaroo's stay at the HQ for this visit is over: its real arrival + HQ_HOLD_MS. */
-export const holdEndsAt = (v: Visit, walkMs: number, lateMs: number): number =>
-	arrivesAt(v, walkMs) - Math.max(0, lateMs) + HQ_HOLD_MS;
+/**
+ * Scene time the kangaroo's stay at the HQ for this visit is over: HQ_HOLD_MS after the lead really
+ * arrived — or after the visit became a 결재, if that was later.
+ */
+export const holdEndsAt = (
+	v: Visit,
+	walkMs: number,
+	lateMs: number,
+	signedAt = Number.NEGATIVE_INFINITY,
+): number =>
+	Math.max(arrivesAt(v, walkMs) - Math.max(0, lateMs), signedAt) + HQ_HOLD_MS;
 
 const holdEnd = (v: Visit, input: KangarooInput): number =>
-	holdEndsAt(v, input.walkMsOf(v), input.lateMsOf?.(v) ?? 0);
+	holdEndsAt(
+		v,
+		input.walkMsOf(v),
+		input.lateMsOf?.(v) ?? 0,
+		input.signedAtOf?.(v),
+	);
 
 const walkMs = (p: Path) => (p.length / ROO_SPEED) * 1000;
 
@@ -561,7 +579,13 @@ function leavePatrol(
 		.filter(
 			(v) => v.carry !== null && v.left_at === null && now < holdEnd(v, input),
 		)
-		.map((v) => arrivesAt(v, walkMsOf(v)))
+		// when it called the kangaroo: its arrival, or the moment it became a 결재 in place
+		.map((v) =>
+			Math.max(
+				arrivesAt(v, walkMsOf(v)),
+				input.signedAtOf?.(v) ?? Number.NEGATIVE_INFINITY,
+			),
+		)
 		.filter((t) => t <= now);
 	const tA = Math.min(now, ...arrived);
 	const p = rooToHq(patrolAt(tA + st.shiftMs));

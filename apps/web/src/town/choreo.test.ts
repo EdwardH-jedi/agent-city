@@ -288,6 +288,50 @@ describe("the kangaroo", () => {
 		expect(at(second + WALK + 30_000)?.st.mode).toBe("at-hq");
 		expect(at(second + WALK + HQ_HOLD_MS - 2_000)?.st.mode).toBe("at-hq");
 		expect(at(second + WALK + HQ_HOLD_MS + 60_000)?.st.mode).toBe("patrol");
+		// leaving the patrol for B walks from where it is (A's long-past arrival is not the anchor)
+		const near = run(
+			[
+				{ id: "A", carry: "folder", seen: 0 },
+				{ id: "B", carry: "binder", seen: second },
+			],
+			second - 2_000,
+			second + WALK + 30_000,
+			16,
+		);
+		expect(maxStep(near)).toBeLessThanOrEqual(SPRINT_STEP);
+	});
+
+	test("a 보고 lead that becomes a 결재 in place: the five minutes count from that moment, and it walks there", () => {
+		const F = 180_000; // the report arrived at WALK; the 결재 came 3 minutes later, same visit id
+		let st: RooState | null = null;
+		let last = 0;
+		const out: { t: number; mode: string; pose: ReturnType<typeof rooPose> }[] =
+			[];
+		for (let t = 0; t <= F + HQ_HOLD_MS + 60_000; t += 16) {
+			const v = visit({ carry: t < F ? null : "folder" });
+			const input = {
+				now: t,
+				book: book(v),
+				walkMsOf,
+				signedAtOf: () => (t < F ? Number.NEGATIVE_INFINITY : F),
+				reducedMotion: false,
+			};
+			st = st ? stepKangaroo(st, input, t - last) : initialRoo(input);
+			last = t;
+			out.push({ t, mode: st.mode, pose: rooPose(st, t) });
+		}
+		const at = (t: number) => out.find((x) => x.t >= t) ?? out[out.length - 1];
+		expect(at(F - 1_000)?.mode).toBe("patrol");
+		expect(at(F + 60_000)?.mode).toBe("at-hq");
+		expect(at(F + HQ_HOLD_MS - 2_000)?.mode).toBe("at-hq");
+		expect(at(F + HQ_HOLD_MS + 40_000)?.mode).toBe("patrol");
+		let m = 0;
+		for (let i = 1; i < out.length; i += 1) {
+			const a = out[i - 1]?.pose;
+			const b = out[i]?.pose;
+			if (a && b) m = Math.max(m, dist(a, b));
+		}
+		expect(m).toBeLessThanOrEqual(SPRINT_STEP);
 	});
 
 	test("reports never bring it out", () => {

@@ -210,8 +210,13 @@ function buildStage(
 			}),
 		);
 	/** Per visit: how much older it was than its head start when (re)seen (see applyModel). */
-	const late = new Map<string, { seen: number; ms: number }>();
+	const late = new Map<
+		string,
+		{ seen: number; ms: number; carry: Visit["carry"]; signedAt: number }
+	>();
 	const lateMsOf = (v: Visit): number => late.get(v.visit_id)?.ms ?? 0;
+	const signedAtOf = (v: Visit): number =>
+		late.get(v.visit_id)?.signedAt ?? Number.NEGATIVE_INFINITY;
 	/** The kangaroo's state machine (choreo.ts), stepped every frame on the scene clock. */
 	let roo: RooState | null = null;
 	let lastScene = 0;
@@ -253,6 +258,7 @@ function buildStage(
 			book,
 			walkMsOf,
 			lateMsOf,
+			signedAtOf,
 			reducedMotion: reduced,
 		};
 		roo = roo ? stepKangaroo(roo, kin, now - lastScene) : initialRoo(kin);
@@ -454,13 +460,24 @@ function buildStage(
 		// How much older than its (clamped) head start each visit was when it was (re)seen: the kangaroo's
 		// five minutes at the HQ count from the lead's real arrival (choreo.ts HQ_HOLD_MS), so a 결재 that
 		// has waited for hours does not pull it back to the HQ on every reload.
+		// A visit that turns from a 보고 into a 결재 in place (same id, same seen_at) counts its five minutes
+		// from that moment (signedAt).
+		const nowS = nowScene();
 		for (const v of book.visits) {
 			const had = late.get(v.visit_id);
-			if (had && had.seen === v.seen_at) continue;
+			if (had && had.seen === v.seen_at) {
+				if (had.carry === null && v.carry !== null)
+					late.set(v.visit_id, { ...had, carry: v.carry, signedAt: nowS });
+				else if (had.carry !== v.carry)
+					late.set(v.visit_id, { ...had, carry: v.carry });
+				continue;
+			}
 			const t = Date.parse(createdAt.get(v.visit_id) ?? "");
 			late.set(v.visit_id, {
 				seen: v.seen_at,
 				ms: Number.isFinite(t) ? Math.max(0, wall - t - v.head_start_ms) : 0,
+				carry: v.carry,
+				signedAt: Number.NEGATIVE_INFINITY,
 			});
 		}
 		for (const id of late.keys())
