@@ -30,6 +30,13 @@ describe("City cannot act on a run", () => {
 		expect(hub).not.toMatch(/method\s*:/);
 		expect(hub).not.toMatch(ACTION_WORDS);
 		expect(code("apps/web/src/App.tsx")).not.toMatch(/method\s*:/);
+		// the detail screen (16 A3): its controls only filter what is shown; it sends nothing
+		const detail = code("apps/web/src/Detail.tsx");
+		expect(detail).not.toMatch(/method\s*:/);
+		expect(detail).not.toMatch(
+			/fetch\(|XMLHttpRequest|WebSocket|<form|onSubmit/,
+		);
+		expect(detail).not.toMatch(ACTION_WORDS);
 	});
 
 	test("the read API has no write route and no action path", () => {

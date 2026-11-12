@@ -41,7 +41,7 @@ try:
         result['samples'].append(sample);save('observation.json',result)
         print(json.dumps({'ab2_elapsed':sample['elapsedSeconds'],'disconnected':sample['disconnected'],'websockets':sample.get('websockets')},ensure_ascii=False),flush=True)
     check('live_observed_at_least_90_seconds',result['samples'][-1]['elapsedSeconds']>=90,result['samples'][-1]['elapsedSeconds'])
-    cmd(['press','D']);cmd(['wait','--fn','location.hash === "#/detail" && Boolean(document.querySelector("table"))','--timeout','3000'])
+    cmd(['press','D']);cmd(['wait','--fn','location.hash === "#/detail" && Boolean(document.querySelector(".detail .dpanel"))','--timeout','3000'])
     save('detail-snapshot.json',cmd(['snapshot']))
     cmd(['press','D']);cmd(['wait','--fn','location.hash !== "#/detail" && Boolean(document.querySelector(".board-sentence"))','--timeout','3000'])
     check('live_detail_roundtrip',True,'D -> detail tables -> D -> board')

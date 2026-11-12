@@ -422,7 +422,7 @@ export function tailLine(e: TailEvent, cwd: string | null): string | null {
 			return null;
 	}
 	if (!line) return null;
-	const safe = scrubPaths(hideCredentials(redact(line)), cwd);
+	const safe = cleanLine(line, cwd);
 	return safe.length > LINE_MAX ? `${safe.slice(0, LINE_MAX - 1)}…` : safe;
 }
 
@@ -435,13 +435,29 @@ export function tailLine(e: TailEvent, cwd: string | null): string | null {
 export function eventLine(e: TailEvent, cwd: string | null): string {
 	const own = tailLine(e, cwd);
 	if (own !== null) return own;
-	if (e.tool && e.type !== "PreToolUse") {
-		const asTool = tailLine({ ...e, type: "PreToolUse" }, cwd);
+	if (e.tool) {
+		const asTool =
+			e.type === "PreToolUse"
+				? null
+				: tailLine({ ...e, type: "PreToolUse" }, cwd);
 		if (asTool !== null) return asTool;
+		// a tool line the tails drop on purpose (what Codex types into a running command: a password at a
+		// prompt): its tool's name only, never the summary
+		return cleanLine(e.tool, cwd);
 	}
 	const summary = firstLine(e.summary ?? "");
-	const raw = summary ? `${e.type} ${summary}` : e.type;
-	const safe = scrubPaths(hideCredentials(redact(raw)), cwd);
+	return cleanLine(summary ? `${e.type} ${summary}` : e.type, cwd);
+}
+
+/** `~alice/…` → `~/…`: another user's name never shows (scrubPaths keeps a tilde path as written). */
+const TILDE_USER = /(^|[\s"'=:(,])~[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}/g;
+
+/** The last steps of every shown line: redaction, credentials, paths, `~user`, LINE_MAX. Linear. */
+function cleanLine(line: string, cwd: string | null): string {
+	const safe = scrubPaths(hideCredentials(redact(line)), cwd).replace(
+		TILDE_USER,
+		"$1~",
+	);
 	return safe.length > LINE_MAX ? `${safe.slice(0, LINE_MAX - 1)}…` : safe;
 }
 
