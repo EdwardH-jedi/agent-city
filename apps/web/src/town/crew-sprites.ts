@@ -4,7 +4,8 @@
 // A Fable session wears the Opus look (TownArt has no Fable style; its own would be the "?" smock), a
 // Claude session of an unknown model one of the three Claude looks by its id. Companions (subagents) are
 // the same figure at 2/3 size. Name tags are the pylon's 3 × 5 glyphs (leaderboard.mjs, the panel
-// titles' font) on a plate in the style's own nameplate colour, drawn as their own actor whose frame
+// titles' font) on a plate in the style's own nameplate colour, over working figures only (at the cafe
+// a group's tags overlapped), drawn as their own actor whose frame
 // stands one cell above the feet (centre y −1), so tag and figure share the one snapped foot pixel.
 //
 // Frames are keyed by look, never by session id — family × variant × facing × action × phase × size,

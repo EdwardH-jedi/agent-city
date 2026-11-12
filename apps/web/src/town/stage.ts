@@ -507,7 +507,8 @@ function buildStage(
 				shadow: true,
 				sprite,
 			});
-			if (c.tag) {
+			// tags only over working figures: at the cafe a group's tags overlapped each other (16 A1 fallback)
+			if (c.tag && c.place === "work") {
 				const tag: TagSprite = { kind: "tag", text: c.tag, style: look.style };
 				actors.push({
 					id: `tag:${n}`,
@@ -541,7 +542,8 @@ function buildStage(
 	/**
 	 * The crew's spots from the model (16 A1): sticky per lot; a member that changes spot walks from where
 	 * it is, one seen for the first time from its building's door (the cafe's, with no building) — both
-	 * starting at its `since`, so a reload lands it where it was and a member settled long ago just stands.
+	 * starting at its `since` (first seen at work: the session's start), so a reload lands it where it was
+	 * and a member settled long ago just stands.
 	 */
 	function placeCrew() {
 		const crew = input.model.crew ?? [];
@@ -570,15 +572,22 @@ function buildStage(
 					c.place === "cafe" && !home ? CAFE_LOT : (home ?? slot.lot),
 				);
 			}
-			const since = Date.parse(c.since);
+			// first seen at work: its `since` (last event) is always recent, so it would walk out of its door
+			// on every reload — it walks out only if the session itself just started
+			const since = Date.parse(
+				!had && c.place === "work" ? c.started_at : c.since,
+			);
 			const ago = Number.isFinite(since) ? Math.max(0, wall - since) : 0;
 			const path = crewPath(from, target);
+			const walkMs = leadWalkMs(path);
 			crewWalks.set(c.id, {
 				lot: slot.lot,
 				k: slot.k,
 				path,
-				t0: nowS - ago,
-				walkMs: leadWalkMs(path),
+				// a change while reports stopped (the scene clock stands) lands at once, as a reload would show
+				// it: a walk begun then would stand frozen in the road until reports came back
+				t0: input.model.still ? nowS - walkMs : nowS - ago,
+				walkMs,
 			});
 		}
 		for (const id of crewWalks.keys())

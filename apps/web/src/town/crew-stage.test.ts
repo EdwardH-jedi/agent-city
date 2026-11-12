@@ -34,6 +34,7 @@ const member = (over: Partial<CampusCrew> = {}): CampusCrew => ({
 	repo_id: REPO,
 	place: "work",
 	since: new Date(T0 - 3_600_000).toISOString(),
+	started_at: new Date(T0 - 7_200_000).toISOString(),
 	provider: "claude",
 	family: "opus",
 	tag: "OPUS",
@@ -157,8 +158,26 @@ describe("crew on the stage", () => {
 		}
 	});
 
-	test("first seen 2 s after it began: walking out of its building's door; a reload shows the same pose", () => {
-		const m = modelOf([member({ since: new Date(T0 - 2_000).toISOString() })]);
+	test("first seen at work with a recent event but an old session: standing (a reload never replays a walk)", () => {
+		const h = harness(
+			modelOf([member({ since: new Date(T0 - 2_000).toISOString() })]),
+		);
+		try {
+			expect(near(crewActors(h.frame())[0], crewSpot(LOT, 0, false))).toBe(
+				true,
+			);
+		} finally {
+			h.done();
+		}
+	});
+
+	test("a session that started 2 s ago: walking out of its building's door; a reload shows the same pose", () => {
+		const m = modelOf([
+			member({
+				since: new Date(T0 - 1_000).toISOString(),
+				started_at: new Date(T0 - 2_000).toISOString(),
+			}),
+		]);
 		// a reload: a second stage, the same data, the same wall time
 		const h2 = harness(m);
 		const b = crewActors(h2.frame())[0];
@@ -234,8 +253,48 @@ describe("crew on the stage", () => {
 		}
 	});
 
+	test("tags over working figures only (not at the door, not at the cafe)", () => {
+		const h = harness(
+			modelOf([
+				member(),
+				member({ id: "claude:s3", place: "door" }),
+				member({ id: "claude:s4", place: "cafe" }),
+			]),
+		);
+		try {
+			expect(
+				h
+					.frame()
+					.filter((x) => x.id.startsWith("tag:"))
+					.map((x) => x.id),
+			).toEqual(["tag:0"]);
+		} finally {
+			h.done();
+		}
+	});
+
+	test("first seen just after it went to rest: walking from its building to the cafe", () => {
+		const h = harness(
+			modelOf([
+				member({ place: "cafe", since: new Date(T0 - 2_000).toISOString() }),
+			]),
+		);
+		try {
+			const a = crewActors(h.frame())[0];
+			expect(near(a, crewSpot(CAFE_LOT, 0, false))).toBe(false);
+			expect((a?.sprite as { action: string } | undefined)?.action).toBe(
+				"walk",
+			);
+		} finally {
+			h.done();
+		}
+	});
+
 	test("reports stopped: everyone holds where they are", () => {
-		const walking = member({ since: new Date(T0 - 2_000).toISOString() });
+		const walking = member({
+			place: "cafe",
+			since: new Date(T0 - 2_000).toISOString(),
+		});
 		const h = harness(modelOf([walking]));
 		try {
 			const a = crewActors(h.frame())[0];
@@ -251,13 +310,42 @@ describe("crew on the stage", () => {
 		}
 	});
 
+	test("a place change while reports stopped lands at once (no figure frozen in the road)", () => {
+		const h = harness(modelOf([member()], true));
+		try {
+			h.frame();
+			h.at(5_000);
+			h.update(
+				modelOf(
+					[
+						member({
+							place: "cafe",
+							since: new Date(T0 + 5_000).toISOString(),
+						}),
+					],
+					true,
+				),
+			);
+			expect(near(crewActors(h.frame())[0], crewSpot(CAFE_LOT, 0, false))).toBe(
+				true,
+			);
+		} finally {
+			h.done();
+		}
+	});
+
 	test("reduced motion: already at its spot", () => {
 		const h = harness(
-			modelOf([member({ since: new Date(T0 - 1_000).toISOString() })]),
+			modelOf([
+				member({
+					place: "cafe",
+					since: new Date(T0 - 1_000).toISOString(),
+				}),
+			]),
 			true,
 		);
 		try {
-			expect(near(crewActors(h.frame())[0], crewSpot(LOT, 0, false))).toBe(
+			expect(near(crewActors(h.frame())[0], crewSpot(CAFE_LOT, 0, false))).toBe(
 				true,
 			);
 		} finally {

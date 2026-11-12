@@ -46,6 +46,8 @@ export interface CampusCrew {
 	place: CrewPlace;
 	/** When it took this place (ISO): a walk to it starts here, so a reload does not replay it. */
 	since: string;
+	/** When the session started (ISO): a working one seen for the first time walks out of its door only then. */
+	started_at: string;
 	provider: string;
 	/** `opus`, `sonnet`, `haiku`, `fable`, … from the session's model; null when unknown. */
 	family: string | null;

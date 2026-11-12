@@ -72,6 +72,7 @@ describe("who stands where (16 A1 table)", () => {
 				repo_id: "o/a",
 				place: "work",
 				since: s.last_event_at,
+				started_at: s.started_at,
 				provider: "claude",
 				family: "opus",
 				tag: "OPUS",
@@ -211,6 +212,23 @@ describe("caps", () => {
 			act[0]?.id,
 			act[1]?.id,
 		] as string[]);
+	});
+
+	test("a working session's new event does not swap who is drawn at its building", () => {
+		const act = [1, 2, 3, 4].map((i) =>
+			sess("o/a", "active", i * 1_000, { started_at: ago(i * HOUR) }),
+		);
+		const drawn = (list: Session[]) =>
+			crew(list)
+				.map((c) => c.id)
+				.sort();
+		const before = drawn(act);
+		// the fourth (the oldest started) gets the newest event
+		const bumped = act.map((s, i) =>
+			i === 3 ? { ...s, last_event_at: ago(100) } : s,
+		);
+		expect(drawn(bumped)).toEqual(before);
+		expect(before).not.toContain(act[3]?.id);
 	});
 
 	test(`at most ${CREW_AT_CAFE} at the cafe, the newest`, () => {

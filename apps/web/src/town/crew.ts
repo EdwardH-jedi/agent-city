@@ -12,8 +12,8 @@
 //   A session with no building in the town (no repo, or a project folded out of the eight lots) is drawn
 //   only when it rests (the cafe is nobody's building); working or waiting it stays in the panel only —
 //   standing at the cafe would say it rests.
-// - caps: CREW_PER_BUILDING at a building (door first, then the newest active), CREW_AT_CAFE at the
-//   cafe (newest first), CREW_MAX in all (the oldest resting go first, then the oldest active);
+// - caps: CREW_PER_BUILDING at a building (door first, then the newest started active), CREW_AT_CAFE at
+//   the cafe (newest first), CREW_MAX in all (the oldest resting go first, then the oldest active);
 //   companions (running subagents, the panel's own count) beside an active one, COMPANIONS_PER each and
 //   COMPANIONS_MAX in all
 // - since: when it took its place, from the data alone (so a reload lands it where it was): the last
@@ -66,7 +66,7 @@ export interface CrewInput {
 }
 
 interface Draft extends CampusCrew {
-	last: string;
+	order: string;
 	subagents: number;
 }
 
@@ -115,18 +115,22 @@ export function townCrew(input: CrewInput): CampusCrew[] {
 			family,
 			tag: tagOf(s.provider, family),
 			companions: 0,
-			last: s.last_event_at,
+			started_at: s.started_at,
+			// a stable order: a working session's events must not swap who is drawn at its building
+			order: place === "work" ? s.started_at : s.last_event_at,
 			subagents: v.status === "active" ? (subs.get(s.id)?.subagents ?? 0) : 0,
 		});
 	}
 
-	// rank: door, then work, then cafe; newest first; the id breaks ties
+	// rank: door, then work, then cafe; newest first (a working one by when it started, so its events
+	// never swap who is drawn; the others by their last event, which does not move while they wait or
+	// rest); the id breaks ties
 	const rank = (d: Draft) =>
 		d.place === "door" ? 0 : d.place === "work" ? 1 : 2;
 	drafts.sort(
 		(a, b) =>
 			rank(a) - rank(b) ||
-			b.last.localeCompare(a.last) ||
+			b.order.localeCompare(a.order) ||
 			a.id.localeCompare(b.id),
 	);
 	const perBuilding = new Map<string, number>();
@@ -159,5 +163,5 @@ export function townCrew(input: CrewInput): CampusCrew[] {
 		d.companions = Math.max(0, n);
 		companions += d.companions;
 	}
-	return kept.map(({ last: _l, subagents: _s, ...c }) => c);
+	return kept.map(({ order: _o, subagents: _s, ...c }) => c);
 }
