@@ -113,14 +113,24 @@ engine's listeners) for it.
 - **SESSIONS (right panel).** Projects (결재 · 입력 대기 first, then working, then the most recent; at most 8,
   then `외 N곳`): a project row with its run's state (`리뷰 중`, `통합 대기`, `쉬는 중`) or its branch, and a thin
   phase bar while a run is running. Under it its sessions (`● Claude · opus 5.5  12초`; `입력 대기` / `쉬는 중`
-  tags; `+N sub` while subagents run): `active`, `waiting`, and `idle` until it turns `stale` (15 min); at
-  most 4 a project and 16 in all, then `외 N`. Under an `active` or `waiting` session a monospace tail of its
-  last commands and files (`$ bun test ×3`, `Edit src/a.ts`, `→ reviewer: …`, `› 입력 (412자)`, `■ 턴 끝`;
-  at most 6 tails of 3 lines, 2 under 1600 px). The tail is built from the events the board already holds
-  (`/api/events?limit=200` + ws `event`; no new request), from `summary` only, redacted again, with every
-  absolute path made relative to the session folder or cut to its last parts. Command output and prompt
-  text are not in the hub, so they are never shown. The panel never scrolls: tails fold first (oldest
-  `active` first), then rows, then projects.
+  tags; `+N sub` while subagents run): `active`, `waiting`, and — dim, as `쉬는 중`, with no tail — `idle`
+  or `stale` (15 quiet minutes) whose last activity is within 6 hours (no window light, no visit, as
+  before); `ended` and older ones are hidden. A `waiting` session whose HQ visit is over (30 min, or
+  `?session_wait=`) keeps a dim `입력 대기 · 42분` tag instead of the yellow one; the summary's `대기 N`
+  counts only the yellow ones. At most 4 sessions a project and 16 in all, then `외 N`. Under an `active`
+  or `waiting` session a monospace tail of its last commands and files (`$ bun test ×3`, `Edit src/a.ts`,
+  `→ reviewer: …`, `› 입력 (412자)`, `■ 턴 끝`; at most 6 tails of 3 lines, 2 under 1600 px). A command
+  loses its leading `NAME=…` / `export …`, `cd … &&` / `cd …;` and a `( … )` group; an inline script
+  (`-c` after a shell or Python, `-e` after bun / node / …) or a heredoc fed to an interpreter shows as
+  `$ python3 (스크립트)`, a heredoc fed to another program as the command up to it
+  (`$ git commit -m (스크립트)`). The hook keeps only 80 characters of
+  a command, so when the prefixes fill them the line is `$ S=…`. The tail is built from the events the
+  board already holds (`/api/events?limit=200` + ws `event`; no new request), from `summary` only, redacted
+  again, with every absolute path made relative to the session folder or cut to its last parts; the screen
+  remembers each session's last 3 lines (64 sessions at most, ended ones dropped) so a busy session no
+  longer pushes a quiet one's tail away. Command output and prompt text are not in the hub, so they are
+  never shown. The panel never scrolls: tails fold first (old waits, then the oldest `active`), then rows
+  (resting first), then projects.
 - **The village** stands at most 8 project buildings, by recent activity (a flagged one always stands);
   the rest fold into one `조용함 N곳` sign. A building holds its name and pictures only: lit windows for
   running runs (dark when nothing runs), a big yellow (결재) or red (멈춤) flag. The village dims and every
@@ -677,8 +687,10 @@ The following work is planned, not implemented by the telemetry layer above.
 - Service units for the hub, Codex tailer, and SSH tunnels remain to be added
 - Old token-scoped `github_etags` rows are not automatically pruned
 - Board width: the stage takes exactly 384 × its scale (1152 px = 60% at 1920; 768 px = 56% at 1366).
-- SESSIONS tails come from the newest 200 events of all sessions, so a busy session can push a quiet one's
-  tail (and its `+N sub`) out of the window; a subagent sent to the background is not counted.
+- SESSIONS tails are remembered per session on the screen (3 lines, 64 sessions), but only from what the
+  200-event window showed while the board was open: after a reload, or a trip to the detail tables and
+  back, a quiet session's tail is back only if its events are still in the window. `+N sub` is counted in the window alone; a subagent sent to the
+  background is not counted. A command longer than the hook's 80 characters is cut there (`$ S=…`).
 - At 1366×768 with a long HQ waiting list, 자리 비운 사이 keeps only its newest line (RX is 1920×1080).
 - Board known limits: open P2s from the Codex reviews of `feat/board-sessions` (line numbers as of
   `0855f2b`). Accepted for now; if the kiosk shows a real miss, the dwell logic is to be reworked as

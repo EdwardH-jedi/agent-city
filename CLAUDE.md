@@ -98,6 +98,7 @@ bun run check:secrets    # scan tracked/untracked files for token patterns
   look, one 28 px status sentence, every other text `calc(<10.5–14>px * var(--ui))` (`?ui=1.15|1.3`), column
   widths from `apps/web/src/board/layout.ts` (stage scale first). The right panel's terminal tails come from
   `apps/web/src/board/tail.ts` (events already in `useHub`, `summary` only, redacted again, no absolute
-  path); `board/session-panel.ts` is the only board module that reads a session's `cwd` / `branch`.
+  path), kept per session by `board/tail-memory.ts` (bounded: 64 sessions × 3 lines);
+  `board/session-panel.ts` is the only board module that reads a session's `cwd` / `branch`.
 - When you change a screen, run `bun run check:board` (`AGENTCITY_BOARD_URL=http://127.0.0.1:<port>/`
   points it at a dev server).

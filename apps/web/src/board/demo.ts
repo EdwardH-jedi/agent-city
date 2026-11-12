@@ -167,6 +167,9 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 		session("d", "demo/ferry", "waiting", 52 * MIN),
 		session("e", "demo/attic", "ended", 2 * HOUR),
 		session("f", "demo/meadow", "idle", 8 * MIN, "claude", "claude-sonnet-5-5"),
+		// quiet for 15 min and more: a dim 쉬는 중 row within 6 h, nothing after
+		session("v", "demo/harbor", "stale", 2 * HOUR),
+		session("w", "demo/ember", "stale", 7 * HOUR, "codex"),
 	];
 	if (kase === "busy")
 		sessions.push(
@@ -228,6 +231,7 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 			repo_id: s.repo_id,
 			payload_redacted: {},
 		});
+	let script = 0;
 	for (const s of sessions) {
 		if (s.status !== "active" && s.status !== "waiting") continue;
 		const t = Date.parse(at(0)) - Date.parse(s.last_event_at);
@@ -265,7 +269,8 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 		}
 		said(s, t + 60_000, "UserPromptSubmit", null, "prompt (412 chars)");
 		said(s, t + 50_000, "PreToolUse", "Read", `Read ${cwd}/src/board/model.ts`);
-		said(s, t + 40_000, "PreToolUse", "Bash", "Bash: bun test");
+		// the command's prefix (`cd … &&`, `S=…`) goes; a heredoc or `-e` script shows as `<program> (스크립트)`
+		said(s, t + 40_000, "PreToolUse", "Bash", `Bash: cd ${cwd} && bun test`);
 		said(s, t + 35_000, "PreToolUse", "Bash", "Bash: bun test");
 		// a subagent: still running in two sessions (`+1 sub`), finished in the others
 		const sub = `${s.id}/sub:toolu_demo${seq}`;
@@ -301,7 +306,11 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 				t,
 				"PreToolUse",
 				"Bash",
-				`Bash: cat /Users/demo/Documents/notes/today.md && bun run lint`,
+				[
+					"Bash: python3 - <<'EOF'\nimport json\nprint(json.dumps({}))",
+					"Bash: cat /Users/demo/Documents/notes/today.md && bun run lint",
+					`Bash: S=${cwd}/tmp\nbun -e 'console.log(1)'`,
+				][script++ % 3] as string,
 			);
 	}
 

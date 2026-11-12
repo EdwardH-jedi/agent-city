@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
 	codexCommand,
+	commandLine,
 	relPath,
 	runningSubagents,
 	scrubPaths,
-	sessionTails,
 	shortModel,
 	type TailEvent,
 	tailLine,
@@ -109,7 +109,7 @@ describe("tail lines (15 §3.1 table)", () => {
 				summary:
 					"exec: text(await tools.exec_command({cmd:\"python3 - <<'PY'\\nimport x\",yield_time_ms:1000}))",
 			}),
-		).toBe("$ python3 - <<'PY'");
+		).toBe("$ python3 (스크립트)");
 		expect(
 			line({
 				tool: "exec",
@@ -141,7 +141,7 @@ describe("tail lines (15 §3.1 table)", () => {
 			expect(t).not.toContain("C:\\");
 			expect(t).not.toContain("/private/");
 		}
-		expect(out[0]).toBe("$ cd . && cat …/.ssh/known_hosts");
+		expect(out[0]).toBe("$ cat …/.ssh/known_hosts");
 		expect(
 			line({ summary: "Bash: cat /Users/demo/notes/today.md && bun run lint" }),
 		).toBe("$ cat …/notes/today.md && bun run lint");
@@ -242,16 +242,138 @@ describe("tailLines: oldest first, merged runs, the last N", () => {
 	test("no events: no tail", () => {
 		expect(tailLines([], CWD)).toEqual([]);
 	});
-	test("sessionTails splits by session in one pass", () => {
-		const m = sessionTails(
-			[
-				ev({ summary: "Bash: a" }),
-				ev({ session_id: "codex:s2", summary: "Bash: b" }),
-			],
-			() => null,
+});
+
+describe("what a command shows (REVIEW 2026-11-13 #1)", () => {
+	const cmd = (summary: string) => line({ summary: `Bash: ${summary}` });
+	test("leading assignments and `cd … &&` / `cd …;` go; the real command shows", () => {
+		expect(cmd("cd /Users/demo/work/x && bun test apps/web")).toBe(
+			"$ bun test apps/web",
 		);
-		expect(m.get("claude:s1")?.lines).toEqual([{ text: "$ a", count: 1 }]);
-		expect(m.get("codex:s2")?.lines).toEqual([{ text: "$ b", count: 1 }]);
+		expect(cmd("cd ~/Downloads; ls -la shots")).toBe("$ ls -la shots");
+		expect(cmd("P=~/Downloads/a/b.html; grep -n steps $P")).toBe(
+			"$ grep -n steps $P",
+		);
+		expect(cmd("S=/private/tmp/claude-501/-Users-demo-x/scratch\nls $S")).toBe(
+			"$ ls $S",
+		);
+		expect(commandLine('A=1 B="two words" bun run dev')).toBe("bun run dev");
+		expect(commandLine("export DEBUG=1 && cd apps/web && vite build")).toBe(
+			"vite build",
+		);
+		expect(commandLine("X=$(mktemp -d) && cd $X && git init")).toBe("git init");
+		expect(commandLine("# a note\n\ncd a\nmake")).toBe("make");
+		expect(commandLine("cd a &&\\\n  make all")).toBe("make all");
+		// a group's opener and closer both go
+		expect(commandLine("(nohup bunx vite preview > log 2>&1 &)")).toBe(
+			"nohup bunx vite preview > log 2>&1 &",
+		);
+		expect(commandLine("(cd /tmp && ls)")).toBe("ls");
+		expect(commandLine("{ echo hi; }")).toBe("echo hi");
+	});
+	test("a heredoc or inline script: the program and (스크립트)", () => {
+		expect(cmd("python3 - <<'EOF'\nimport os\nprint(1)")).toBe(
+			"$ python3 (스크립트)",
+		);
+		// a heredoc fed to an ordinary program: the command up to it
+		expect(commandLine("cat >> notes/PROGRESS.md <<'EOF'\n## x")).toBe(
+			"cat >> notes/PROGRESS.md (스크립트)",
+		);
+		expect(commandLine("git commit -m \"$(cat <<'EOF'\nmsg")).toBe(
+			"git commit -m (스크립트)",
+		);
+		expect(commandLine("mkdir -p out && cat > out/a.md <<'EOF'")).toBe(
+			"mkdir -p out && cat > out/a.md (스크립트)",
+		);
+		expect(commandLine("bun -e '\nconst j = 1;\n'")).toBe("bun (스크립트)");
+		expect(commandLine('node -e "console.log(1)"')).toBe("node (스크립트)");
+		expect(commandLine("/usr/bin/python3 -u -c 'print(1)'")).toBe(
+			"python3 (스크립트)",
+		);
+		expect(commandLine("php -r 'echo 1;'")).toBe("php (스크립트)");
+		expect(commandLine("pwsh -Command Get-Date")).toBe("pwsh (스크립트)");
+		expect(commandLine("bash -lc 'make && make test'")).toBe("bash (스크립트)");
+		expect(commandLine("cd x && osascript -e 'tell app'")).toBe(
+			"osascript (스크립트)",
+		);
+		expect(commandLine("S=/tmp/x; bun -e 'x'")).toBe("bun (스크립트)");
+	});
+	test("`-e` / `-c` elsewhere is an ordinary flag", () => {
+		for (const c of [
+			"grep -c TODO src/a.ts",
+			"wc -c a.txt",
+			"head -c 100 a.bin",
+			"git -c core.pager=cat log",
+			"sed -e s/a/b/ f",
+			"python3 tool.py -c conf.yaml",
+			"bun run check -e",
+			"bash -e deploy.sh",
+			"sh -ex run.sh",
+			'grep x <<< "$y"',
+			"git log --format='<<%h>>'",
+			'echo "a << b" && cat x',
+			"node -r dotenv/config app.js",
+			"pwsh -ExecutionPolicy Bypass -File x.ps1",
+		])
+			expect(commandLine(c)).toBe(c);
+	});
+	test("cut by the hook at 80 characters with only a prefix left: the prefix stands for it", () => {
+		const long =
+			`S=/private/tmp/claude-501/-Users-demo-x/${"f".repeat(60)}`.slice(0, 80);
+		expect(cmd(long)).toBe("$ S=…");
+		expect(
+			cmd("cd /Users/demo/work/x && AGENTCITY_AB_OUT=$HOME/Documents/a"),
+		).toBe("$ AGENTCITY_AB_OUT=…");
+		// the cut fell inside the next variable's name
+		expect(commandLine("cd x && A_OUT=$HOME/a AGENTCITY_BOARD_U")).toBe(
+			"A_OUT=…",
+		);
+		expect(commandLine("X=1 make")).toBe("make");
+		expect(commandLine("X=1 MAKE_ALL\nls")).toBe("MAKE_ALL");
+		expect(cmd("cd /Users/demo/work/x/apps/web")).toBe("$ cd …/apps/web");
+		expect(cmd("cd x | tee a")).toBe("$ cd x | tee a");
+	});
+	test("Codex: the whole cmd is read (escaped new lines), then the same rule", () => {
+		expect(
+			line({
+				tool: "exec",
+				summary:
+					'exec: text(await tools.exec_command({cmd:"cd /Users/demo/work/x && rg -n TODO src"}))',
+			}),
+		).toBe("$ rg -n TODO src");
+		expect(
+			codexCommand('exec_command({cmd:"A=1\\ncd b\\nbun -e \\"x\\""})'),
+		).toBe('A=1\ncd b\nbun -e "x"');
+	});
+	test("no absolute path or user name in any of the new shapes", () => {
+		for (const c of [
+			"S=/Users/demo/secret/a.txt",
+			"cd /Users/demo/work/x",
+			"cd /home/demo/a && cat /home/demo/b/c.txt",
+			"python3 /Users/demo/bin/x.py -c 1",
+			"/Users/demo/bin/python3 -c 'x'",
+			"cd C:\\Users\\demo\\a && type C:\\Users\\demo\\b\\c.txt",
+			// a quoted interpreter path with a space never leaves a piece of it as the program (review P1)
+			"\"/Users/demo person/.venv/bin/python\" - <<'EOF'",
+			'"/Users/demo person/tool" - <<EOF',
+			'cd "/Users/demo person/p" && "/Users/demo person/x/python" -c 1',
+			'"C:\\Users\\demo person\\python.exe" - <<EOF',
+			// a space escaped with a backslash is part of the folder name (review follow-up)
+			"S=/Users/demo\\ person/x; ls",
+			"cat /Users/demo\\ person/secret.txt",
+			"cd /Users/demo\\ person/p && make",
+			"/Users/demo\\ person/bin/python3 - <<EOF",
+		]) {
+			const t = line({ summary: `Bash: ${c}` }, null) ?? "";
+			expect(t).not.toMatch(/\/Users\/|\/home\/|C:\\|demo|person/);
+		}
+	});
+	test("bounded: a huge command is looked at only up to SCRIPT_MAX", () => {
+		const t0 = performance.now();
+		const huge = `${"A=1 ".repeat(50_000)}${"x".repeat(100_000)}`;
+		expect(commandLine(huge)).toBe("A=…");
+		expect(commandLine(`cd ${"a ".repeat(50_000)}`)).toContain("cd");
+		expect(performance.now() - t0).toBeLessThan(200);
 	});
 });
 

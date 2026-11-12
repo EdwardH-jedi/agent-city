@@ -31,7 +31,7 @@ import {
 	quietEndHour,
 	type SoundMemory,
 } from "./sound.ts";
-import type { TailEvent } from "./tail.ts";
+import type { MemEvent } from "./tail-memory.ts";
 import { currentRuns } from "./types.ts";
 import { emptyWatch, stepWatch } from "./visits.ts";
 
@@ -194,7 +194,7 @@ export function BoardView({
 	demo: boolean;
 	/** The right panel's sessions and their events (what useHub holds; nothing more is fetched). */
 	sessions: readonly Session[];
-	events: readonly TailEvent[];
+	events: readonly MemEvent[];
 }) {
 	// The ring town in the middle column (design doc 12, the default); `?scene=campus`: the 3D campus.
 	const [scene] = useState(() => sceneOf(window.location.search));

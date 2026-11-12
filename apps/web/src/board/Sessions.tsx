@@ -1,10 +1,11 @@
 // Right column (design doc 15 §3, decision D10): SESSIONS — the projects, their Claude / Codex sessions and a
 // terminal tail (last commands and files) under each working one. It replaces 지금 진행: a project row says
 // its run's state (or its branch) with a thin phase bar, a session row `● Claude · opus 5.5 … 12초`. Read
-// only; the arrangement is session-panel.ts, the tail lines tail.ts. Nothing here asks the hub for more:
-// sessions and events are what useHub already holds. The panel never scrolls (the model folds to fit).
+// only; the arrangement is session-panel.ts, the tail lines tail.ts, kept per session across the event
+// window by tail-memory.ts. Nothing here asks the hub for more: sessions and events are what useHub already
+// holds. The panel never scrolls (the model folds to fit).
 import type { Session } from "@agent-city/schema";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import type { VillageModel } from "./model.ts";
 import { PanelHead } from "./PanelHead.tsx";
 import {
@@ -13,7 +14,14 @@ import {
 	type SessionPanel,
 	sessionPanel,
 } from "./session-panel.ts";
-import { sessionTails, shortModel, type TailEvent } from "./tail.ts";
+import { shortModel } from "./tail.ts";
+import {
+	endedSessions,
+	type MemEvent,
+	stepTailMemory,
+	type TailMemory,
+	tailsWithSubagents,
+} from "./tail-memory.ts";
 
 /** A screen under this width shows two tail lines instead of three (15 §3). */
 export const WIDE_MIN = 1600;
@@ -29,16 +37,26 @@ export function agoShort(iso: string, now: number): string {
 	return `${Math.floor(s / 86_400)}일`;
 }
 
-const STATUS_TAG: Record<PanelRow["status"], string | null> = {
-	waiting: "입력 대기",
-	idle: "쉬는 중",
-	active: null,
-};
+/** The row's tag: 입력 대기 (yellow; dim with its wait once the HQ visit is over), 쉬는 중 (dim). */
+export function rowTag(
+	r: Pick<PanelRow, "status" | "waited_since">,
+	now: number,
+): { text: string; kind: string } | null {
+	if (r.status === "waiting")
+		return r.waited_since
+			? { text: `입력 대기 · ${agoShort(r.waited_since, now)}`, kind: "waited" }
+			: { text: "입력 대기", kind: "waiting" };
+	if (r.status === "idle" || r.status === "stale")
+		return { text: "쉬는 중", kind: "idle" };
+	return null;
+}
 
 function Row({ r, now }: { r: PanelRow; now: number }) {
-	const tag = STATUS_TAG[r.status];
+	const tag = rowTag(r, now);
 	return (
-		<li className={`sess-row st-${r.status}`}>
+		<li
+			className={`sess-row st-${r.status}${r.waited_since ? " st-waited" : ""}`}
+		>
 			<div className="sess-line">
 				<i className="sess-dot" aria-hidden="true" />
 				<span className="sess-who">
@@ -48,7 +66,7 @@ function Row({ r, now }: { r: PanelRow; now: number }) {
 				{r.subagents > 0 && (
 					<span className="sess-sub">+{r.subagents} sub</span>
 				)}
-				{tag && <span className={`tag tag-${r.status}`}>{tag}</span>}
+				{tag && <span className={`tag tag-${tag.kind}`}>{tag.text}</span>}
 				<span className="sess-age">{agoShort(r.last_event_at, now)}</span>
 			</div>
 			{r.tail.length > 0 && (
@@ -81,7 +99,7 @@ export function Sessions({
 }: {
 	model: VillageModel;
 	sessions: readonly Session[];
-	events: readonly TailEvent[];
+	events: readonly MemEvent[];
 	now: number;
 	/** Height the list may take, px (the column under its head). */
 	budget: number;
@@ -89,11 +107,17 @@ export function Sessions({
 	wide: boolean;
 	pixel?: boolean;
 }) {
-	// tails follow the events, not the clock
-	const tails = useMemo(
-		() => sessionTails(events, cwdLookup(sessions)),
-		[events, sessions],
-	);
+	// tails follow the events, not the clock; each session's last lines outlive the 200-event window
+	const memory = useRef<TailMemory>(new Map());
+	const tails = useMemo(() => {
+		memory.current = stepTailMemory(
+			memory.current,
+			events,
+			endedSessions(sessions, events),
+			cwdLookup(sessions),
+		);
+		return tailsWithSubagents(memory.current, events);
+	}, [events, sessions]);
 	const panel: SessionPanel = useMemo(
 		() =>
 			sessionPanel({

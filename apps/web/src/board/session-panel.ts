@@ -8,18 +8,23 @@
 // - groups: a project with a visible session, a run waiting for the owner, a running run or a paused one
 //   — at most GROUP_CAP; first those that need the owner (결재 or 입력 대기), then those working, then the
 //   most recent activity
-// - rows: `active`, `waiting`, and `idle` within IDLE_SHOWN_MS of its last activity (`stale` and `ended`
-//   are hidden); in a group 입력 대기 → 진행 → 쉬는 중, newest first; at most ROWS_PER_GROUP, then `외 N`.
-//   The status is re-derived with this screen's clock (applyStale, as the town does): an `idle` or
-//   `active` session silent for 15 min is `stale` (the hub stores the same), so in practice an idle row
-//   shows for its first 15 minutes; a `waiting` one never goes stale.
-// - tails: under `active` and `waiting` rows only, at most TAIL_CAP boxes of `tailMax` lines
+// - rows: `active`, `waiting`, and `idle` or `stale` within REST_SHOWN_MS (6 h) of its last activity
+//   (`ended` is hidden). The status is re-derived with this screen's clock (applyStale, as the town does):
+//   an `idle` or `active` session silent for 15 min is `stale` (the hub stores the same); its row stays,
+//   dim, as 쉬는 중 with no tail (no window light, no visit — the town is unchanged). A `waiting` session
+//   whose HQ visit is over (model.waitingSessions: sessions.ts's 30 min / `?session_wait=`, read only)
+//   keeps its row with a dim 입력 대기 tag and how long it has waited; it no longer counts as 대기 nor puts
+//   its project first. In a group: 입력 대기 → 진행 → 오래된 입력 대기 → 쉬는 중, newest first; at most
+//   ROWS_PER_GROUP, then `외 N`.
+// - tails: under `active` and `waiting` rows only, at most TAIL_CAP boxes of `tailMax` lines (the lines
+//   come from the screen's memory, tail-memory.ts)
 // - caps: ROW_CAP rows in all; then it must fit `budget` px with no scroll — folding first the oldest
-//   active session's tail, then the waiting ones' tails, then rows (idle before active, the last groups
-//   first; a waiting row is the last to go), then whole groups from the end
+//   active session's tail, then the waiting ones' tails, then rows (resting before old waits before
+//   active, the last groups first; a 입력 대기 row is the last to go), then whole groups from the end
 import { applyStale, type Session } from "@agent-city/schema";
 import { PAUSED_TAG, PROVIDER_NAME, SHORT, tagOfCode } from "./copy.ts";
 import type { VillageModel } from "./model.ts";
+import { SESSION_RECENT_MS } from "./sessions.ts";
 import type { TailLine } from "./tail.ts";
 import { projectLabel, UNASSIGNED } from "./types.ts";
 
@@ -27,7 +32,8 @@ export const GROUP_CAP = 8;
 export const ROWS_PER_GROUP = 4;
 export const ROW_CAP = 16;
 export const TAIL_CAP = 6;
-export const IDLE_SHOWN_MS = 24 * 3_600_000;
+/** An `idle` or `stale` session shows (dim, 쉬는 중) this long after its last activity. */
+export const REST_SHOWN_MS = 6 * 3_600_000;
 
 /**
  * Heights the panel's rows are drawn at (style.css uses the same numbers): text rows scale with --ui,
@@ -43,7 +49,7 @@ export const PX = {
 	groupGap: 8,
 } as const;
 
-export type RowStatus = "active" | "waiting" | "idle";
+export type RowStatus = "active" | "waiting" | "idle" | "stale";
 
 export interface PanelRow {
 	id: string;
@@ -51,6 +57,11 @@ export interface PanelRow {
 	/** `opus 5.5` (tail.ts shortModel), or null when the hub has no model. */
 	model: string | null;
 	status: RowStatus;
+	/**
+	 * A `waiting` row whose HQ visit is over: when the wait began (the tag is dim and shows how long).
+	 * Null for a wait still at the HQ (yellow) and for every other status.
+	 */
+	waited_since: string | null;
 	last_event_at: string;
 	subagents: number;
 	tail: TailLine[];
@@ -76,14 +87,17 @@ export interface SessionPanel {
 	groups: PanelGroup[];
 	/** Groups folded away (`외 N곳`). */
 	moreGroups: number;
-	/** Every visible session, before any cap (`진행 1 · 대기 1 · 쉼 2`). */
+	/**
+	 * Every visible session, before any cap (`진행 1 · 대기 1 · 쉼 2`): 대기 counts only the yellow waits
+	 * (an old wait is in none of the three), 쉼 the `idle` and `stale` rows.
+	 */
 	counts: { active: number; waiting: number; idle: number };
 }
 
 export interface PanelInput {
 	sessions: readonly Session[];
 	tails: ReadonlyMap<string, { lines: TailLine[]; subagents: number }>;
-	model: Pick<VillageModel, "visits" | "now" | "paused">;
+	model: Pick<VillageModel, "visits" | "now" | "paused" | "waitingSessions">;
 	now: number;
 	/** Height in px the list may take (the panel never scrolls). Infinity: no fit. */
 	budget: number;
@@ -102,7 +116,15 @@ export function cwdLookup(
 	return (id) => m.get(id) ?? null;
 }
 
-const RANK: Record<RowStatus, number> = { waiting: 0, active: 1, idle: 2 };
+/** Order in a group and what folds last (lower stays): a yellow wait, working, an old wait, resting. */
+const rank = (r: Pick<PanelRow, "status" | "waited_since">): number =>
+	r.status === "waiting"
+		? r.waited_since
+			? 2
+			: 0
+		: r.status === "active"
+			? 1
+			: 3;
 
 interface Draft {
 	group: PanelGroup;
@@ -140,17 +162,33 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 		if (iso > d.last) d.last = iso;
 	};
 
+	// waits whose HQ visit is over (sessions.ts decides; `session:<id>` → since)
+	const waited = new Map(
+		model.waitingSessions.map((w) => [w.id.replace(/^session:/, ""), w.since]),
+	);
+
 	// visible sessions
 	const branchOf = new Map<string, { at: string; branch: string }>();
 	for (const s of sessions) {
 		const status = applyStale(s.status, s.last_event_at, at);
 		const t = Date.parse(s.last_event_at);
+		const resting = status === "idle" || status === "stale";
 		const shown =
 			status === "active" ||
 			status === "waiting" ||
-			(status === "idle" && !Number.isNaN(t) && now - t < IDLE_SHOWN_MS);
+			(resting && !Number.isNaN(t) && now - t < REST_SHOWN_MS);
 		if (!shown) continue;
-		counts[status]++;
+		// a wait older than the town's 7 days has no visit and is in no list: an old wait too
+		const waitedSince =
+			status === "waiting"
+				? (waited.get(s.id) ??
+					(!Number.isNaN(t) && now - t >= SESSION_RECENT_MS
+						? s.last_event_at
+						: null))
+				: null;
+		if (resting) counts.idle++;
+		else if (status === "active") counts.active++;
+		else if (!waitedSince) counts.waiting++;
 		const project = s.repo_id ?? UNASSIGNED;
 		const d = draft(project);
 		const tail = tails.get(s.id);
@@ -159,11 +197,12 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 			provider: PROVIDER_NAME[s.provider] ?? s.provider,
 			model: input.shortModel(s.model),
 			status,
+			waited_since: waitedSince,
 			last_event_at: s.last_event_at,
 			subagents: status === "active" ? (tail?.subagents ?? 0) : 0,
-			tail: status === "idle" ? [] : (tail?.lines ?? []).slice(-input.tailMax),
+			tail: resting ? [] : (tail?.lines ?? []).slice(-input.tailMax),
 		});
-		if (status === "waiting") d.attention = true;
+		if (status === "waiting" && !waitedSince) d.attention = true;
 		if (status === "active") d.working = true;
 		touch(d, s.last_event_at);
 		const b = branchOf.get(project);
@@ -213,7 +252,7 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 	for (const g of groups) {
 		g.rows.sort(
 			(a, b) =>
-				RANK[a.status] - RANK[b.status] ||
+				rank(a) - rank(b) ||
 				b.last_event_at.localeCompare(a.last_event_at) ||
 				a.id.localeCompare(b.id),
 		);
@@ -221,14 +260,15 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 		g.rows = g.rows.slice(0, ROWS_PER_GROUP);
 	}
 
-	// rows beyond ROW_CAP: the least needed first (idle, then active, then waiting; the last groups first)
+	// rows beyond ROW_CAP: the least needed first (resting, old waits, active, then 입력 대기; the last
+	// groups first)
 	const dropRow = (): boolean => {
 		let best: { g: PanelGroup; i: number; key: number[] } | null = null;
 		for (let gi = 0; gi < groups.length; gi++) {
 			const g = groups[gi] as PanelGroup;
 			for (let i = 0; i < g.rows.length; i++) {
 				const r = g.rows[i] as PanelRow;
-				const key = [RANK[r.status], gi, i];
+				const key = [rank(r), gi, i];
 				if (!best || cmp(key, best.key) > 0) best = { g, i, key };
 			}
 		}
@@ -239,7 +279,7 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 	};
 	while (groups.reduce((n, g) => n + g.rows.length, 0) > ROW_CAP) dropRow();
 
-	// tails beyond TAIL_CAP: the oldest active first, then the oldest waiting
+	// tails beyond TAIL_CAP: old waits first, then the oldest active, then the oldest 입력 대기
 	const dropTail = (): boolean => {
 		let pick: PanelRow | null = null;
 		for (const g of groups)
@@ -247,9 +287,8 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 				if (r.tail.length === 0) continue;
 				if (
 					!pick ||
-					RANK[r.status] > RANK[pick.status] ||
-					(RANK[r.status] === RANK[pick.status] &&
-						r.last_event_at < pick.last_event_at)
+					rank(r) > rank(pick) ||
+					(rank(r) === rank(pick) && r.last_event_at < pick.last_event_at)
 				)
 					pick = r;
 			}

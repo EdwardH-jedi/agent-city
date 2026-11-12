@@ -797,13 +797,21 @@ tr.st-waiting td {
 .st-waiting .sess-dot {
 	background: var(--b-yellow);
 }
+/* a wait whose HQ visit is over, and a session resting after 15 quiet minutes: dim, nothing yellow */
+.st-waited .sess-dot {
+	background: var(--b-dim);
+}
 .sess-who {
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
-.st-idle .sess-who {
+.st-idle .sess-who,
+.st-waited .sess-who {
 	color: var(--b-muted);
+}
+.st-stale .sess-who {
+	color: var(--b-dim);
 }
 .sess-sub {
 	flex: none;
@@ -834,6 +842,7 @@ tr.st-waiting td {
 	border-color: #2f7a40;
 }
 .sess-row .tag-idle,
+.sess-row .tag-waited,
 .sess-proj .tag-pause,
 .sess-proj .tag-branch {
 	color: var(--b-dim);
