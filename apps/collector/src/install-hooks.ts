@@ -4,8 +4,27 @@
 // the backup/apply commands. It never writes to ~/.claude — applying is the user's call.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import path, { dirname, join, resolve } from "node:path";
 import { CLAUDE_HOOK_EVENTS } from "./claude-map.ts";
+
+type PathModule = typeof path.posix;
+
+/** True if `target` is `dir` itself or inside it. `pathMod` lets tests apply Windows rules on any host. */
+export function isInsideDir(
+	target: string,
+	dir: string,
+	pathMod: PathModule = path,
+): boolean {
+	// `relative` normalises separators and, on win32, letter case and the drive; a different drive
+	// comes back absolute. Compare whole segments so a name like `..hidden` is not read as "up".
+	const rel = pathMod.relative(pathMod.resolve(dir), pathMod.resolve(target));
+	return (
+		rel === "" ||
+		(rel !== ".." &&
+			!rel.startsWith(`..${pathMod.sep}`) &&
+			!pathMod.isAbsolute(rel))
+	);
+}
 
 export const HOOK_BIN = resolve(import.meta.dir, "../bin/claude-hook");
 const TOOL_EVENTS = new Set(["PreToolUse", "PostToolUse"]);
@@ -83,7 +102,7 @@ if (import.meta.main) {
 	const outPath = resolve(
 		outArg ?? join(homedir(), ".agentcity", "claude-settings.merged.json"),
 	);
-	if (outPath === claudeDir || outPath.startsWith(`${claudeDir}/`)) {
+	if (isInsideDir(outPath, claudeDir)) {
 		console.error(
 			"refusing to write under ~/.claude — apply the result yourself",
 		);
