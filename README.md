@@ -194,6 +194,21 @@ documentation parity. These checks do not by themselves prove a live
 multi-machine deployment or provider session compatibility. `main` currently
 has no GitHub Actions workflow; run the checks locally for the change under review.
 
+**Screen check (`check:board`).** `bun run check:board [ab1|ab2|ab3|all]` drives the board in
+headless Chrome through the `agent-browser` CLI and reads numbers off the page: `ab1` (default)
+checks column widths, font tiers, scroll, the 자리 비운 사이 rows, approval cards, the demo label,
+console errors and the `D` detail round trip, at 1920×1080 and 1366×768, live and `?demo=1`; `ab2`
+watches the live board for 90 s and checks that it sends only GETs to loopback and opens one
+`/ws`; `ab3` repeats the 1920×1080 cases with WebGL off (the 2D tiles fallback). It is read-only:
+loopback only, no browser profile, no AI features. The scripts are in `scripts/board-check/` and
+add no dependency. It checks whatever answers on `http://127.0.0.1:4317/`; on the cockpit that is
+the tunnel to the hub on spine, so it sees the deployed build, not an unmerged worktree — point a
+local hub or tunnel at that port to check a change before it ships. Captures and `result.json` go
+to `~/Documents/AgentCityCaptures/ab/` (outside the repo; `AGENTCITY_AB_OUT` may pick another
+folder under it). A `FAIL` makes the command exit 1; `KNOWN` marks an accepted limit and does not.
+Without `agent-browser` on `PATH` the check is skipped, says so, and exits 0; this repo never
+installs it. It cannot judge the physical RX screen or the knock; look at those there.
+
 ## Running the tests on Windows
 
 The Claude hook launcher (`apps/collector/bin/claude-hook`) is a POSIX `sh` script, so the
@@ -287,6 +302,7 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `collector:heartbeat`         | Resident machine heartbeat: one beat every 30 s to `POST /ingest/heartbeat`.     |
 | `collector:launchd`           | Print-only: launchd job files for the Mac's resident processes → `~/.agentcity/launchd/`. See [Mac login jobs](#mac-login-jobs-launchd). |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
+| `check:board`                 | Screen check of `127.0.0.1:4317` through `agent-browser` (skipped without it). See [Development and checks](#development-and-checks). |
 
 **Machine heartbeat.** `collector:heartbeat` (run on each machine with `AGENTCITY_MACHINE` =
 `cockpit` / `forge` / `spine`) sends a beat every 30 s; `GET /api/machines` and the *Machines* strip
@@ -602,6 +618,8 @@ The following work is planned, not implemented by the telemetry layer above.
   exposing a hub beyond loopback
 - Service units for the hub, Codex tailer, and SSH tunnels remain to be added
 - Old token-scoped `github_etags` rows are not automatically pruned
+- Board width on narrow screens: fixed 320px and 300px side columns leave 746px (54.6%) for the village at 1366px; the village reaches 60% at widths of 1550px or more.
+- At 1366×768, a long HQ waiting list leaves the 자리 비운 사이 rows out of view (RX is 1920×1080).
 - Board known limits: open P2s from the Codex reviews of `feat/board-sessions` (line numbers as of
   `0855f2b`). Accepted for now; if the kiosk shows a real miss, the dwell logic is to be reworked as
   one function rather than patched piece by piece.
