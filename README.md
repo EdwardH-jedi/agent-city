@@ -109,17 +109,24 @@ engine's listeners) for it.
   owner's Agent Borough ring town (Agent Office Town M3.0–M3.2a): its low-res renderer is copied into
   `apps/web/src/town/engine/` (origin commit, files and every changed line in `engine/PROVENANCE.md`) and
   driven from the same model. A ring boulevard around a plaza with the leaderboard pylon (`AGENT CITY`,
-  one row per project, `ALL` totals, `OFFLINE` and `—` when the Mac stops reporting); HQ is one lot, the
+  one row per project with its 진행 and 대기 counts, `ALL` totals, `OFFLINE` and `—` when the Mac stops
+  reporting); HQ is one lot, the
   cafe another, the other eight are project buildings, filled clockwise in the grid's order and kept while
-  a project stays shown (empty lots are boarded `COMING SOON`). A building's sign is its name; its door lamp
+  a project stays shown (empty lots are boarded `COMING SOON`). A building's sign is its name on a lit board
+  (about 8 characters; signs, pylon rows and the map's 3-letter labels are shortened so no two read alike);
+  its door lamp
   is red (멈춤) > yellow (결재 / 입력 대기) > green (running) > off; lit windows = running runs + active
   sessions (at most 4). The kangaroo is the owner (drawn while the cockpit is `online`): it patrols the
-  boulevard (about 4 min a lap), and when a 결재 lead has reached the HQ door it walks back and the camera
-  stops on the HQ front with the pylon in view; leads queue at the door in the HQ 대기 card order, reports
+  boulevard (about 4 min a lap); when a 결재 lead reaches the HQ door it walks back and the camera holds a
+  close shot of the door and the queue for 5 minutes from that arrival, then the patrol resumes while the
+  lead keeps standing at the door (a new 결재 arriving brings it back for 5 minutes); leads queue at the
+  door in the HQ 대기 card order, reports
   come and go without stopping the patrol, and the one bubble at the HQ door is above the stage. A reload
   never replays a walk. `?time=day|dusk|night` pins the look (otherwise the local hour: day 07–17, dusk
-  17–20, night 20–07). The map at the top of the left column shows the lots, their lamps and the kangaroo.
-  Reports stopped: everything stands still; reduced motion: the kangaroo at the HQ and a fixed shot. The
+  17–20, night 20–07). The map at the top of the left column shows the lots, their lamps and the kangaroo;
+  it gives way to the 결재 cards (its title first) and hides only below 64 px.
+  Reports stopped: everything stands still; reduced motion: the kangaroo at the HQ and a fixed wide shot of
+  the plaza and the pylon. The
   picture is 384×288 at an integer scale (narrowed to keep 2× on a 1366×768 screen). Same fallbacks as the
   campus: no WebGL, a missing chunk or a lost context → the 2D grid.
 - **The 3D campus** (`?scene=campus`; `apps/web/src/campus/`, a lazy chunk with `three`) draws the same model: a fixed

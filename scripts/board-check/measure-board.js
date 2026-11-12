@@ -287,24 +287,32 @@
 		metrics.demoLabels,
 	);
 	check("status_sentence", metrics.sentence.length > 0, metrics.sentence);
-	// the town at 1920 × 1080 has room for its minimap above the 결재 cards (owner review R1: it hid while
-	// space was left); smaller screens may hide it — the cards come first
+	// the town's minimap gives way to the 결재 cards (12 §3) but must not hide while the HQ column still has
+	// room for it (owner review R1: MAP missing with space left under the column). Room = the empty height
+	// under the column's last block; a map needs 64 px + its title and gaps (TownMinimap.tsx MIN_H).
 	const townMap = document.querySelector(".town-map");
-	if (
-		document.querySelector(".town-stage canvas") &&
-		innerWidth >= 1920 &&
-		innerHeight >= 1080
-	)
-		check(
-			"town_minimap_shown",
+	if (document.querySelector(".town-stage canvas") && hq) {
+		const shown =
 			!!townMap &&
-				!townMap.hidden &&
-				townMap.getBoundingClientRect().height >= 64,
-			{
-				mounted: !!townMap,
-				hidden: townMap ? townMap.hidden : null,
-				height: rect(townMap)?.height ?? null,
-			},
+			!townMap.hidden &&
+			townMap.getBoundingClientRect().height >= 64;
+		const blocks = [...hq.children].filter(
+			(e) => e !== townMap && getComputedStyle(e).display !== "none",
 		);
+		const last = blocks[blocks.length - 1];
+		const pad = Number.parseFloat(getComputedStyle(hq).paddingBottom) || 0;
+		const spare = last
+			? Math.round(
+					hq.getBoundingClientRect().bottom -
+						pad -
+						last.getBoundingClientRect().bottom,
+				)
+			: 0;
+		check("town_minimap_not_hidden_with_room", shown || spare < 64 + 46, {
+			mounted: !!townMap,
+			shown,
+			spare,
+		});
+	}
 	return { metrics, checks };
 })();

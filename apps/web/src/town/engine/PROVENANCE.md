@@ -159,7 +159,12 @@ TownRooControlsM2, six decorative townsfolk, the `d` key; replaced by `../patrol
   stopping freeze it and it resumes from the same spot. The kangaroo is a state machine stepped on the scene
   clock (patrol → to-hq → at-hq → back → patrol, each from where it is); its patrol phase is scene time plus a
   shift set when it rejoins the line, so after a reload it starts on the plain scene-time patrol (or at the HQ
-  if a 결재 lead is already there).
+  if a 결재 lead arrived there less than five minutes ago).
+- R1 (owner review): the kangaroo stays at the HQ for `HQ_HOLD_MS` (5 min) after a 결재 lead's real arrival
+  (wall-clock age beyond the clamped head start, `lateMsOf`), or after a 보고 lead turned into a 결재 in place
+  (`signedAtOf`), then patrols again while the lead keeps standing at the door. The 결재 HQ shot is a close
+  one (`HQ_SHOT`: door, queue, kangaroo); reduced motion keeps the old wide `PLAZA_SHOT` with the pylon. The
+  first in the queue stands 1.2 off the facade, so the camera-facing sprite does not lean back into it.
 
 ## Re-check against the original
 
@@ -169,5 +174,5 @@ for f in $E/*.mjs; do n=$(basename $f); case $n in town-roo-art-m2.mjs) s=$O/app
   diff <(sed "s#'../vendor/three.module.js'#'three'#" $s) $f >/dev/null || echo "differs: $n"; done
 ```
 
-`town-roo-art-m2.mjs`, `town-art.mjs` (item 2), `facade-gen.mjs`, `alley-meshes.mjs`, `scene-ring.mjs` (item 4) and
-`sprites.mjs` (item 5), `pipeline-core.mjs` (item 6) should print.
+`town-roo-art-m2.mjs`, `town-art.mjs` (item 2), `facade-gen.mjs`, `alley-meshes.mjs`, `scene-ring.mjs` (items 4, 7),
+`sprites.mjs` (item 5), `pipeline-core.mjs` (item 6) and `leaderboard.mjs` (item 7) should print — eight files.
