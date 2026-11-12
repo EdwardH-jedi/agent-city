@@ -360,21 +360,34 @@ function heredocAt(line: string): number {
  * `secret.txt` and `token-store.ts` are not cut: the word must be followed by a separator).
  */
 const CREDENTIAL =
-	/(?<![A-Za-z])(?:password|passwd|passphrase|secret|token|authorization|api[-_]?key|apikey|credentials?|bearer|cookie|private[-_]?key|access[-_]?key)(?=[\s=:'"])/i;
+	/(?<![A-Za-z])(?:password|passwd|passphrase|secret|auth[-_]?token|token|authorization|api[-_]?key|apikey|credentials?|bearer|cookie|private[-_]?key|access[-_]?key)(?=[\s=:'"+])/i;
+/** `scheme://user:pw@host` with an empty user or a `/` in the password (redact() needs neither). */
+const URL_PASSWORD =
+	/(\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s:@/]{0,256}):[^\s@]{1,512}@/gi;
+/** `curl -u user:pw`, `--user user:pw`, `sshpass -p pw` (single-dash and plain-name credentials). */
+const USER_PASS =
+	/((?:^|\s)(?:-u|--user)[\s=]{1,4}["']?[^\s:"']{0,256}):[^\s"']{1,512}/g;
+const SSHPASS = /(\bsshpass\s{1,4}-p\s{0,4})\S{1,512}/g;
 
 /**
  * The tail's last guard (INBOX-A 2026-11-13 B2 P1): `redact()` misses an unclosed quote
  * (`--password "x`), a custom auth scheme (`Authorization: Custom x`), PowerShell's `-Password 'x'` and
- * `password="x`. On the always-on screen anything after a credential word is dropped: the word stays (so
+ * `password="x`, `NAME+=x`, `_authToken x`; also `-u user:pw` / `--user user:pw`, `sshpass -p pw` and a URL
+ * password with an empty user or a `/` (A5 review shapes). On the always-on screen anything after a
+ * credential word is dropped: the word stays (so
  * the line still says what ran), its `=` / `:` too, and the rest becomes `[REDACTED]`. A line where the
  * word has no value after it is left alone. Linear: one search with a fixed pattern.
  */
-export function hideCredentials(line: string): string {
+export function hideCredentials(input: string): string {
+	const line = input
+		.replace(URL_PASSWORD, "$1:[REDACTED]@")
+		.replace(USER_PASS, "$1:[REDACTED]")
+		.replace(SSHPASS, "$1[REDACTED]");
 	const m = CREDENTIAL.exec(line);
 	if (!m) return line;
 	let end = m.index + m[0].length;
 	const rest = line.slice(end);
-	const sep = /^\s*[=:]?/.exec(rest)?.[0] ?? "";
+	const sep = /^\s*\+?[=:]?/.exec(rest)?.[0] ?? "";
 	end += sep.length;
 	const value = line
 		.slice(end)
