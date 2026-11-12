@@ -963,15 +963,17 @@ tr.st-waiting td {
 	border: 1px solid var(--b-line);
 	border-radius: 3px;
 }
+/* 예시 데이터 is not a state: the panel's own tones, no yellow (owner review R1: the frame keeps the town
+   panel colours, yellow and red only show state). 화면 연결 끊김 is a state: its border stays yellow. */
 .scene-town .demo-band {
-	color: #f6d070;
-	background: #2c2012;
-	border: 1px solid #c88a2a;
+	color: var(--b-fg);
+	background: var(--b-btn);
+	border: 1px solid var(--b-edge);
 	border-radius: 3px;
 	letter-spacing: 0.05em;
 }
 .scene-town .conn-band {
-	background: #2c2012;
+	background: var(--b-panel);
 	border-radius: 0 0 3px 3px;
 }
 /* the side columns: an inset panel with the original's edge colour, behind the content */
