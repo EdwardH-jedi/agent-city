@@ -272,6 +272,30 @@ describe("short, distinct names: signs, pylon rows, minimap", () => {
 		const rows = boardViewOf(model(repos), asg).rows.map((r) => r.label);
 		expect(rows).toEqual(["ROVER9", "ROV-UI"]);
 	});
+
+	test("lots: a project never reads like HQ, the cafe or the pylon's ALL; pylon and map use letters and digits only", () => {
+		const repos = [
+			repo("o/hq"),
+			repo("o/all"),
+			repo("o/caf"),
+			repo("o/no-wukkas"),
+			repo("o/dash", { label: "—?+" }),
+		];
+		const asg = assignLots(
+			new Map(),
+			repos.map((r) => r.repo_id),
+		);
+		const by = new Map(buildLots(asg, repos).map((l) => [l.repo_id, l]));
+		expect(by.get("o/hq")?.sign).not.toBe("HQ");
+		expect(by.get("o/hq")?.mapLabel).not.toBe("HQ");
+		expect(by.get("o/caf")?.mapLabel).not.toBe("CAF");
+		expect(by.get("o/all")?.label).not.toBe("ALL");
+		expect(by.get("o/no-wukkas")?.sign.startsWith("NO-WUKKA")).toBe(false);
+		for (const l of [...by.values()].filter((x) => x.repo_id)) {
+			expect(l.label).toMatch(/^[A-Z0-9-]+$/);
+			expect(l.mapLabel ?? "").toMatch(/^[A-Z0-9-]+$/);
+		}
+	});
 });
 
 describe("lamps", () => {

@@ -10,7 +10,7 @@
 //  - The pylon: title AGENT CITY, one row per project (진행, 대기), ALL = totals; OFFLINE with "—" when
 //    reports stopped.
 //  - Signs (lit boards, 3×), pylon rows and minimap labels are short and distinct among the projects shown
-//    (distinctLabels): two `station0…` repos never read the same.
+//    (distinctLabels): a repo and its worktrees never read the same.
 import type { CampusModel, CampusRepo } from "../campus/presentation.ts";
 import {
 	type BoardView,
@@ -143,11 +143,11 @@ function hasSignGlyph(ch: string): boolean {
 }
 
 // ── short, distinct names (signs, pylon rows, minimap) ──────────────────────────
-// A name is cut into words (anything the font cannot draw, and `-`, separates them: `station0-ui_x` →
-// STATION0 UI X). Each place has a fit (characters and texels). A name tries, in order: all its words; the
+// A name is cut into words (anything the font cannot draw, and `-`, separates them: `rover9-ui_x` →
+// ROVER9 UI X). Each place has a fit (characters and texels). A name tries, in order: all its words; the
 // most whole words that fit (4 characters or more); all its words cut to fit; its first word cut to fit;
-// its first word shortened + one later word (`STATI-NAV`, `SNA`). Names that would read the same move on to their next try — except that one of them
-// with the fewest words keeps it (the `station0` among `station0-ui`, `station0-nav`…). Still alike after
+// its first word shortened + one later word (`ROVE-NAV`, `RNA`). Names that would read the same move on to their next try — except that one of them
+// with the fewest words keeps it (the `rover9` among `rover9-ui`, `rover9-nav`…). Still alike after
 // every try (identical names): the end becomes a digit.
 
 /** Words of a name in a font: upper case, split at `-` and every character the font lacks. */
@@ -249,6 +249,7 @@ export function distinctLabels(
 				return c;
 			}
 		}
+		// more than 99 names that read alike (never with 8 lots): give up on distinct, keep it short
 		return base || "-";
 	});
 }
@@ -259,6 +260,9 @@ export function distinctLabels(
  * characters; the full name is in the side columns.
  */
 export const SIGN_SCALE = 3;
+/** Pylon and map labels use letters and digits only: the font's `—` `?` `+` mean "no data" there. */
+const hasLetterOrDigit = (ch: string): boolean =>
+	/^[A-Z0-9]$/.test(ch) && hasGlyph(ch);
 /** Text width (texels) a 3× board may take: ceil((tw + 18) / 8) / 2 ≤ SIGN_BOARD_MAX_UNITS. */
 export const SIGN_TEXT_MAX_TX = 110;
 export const SIGN_FONT: LabelFont = {
@@ -268,13 +272,13 @@ export const SIGN_FONT: LabelFont = {
 };
 /** The pylon's row label: 6 characters of the leaderboard font, 25 texels. */
 export const BOARD_FONT: LabelFont = {
-	has: hasGlyph,
+	has: hasLetterOrDigit,
 	fits: (s) => s.length <= 6 && boardText(s, 6, LABEL_MAX_W) === s,
 	sep: "-",
 };
 /** The minimap's lot label: 3 characters. */
 export const MAP_FONT: LabelFont = {
-	has: hasGlyph,
+	has: hasLetterOrDigit,
 	fits: (s) => s.length <= 3 && boardText(s, 3, 30) === s,
 	sep: "",
 };
@@ -298,7 +302,12 @@ export function lotLabels(
 				PROJECT_SLOTS.indexOf(assign.get(b.repo_id) ?? ""),
 		);
 	const names = shown.map((r) => r.label);
-	const sign = distinctLabels(names, SIGN_FONT, ["HQ", "NO WUKKAS"]);
+	const sign = distinctLabels(names, SIGN_FONT, [
+		"HQ",
+		"NO WUKKAS",
+		"NO-WUKKAS",
+		"NO-WUKKA",
+	]);
 	const board = distinctLabels(names, BOARD_FONT, ["ALL"]);
 	const map = distinctLabels(names, MAP_FONT, ["HQ", CAFE_MAP_LABEL]);
 	return new Map(
