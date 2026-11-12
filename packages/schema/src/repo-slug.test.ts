@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+	GIT_INSTEADOF_MAX,
+	GIT_PATH_MAX,
+	GIT_REMOTES_MAX,
+	GIT_URL_MAX,
 	githubRepoFromConfig,
 	githubRepoFromRemotes,
 	localRepoId,
@@ -326,5 +330,126 @@ describe("trailing-separator trimming is linear (the hook and ingest feed it unt
 		for (const t of tops)
 			for (const c of commons)
 				expect(localRepoId(t, c)).toBe(oldLocalRepoId(t, c));
+	});
+});
+
+describe("input limits: over one, the checkout is not taken for a GitHub repo (local/<folder>)", () => {
+	test("the limits", () => {
+		expect([
+			GIT_REMOTES_MAX,
+			GIT_INSTEADOF_MAX,
+			GIT_URL_MAX,
+			GIT_PATH_MAX,
+		]).toEqual([32, 32, 2048, 4096]);
+	});
+	const remoteSec = (name: string, url: string) =>
+		`[remote "${name}"]\n\turl = ${url}\n`;
+	const gh = "https://github.com/o/r.git";
+
+	test(`remotes: ${GIT_REMOTES_MAX} counted, one more → null (config and the hub's remote list alike)`, () => {
+		const many = (n: number) =>
+			Array.from({ length: n }, (_, i) => remoteSec(`r${i}`, gh)).join("");
+		expect(githubRepoFromConfig(many(GIT_REMOTES_MAX))).toBe("o/r");
+		expect(githubRepoFromConfig(many(GIT_REMOTES_MAX + 1))).toBeNull();
+		// the same remote written twice is one remote
+		expect(githubRepoFromConfig(many(1).repeat(GIT_REMOTES_MAX + 5))).toBe(
+			"o/r",
+		);
+		const list = (n: number) =>
+			Array.from({ length: n }, (_, i) => ({ name: `r${i}`, url: gh }));
+		expect(githubRepoFromRemotes(list(GIT_REMOTES_MAX))).toBe("o/r");
+		expect(githubRepoFromRemotes(list(GIT_REMOTES_MAX + 1))).toBeNull();
+		expect(
+			githubRepoFromRemotes([
+				{ name: "origin", url: gh },
+				...list(GIT_REMOTES_MAX),
+			]),
+		).toBeNull();
+	});
+
+	test(`urls: ${GIT_URL_MAX} chars parse, one more → null (origin or not, config or hub)`, () => {
+		const url = (len: number) => {
+			const head = "https://github.com/o/";
+			return head + "r".repeat(len - head.length);
+		};
+		const name = (len: number) =>
+			`o/${"r".repeat(len - "https://github.com/o/".length)}`;
+		expect(url(GIT_URL_MAX)).toHaveLength(GIT_URL_MAX);
+		expect(githubRepoFromConfig(remoteSec("origin", url(GIT_URL_MAX)))).toBe(
+			name(GIT_URL_MAX),
+		);
+		expect(
+			githubRepoFromConfig(remoteSec("origin", url(GIT_URL_MAX + 1))),
+		).toBeNull();
+		expect(
+			githubRepoFromConfig(remoteSec("gh", url(GIT_URL_MAX + 1))),
+		).toBeNull();
+		// a long url on another remote: no guess even though origin decides alone
+		expect(
+			githubRepoFromConfig(
+				remoteSec("origin", gh) + remoteSec("x", url(GIT_URL_MAX + 1)),
+			),
+		).toBeNull();
+		expect(
+			githubRepoFromRemotes([{ name: "origin", url: url(GIT_URL_MAX + 1) }]),
+		).toBeNull();
+		expect(
+			githubRepoFromRemotes([
+				{ name: "a", url: gh },
+				{ name: "b", url: url(GIT_URL_MAX + 1) },
+			]),
+		).toBeNull();
+		// a remote without url uses its name as url: the same limit
+		expect(
+			githubRepoFromConfig(`[remote "${"n".repeat(GIT_URL_MAX + 1)}"]\n`),
+		).toBeNull();
+	});
+
+	test(`insteadOf: ${GIT_INSTEADOF_MAX} rules, base and prefix ${GIT_URL_MAX} chars; one more → null`, () => {
+		const rules = (n: number) =>
+			`[url "https://github.com/"]\n${Array.from({ length: n }, (_, i) => `\tinsteadOf = p${i}:\n`).join("")}`;
+		const origin = remoteSec("origin", "p0:o/r");
+		expect(githubRepoFromConfig(rules(GIT_INSTEADOF_MAX) + origin)).toBe("o/r");
+		expect(
+			githubRepoFromConfig(rules(GIT_INSTEADOF_MAX + 1) + origin),
+		).toBeNull();
+		const base = (len: number) =>
+			`https://github.com/o/${"r".repeat(len - 21)}`;
+		const viaBase = (len: number) =>
+			`[url "${base(len)}"]\n\tinsteadOf = g\n${remoteSec("origin", "g")}`;
+		expect(githubRepoFromConfig(viaBase(GIT_URL_MAX - 10))).toBe(
+			`o/${"r".repeat(GIT_URL_MAX - 31)}`,
+		);
+		expect(githubRepoFromConfig(viaBase(GIT_URL_MAX + 1))).toBeNull();
+		// the origin url is the prefix itself, so only the prefix is at the limit
+		const prefix = (len: number) => "q".repeat(len);
+		const viaPrefix = (len: number) =>
+			`[url "https://github.com/o/r"]\n\tinsteadOf = ${prefix(len)}\n${remoteSec("origin", prefix(len))}`;
+		expect(githubRepoFromConfig(viaPrefix(GIT_URL_MAX))).toBe("o/r");
+		expect(githubRepoFromConfig(viaPrefix(GIT_URL_MAX + 1))).toBeNull();
+		// the rewritten url is a url too: base + rest over the limit → null
+		expect(
+			githubRepoFromConfig(
+				`[url "${base(GIT_URL_MAX)}"]\n\tinsteadOf = g\n${remoteSec("origin", "gx")}`,
+			),
+		).toBeNull();
+	});
+
+	test("no origin: two different github repos end the search (ambiguous → null)", () => {
+		expect(
+			githubRepoFromConfig(
+				remoteSec("a", "https://github.com/o/one") +
+					remoteSec("b", "https://github.com/o/two") +
+					remoteSec("c", "https://github.com/o/one"),
+			),
+		).toBeNull();
+	});
+
+	test(`common dir over ${GIT_PATH_MAX} chars is ignored: the worktree keeps its own folder`, () => {
+		const common = (len: number) =>
+			`/${"a".repeat(len - "//main/.git".length)}/main/.git`;
+		expect(common(GIT_PATH_MAX)).toHaveLength(GIT_PATH_MAX);
+		expect(localRepoId("/w/wt", common(GIT_PATH_MAX))).toBe("local/main");
+		expect(localRepoId("/w/wt", common(GIT_PATH_MAX + 1))).toBe("local/wt");
 	});
 });

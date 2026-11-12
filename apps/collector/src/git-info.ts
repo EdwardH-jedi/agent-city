@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
+	GIT_PATH_MAX,
 	githubRepoFromConfig,
 	localRepoId,
 	remotesFromConfig,
@@ -28,6 +29,12 @@ export interface GitInfo {
 
 /** Largest .git metadata file we'll read (HEAD, config, commondir, gitdir pointer). */
 export const GIT_FILE_MAX = 64 * 1024;
+/**
+ * Backstop for the whole of gitInfo(): past it, checked between steps, the answer is local/<folder>.
+ * The input limits (GIT_*_MAX in @agent-city/schema repo-slug.ts) are what bound the work; this only
+ * catches what they don't (a slow disk, a stalled filesystem call that eventually returns).
+ */
+export const GIT_INFO_BUDGET_MS = 100;
 
 /**
  * Read a small regular file without ever blocking (audit F01: a FIFO .git/config hung the hook):
@@ -89,9 +96,28 @@ export function originUrlFromConfig(config: string): string | null {
 	);
 }
 
-export function gitInfo(cwd: string): GitInfo | null {
+/**
+ * The checkout `cwd` is in, or null outside one (or for a cwd over GIT_PATH_MAX chars). Never throws,
+ * and stays bounded: a path over
+ * GIT_PATH_MAX or the time budget passed between steps ends it with local/<folder> (the work tree's
+ * own folder); config limits (GIT_*_MAX) end the GitHub lookup the same way. `now` is for tests.
+ */
+export function gitInfo(
+	cwd: string,
+	now: () => number = () => performance.now(),
+): GitInfo | null {
+	const deadline = now() + GIT_INFO_BUDGET_MS;
+	// the hook clips cwd to 4 096 chars (+ "…"): longer is no real path, and the walk up is linear in it
+	if (cwd.length > GIT_PATH_MAX) return null;
 	const found = findDotGit(cwd);
 	if (!found) return null;
+	const local = (branch: string | null = null): GitInfo => ({
+		toplevel: found.toplevel,
+		repo_id: localRepoId(found.toplevel),
+		branch,
+	});
+	const late = () => now() > deadline;
+	if (late()) return local();
 
 	let gitDir = found.dotGit;
 	if (!found.isDir) {
@@ -101,14 +127,20 @@ export function gitInfo(cwd: string): GitInfo | null {
 		const m = /^gitdir:\s*(.+)$/m.exec(asFile);
 		if (!m?.[1]) return null;
 		const p = m[1].trim();
+		if (p.length > GIT_PATH_MAX) return local();
 		gitDir = isAbsolute(p) ? p : resolve(found.toplevel, p);
+		if (late()) return local();
 	}
 	const commondirRel = read(join(gitDir, "commondir"))?.trim();
+	if (commondirRel && commondirRel.length > GIT_PATH_MAX) return local();
 	const commonDir = commondirRel ? resolve(gitDir, commondirRel) : gitDir;
+	if (late()) return local();
 
 	const head = read(join(gitDir, "HEAD"))?.trim() ?? "";
-	const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+	const branch = /^ref:\s*refs\/heads\/(.+)$/.exec(head)?.[1] ?? null; // detached HEAD → null
+	if (late()) return local(branch);
 	const config = read(join(commonDir, "config")) ?? "";
+	if (late()) return local(branch);
 	// only a linked worktree (its own git dir under the common one) names the main checkout
 	const linked = resolve(commonDir) !== resolve(gitDir);
 
@@ -117,6 +149,6 @@ export function gitInfo(cwd: string): GitInfo | null {
 		repo_id:
 			githubRepoFromConfig(config) ??
 			localRepoId(found.toplevel, linked ? resolve(commonDir) : null),
-		branch: ref?.[1] ?? null, // detached HEAD → null
+		branch,
 	};
 }

@@ -33,6 +33,10 @@ export {
 	type ToolInputSummary,
 } from "./redact.ts";
 export {
+	GIT_INSTEADOF_MAX,
+	GIT_PATH_MAX,
+	GIT_REMOTES_MAX,
+	GIT_URL_MAX,
 	type GitRemote,
 	githubRepoFromConfig,
 	githubRepoFromRemotes,

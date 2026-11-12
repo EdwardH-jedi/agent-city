@@ -76,6 +76,10 @@ bun run check:secrets    # scan tracked/untracked files for token patterns
   github.com repo, or — with no `origin` — the one github.com repo among the remotes (two different
   ones: no guess). Otherwise `local/<dir>`. The rule lives in `packages/schema/src/repo-slug.ts`
   (`githubRepoFromRemotes`, `localRepoId`) and is shared by the hub's local scan and the collectors.
+  Input limits keep its work constant: over `GIT_REMOTES_MAX` (32) remotes, `GIT_INSTEADOF_MAX` (32)
+  insteadOf rules, `GIT_URL_MAX` (2048) chars in a url / base / prefix, or `GIT_PATH_MAX` (4096) in a
+  gitdir / commondir path, the checkout is `local/<dir>` (no throw; the event is still spooled). Code
+  that reads .git files in the hook stays linear and inside these limits — no new unbounded loops.
 - Session status transitions come only from `packages/schema/src/status.ts`.
 - Session / agent ids come only from `packages/schema/src/ids.ts` (final scheme): a raw id is used
   verbatim only if it matches `[A-Za-z0-9._-]{1,128}` and holds no secret, else it becomes

@@ -66,16 +66,35 @@ function parentOf(path: string): string {
  * except for a linked worktree: pass its git common dir (absolute, `git rev-parse --git-common-dir`, or
  * `<gitdir>/commondir` resolved) and when that is a `<main>/.git` the id is the main checkout's folder,
  * so a repo and all its worktrees are one building. A bare common dir (not named `.git`) has no
- * checkout folder: the worktree keeps its own name. Collector and hub both call this.
+ * checkout folder: the worktree keeps its own name; so does a common dir over GIT_PATH_MAX chars.
+ * Collector and hub both call this.
  */
 export function localRepoId(
 	toplevel: string,
 	commonDir?: string | null,
 ): string {
 	const own = lastSegment(toplevel) || "unknown";
-	if (!commonDir || lastSegment(commonDir) !== ".git") return `local/${own}`;
+	if (
+		!commonDir ||
+		commonDir.length > GIT_PATH_MAX ||
+		lastSegment(commonDir) !== ".git"
+	)
+		return `local/${own}`;
 	return `local/${lastSegment(parentOf(commonDir)) || own}`;
 }
+
+// Input limits of the shared rule (collector and hub). Past any of them the checkout is not taken for a
+// GitHub repo: the id falls back to local/<folder> — no throw, the event is still spooled. They make the
+// worst-case work a constant (see "Worst-case work" below) instead of a product of what a
+// hostile .git/config holds (seen: 2 486 remotes × a 16 000-char insteadOf base → 960 ms in the hook).
+/** Remotes in one checkout (distinct names). */
+export const GIT_REMOTES_MAX = 32;
+/** `url.<base>.insteadOf` rules in one config. */
+export const GIT_INSTEADOF_MAX = 32;
+/** Chars in a remote url (before and after insteadOf), an insteadOf base, an insteadOf prefix. */
+export const GIT_URL_MAX = 2048;
+/** Chars in a git dir / common dir path (a `gitdir:` pointer, a `commondir` file). */
+export const GIT_PATH_MAX = 4096;
 
 export interface GitRemote {
 	name: string;
@@ -85,9 +104,18 @@ export interface GitRemote {
 // The parsing below is hand-written and linear in the line length (no backtracking regex): it runs in the
 // Claude Code hook on a .git/config of up to 64 KB (Hard rule 4: bounded time). The same holds above:
 // trimEnd scans instead of /[/\\]+$/, and the GITHUB_REMOTE patterns are ^-anchored with no `m` flag,
-// so they try one start position (linear; git-info-bounded.test.ts times gitInfo() on worst-case files).
-// Not yet linear here: readGitConfig's names.includes and the remotes × insteadOf rewrite are O(n²) in
-// the section count (bounded: ~22 ms at 64 KB).
+// so they try one start position.
+//
+// Worst-case work, from the limits (the collector reads at most GIT_FILE_MAX = 64 KiB):
+//  - scan: one pass over the file, O(1) per char (header, key and value scanners are linear in their
+//    line; remote names are deduplicated in a Map), stopping at the first limit hit: ≤ 64 K steps;
+//  - rewrite: ≤ 32 rules, each a startsWith of a prefix ≤ 2 048 chars: ≤ 65 K char compares per url.
+//    githubRepoFromConfig rewrites origin alone when there is one; without one, each remote in file
+//    order until two different repos show up (ambiguous): ≤ 32 urls → ≤ 2.1 M compares;
+//    readGitConfig / remotesFromConfig rewrite every remote: the same ≤ 2.1 M;
+//  - parse: ≤ 3 anchored regexes over a url ≤ 2 048 chars + repoKey's lower-casing, per remote:
+//    ≤ 32 × ~8 K = 0.26 M steps.
+// Total ≤ ~2.5 M simple steps whatever the file holds (git-info-bounded.test.ts times the shapes).
 
 /**
  * A section header line: `[remote "x"]`, `[url "base"]`, legacy `[remote.x]` (its name lower-cased, as
@@ -150,21 +178,30 @@ export interface GitConfigRemotes {
 	remotes: GitRemote[];
 	/** The file pulls in other files (`[include]` / `[includeIf]`): remotes may be missing from it. */
 	includes: boolean;
+	/** A GIT_*_MAX limit was hit: the scan stopped there and `remotes` is empty (not a GitHub repo). */
+	overLimit: boolean;
 }
 
-/**
- * The remotes of a git config file, by text only — the hook never runs git. Urls can hold credentials:
- * callers keep only what parseGithubRemote makes of them.
- */
-export function remotesFromConfig(config: string): GitRemote[] {
-	return readGitConfig(config).remotes;
+interface InsteadOf {
+	base: string;
+	prefix: string;
 }
-export function readGitConfig(config: string): GitConfigRemotes {
-	// every [remote "x"] section names a remote, url or not (git then uses the name as its url)
-	const names: string[] = [];
-	const urls = new Map<string, string>();
-	const insteadOf: { base: string; prefix: string }[] = [];
+interface ParsedConfig {
+	/** First url of each remote as written (no insteadOf), or the remote's name when it has none. */
+	remotes: GitRemote[];
+	rules: InsteadOf[];
+	includes: boolean;
+	overLimit: boolean;
+}
+
+/** One pass over the file; stops at the first GIT_*_MAX limit hit (the result is then unusable). */
+function parseGitConfig(config: string): ParsedConfig {
+	// every [remote "x"] section names a remote, url or not (git then uses the name as its url);
+	// Map: file order, O(1) dedupe of a section written twice. null = no url seen yet.
+	const urls = new Map<string, string | null>();
+	const rules: InsteadOf[] = [];
 	let includes = false;
+	let overLimit = false;
 	let sec: ReturnType<typeof sectionOf> = null;
 	const entry = (line: string) => {
 		if (!sec || sec.sub === null) return;
@@ -173,54 +210,90 @@ export function readGitConfig(config: string): GitConfigRemotes {
 		const key = kv[1].toLowerCase();
 		const name = sec.sub;
 		if (sec.kind === "remote" && key === "url") {
-			if (!urls.has(name)) urls.set(name, configValue(kv[2]));
-		} else if (sec.kind === "url" && key === "insteadof")
-			insteadOf.push({ base: name, prefix: configValue(kv[2]) });
+			if (urls.get(name) !== null) return; // only the first url of a remote counts
+			const url = configValue(kv[2]);
+			if (url.length > GIT_URL_MAX) overLimit = true;
+			else urls.set(name, url);
+		} else if (sec.kind === "url" && key === "insteadof") {
+			const prefix = configValue(kv[2]);
+			if (
+				rules.length >= GIT_INSTEADOF_MAX ||
+				name.length > GIT_URL_MAX ||
+				prefix.length > GIT_URL_MAX
+			)
+				overLimit = true;
+			else rules.push({ base: name, prefix });
+		}
 	};
 	for (const rawLine of config.split("\n")) {
+		if (overLimit) break;
 		const line = rawLine.trim();
 		if (!line || line.startsWith("#") || line.startsWith(";")) continue;
 		if (line.startsWith("[")) {
 			sec = sectionOf(line);
 			if (sec && (sec.kind === "include" || sec.kind === "includeif"))
 				includes = true;
-			if (
-				sec?.kind === "remote" &&
-				sec.sub !== null &&
-				!names.includes(sec.sub)
-			)
-				names.push(sec.sub);
+			if (sec?.kind === "remote" && sec.sub !== null && !urls.has(sec.sub)) {
+				if (urls.size >= GIT_REMOTES_MAX) {
+					overLimit = true;
+					break;
+				}
+				urls.set(sec.sub, null);
+			}
 			if (sec?.rest) entry(sec.rest);
 			continue;
 		}
 		entry(line);
 	}
-	const raw: GitRemote[] = names.map((name) => ({
-		name,
-		url: urls.get(name) ?? name,
-	}));
-	// git: the longest matching insteadOf prefix wins
-	const rewrite = (url: string): string => {
-		let best: { base: string; prefix: string } | null = null;
-		for (const r of insteadOf)
-			if (r.prefix && url.startsWith(r.prefix))
-				if (!best || r.prefix.length > best.prefix.length) best = r;
-		return best ? best.base + url.slice(best.prefix.length) : url;
-	};
 	return {
-		remotes: raw.map((r) => ({ name: r.name, url: rewrite(r.url) })),
+		remotes: [...urls].map(([name, url]) => ({ name, url: url ?? name })),
+		rules,
 		includes,
+		overLimit,
+	};
+}
+
+/** git: the longest matching insteadOf prefix wins. */
+function rewriteUrl(url: string, rules: readonly InsteadOf[]): string {
+	let best: InsteadOf | null = null;
+	for (const r of rules)
+		if (r.prefix && url.startsWith(r.prefix))
+			if (!best || r.prefix.length > best.prefix.length) best = r;
+	return best ? best.base + url.slice(best.prefix.length) : url;
+}
+
+/**
+ * The remotes of a git config file, by text only — the hook never runs git. Urls can hold credentials:
+ * callers keep only what parseGithubRemote makes of them. Over a GIT_*_MAX limit: [].
+ */
+export function remotesFromConfig(config: string): GitRemote[] {
+	return readGitConfig(config).remotes;
+}
+export function readGitConfig(config: string): GitConfigRemotes {
+	const c = parseGitConfig(config);
+	if (c.overLimit)
+		return { remotes: [], includes: c.includes, overLimit: true };
+	return {
+		remotes: c.remotes.map((r) => ({
+			name: r.name,
+			url: rewriteUrl(r.url, c.rules),
+		})),
+		includes: c.includes,
+		overLimit: false,
 	};
 }
 
 /**
  * githubRepoFromRemotes for a config file read as text (the collector): when there is no `origin` but
- * the file includes others, the origin may be defined there — no guess from the other remotes.
+ * the file includes others, the origin may be defined there — no guess from the other remotes. Over a
+ * GIT_*_MAX limit: null. insteadOf is applied only to the urls actually looked at (origin alone, when
+ * there is one).
  */
 export function githubRepoFromConfig(config: string): string | null {
-	const { remotes, includes } = readGitConfig(config);
-	if (includes && !remotes.some((r) => r.name === "origin")) return null;
-	return githubRepoFromRemotes(remotes);
+	const c = parseGitConfig(config);
+	if (c.overLimit) return null;
+	if (c.includes && !c.remotes.some((r) => r.name === "origin")) return null;
+	return repoFromRemotes(c.remotes, (url) => rewriteUrl(url, c.rules));
 }
 
 /**
@@ -228,16 +301,39 @@ export function githubRepoFromConfig(config: string): string | null {
  *  - a remote named `origin` decides alone: its github.com repo, or null when it is elsewhere;
  *  - with no `origin`, exactly one github.com repo among the remotes (any names; the same repo
  *    spelled twice counts once) names it; two different ones or none: null (the checkout is local).
+ *  - over GIT_REMOTES_MAX remotes, or any url over GIT_URL_MAX chars: null.
+ * The hub passes the urls as git resolved them (insteadOf applied); the collector goes through
+ * githubRepoFromConfig.
  */
 export function githubRepoFromRemotes(
 	remotes: readonly GitRemote[],
 ): string | null {
+	return repoFromRemotes(remotes, (url) => url);
+}
+
+function repoFromRemotes(
+	remotes: readonly GitRemote[],
+	rewrite: (url: string) => string,
+): string | null {
+	if (remotes.length > GIT_REMOTES_MAX) return null;
+	for (const r of remotes) if (r.url.length > GIT_URL_MAX) return null;
 	const origin = remotes.find((r) => r.name === "origin");
-	if (origin) return parseGithubRemote(origin.url);
-	const found = new Map<string, string>();
-	for (const r of remotes) {
-		const slug = parseGithubRemote(r.url);
-		if (slug && !found.has(repoKey(slug))) found.set(repoKey(slug), slug);
+	if (origin) {
+		const url = rewrite(origin.url);
+		return url.length > GIT_URL_MAX ? null : parseGithubRemote(url);
 	}
-	return found.size === 1 ? ([...found.values()][0] ?? null) : null;
+	let found: string | null = null;
+	let foundKey = "";
+	for (const r of remotes) {
+		const url = rewrite(r.url);
+		if (url.length > GIT_URL_MAX) return null;
+		const slug = parseGithubRemote(url);
+		if (!slug) continue;
+		const key = repoKey(slug);
+		if (found === null) {
+			found = slug;
+			foundKey = key;
+		} else if (key !== foundKey) return null; // two different repos: ambiguous, stop here
+	}
+	return found;
 }
