@@ -31,7 +31,7 @@ export function parseGithubRemote(url: string): string | null {
  * (parseGithubRemote), so a local checkout folder named `foo.git` stays `local/foo.git` everywhere.
  */
 export function normalizeRepoId(id: string): string {
-	return id.trim().replace(/\/+$/, "");
+	return trimEnd(id.trim(), "/");
 }
 
 /** Case-insensitive identity of a repo id (GitHub owner/name are case-insensitive). */
@@ -39,18 +39,24 @@ export function repoKey(id: string): string {
 	return normalizeRepoId(id).toLowerCase();
 }
 
+/**
+ * `s` without its trailing run of any char in `chars`. A backward scan, not /[…]+$/: that regex is
+ * unanchored, so each start inside a long run re-scans it (O(n²) — a 64 KB commondir of backslashes
+ * took 1.5 s in the hook).
+ */
+function trimEnd(s: string, chars: string): string {
+	let end = s.length;
+	while (end > 0 && chars.includes(s[end - 1] as string)) end--;
+	return s.slice(0, end);
+}
 /** Last path segment, either separator, trailing separators ignored ("" when there is none). */
 function lastSegment(path: string): string {
-	return (
-		path
-			.replace(/[/\\]+$/, "")
-			.split(/[/\\]/)
-			.pop() ?? ""
-	);
+	const p = trimEnd(path, "/\\");
+	return p.slice(Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")) + 1);
 }
 /** The path without its last segment (either separator). */
 function parentOf(path: string): string {
-	const p = path.replace(/[/\\]+$/, "");
+	const p = trimEnd(path, "/\\");
 	const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
 	return i > 0 ? p.slice(0, i) : "";
 }
@@ -77,7 +83,11 @@ export interface GitRemote {
 }
 
 // The parsing below is hand-written and linear in the line length (no backtracking regex): it runs in the
-// Claude Code hook on a .git/config of up to 64 KB (Hard rule 4: bounded time).
+// Claude Code hook on a .git/config of up to 64 KB (Hard rule 4: bounded time). The same holds above:
+// trimEnd scans instead of /[/\\]+$/, and the GITHUB_REMOTE patterns are ^-anchored with no `m` flag,
+// so they try one start position (linear; git-info-bounded.test.ts times gitInfo() on worst-case files).
+// Not yet linear here: readGitConfig's names.includes and the remotes × insteadOf rewrite are O(n²) in
+// the section count (bounded: ~22 ms at 64 KB).
 
 /**
  * A section header line: `[remote "x"]`, `[url "base"]`, legacy `[remote.x]` (its name lower-cased, as

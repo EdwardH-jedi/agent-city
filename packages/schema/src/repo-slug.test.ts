@@ -3,8 +3,10 @@ import {
 	githubRepoFromConfig,
 	githubRepoFromRemotes,
 	localRepoId,
+	normalizeRepoId,
 	parseGithubRemote,
 	remotesFromConfig,
+	repoKey,
 } from "./repo-slug.ts";
 
 describe("parseGithubRemote", () => {
@@ -238,5 +240,91 @@ describe("githubRepoFromConfig (the collector reads .git/config as text)", () =>
 			githubRepoFromConfig(cfg);
 			expect(performance.now() - t).toBeLessThan(50);
 		}
+	});
+});
+
+describe("trailing-separator trimming is linear (the hook and ingest feed it untrusted text)", () => {
+	// Was /[/\\]+$/ and /\/+$/: unanchored, so every start position inside a long separator run
+	// re-scanned it — 60 000 backslashes + "x" in a worktree's commondir took 1.5 s in the hook.
+	const N = 64 * 1024;
+	test.each([
+		["localRepoId, toplevel", () => localRepoId(`/w/${"\\".repeat(N)}x`)],
+		[
+			"localRepoId, toplevel of slashes",
+			() => localRepoId(`/w/${"/".repeat(N)}x`),
+		],
+		[
+			"localRepoId, common dir",
+			() => localRepoId("/w/wt", `../../${"\\".repeat(N)}x`),
+		],
+		[
+			"localRepoId, common dir ending in .git (parent folder)",
+			() => localRepoId("/w/wt", `../../${"\\".repeat(N)}/.git`),
+		],
+		["normalizeRepoId", () => normalizeRepoId(`${"/".repeat(N)}x`)],
+		["repoKey", () => repoKey(`o/${"/".repeat(N)}x`)],
+	] as const)("%s: < 50 ms", (_, run) => {
+		const t = performance.now();
+		run();
+		expect(performance.now() - t).toBeLessThan(50);
+	});
+
+	// The ids must not change: compare with the regex versions on every short string over the
+	// characters that matter (separators, a space, a dot, a letter, "git").
+	const old = {
+		lastSegment: (p: string) =>
+			p
+				.replace(/[/\\]+$/, "")
+				.split(/[/\\]/)
+				.pop() ?? "",
+		parentOf: (p: string) => {
+			const q = p.replace(/[/\\]+$/, "");
+			const i = Math.max(q.lastIndexOf("/"), q.lastIndexOf("\\"));
+			return i > 0 ? q.slice(0, i) : "";
+		},
+		normalizeRepoId: (id: string) => id.trim().replace(/\/+$/, ""),
+	};
+	const oldLocalRepoId = (toplevel: string, commonDir?: string | null) => {
+		const own = old.lastSegment(toplevel) || "unknown";
+		if (!commonDir || old.lastSegment(commonDir) !== ".git")
+			return `local/${own}`;
+		return `local/${old.lastSegment(old.parentOf(commonDir)) || own}`;
+	};
+	const strings = (alphabet: string[], max: number): string[] => {
+		let level = [""];
+		const all = [""];
+		for (let len = 1; len <= max; len++) {
+			level = level.flatMap((s) => alphabet.map((c) => s + c));
+			all.push(...level);
+		}
+		return all;
+	};
+
+	test("normalizeRepoId / repoKey: same output as the regex version", () => {
+		for (const s of strings(["/", "\\", " ", "a", "A", "\n"], 6)) {
+			expect(normalizeRepoId(s)).toBe(old.normalizeRepoId(s));
+			expect(repoKey(s)).toBe(old.normalizeRepoId(s).toLowerCase());
+		}
+	});
+
+	test("localRepoId: same output as the regex version", () => {
+		const parts = strings(["/", "\\", "a", "."], 4);
+		const tops = [...parts, "/w/wt", "C:\\w\\wt\\"];
+		// common dirs that end in a .git segment (reach parentOf), plus plain ones
+		const commons = [
+			null,
+			undefined,
+			"",
+			...parts,
+			...parts.flatMap((p) => [
+				`${p}.git`,
+				`${p}/.git`,
+				`${p}.git/`,
+				`${p}\\.git\\`,
+			]),
+		];
+		for (const t of tops)
+			for (const c of commons)
+				expect(localRepoId(t, c)).toBe(oldLocalRepoId(t, c));
 	});
 });
