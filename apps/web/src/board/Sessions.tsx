@@ -150,7 +150,11 @@ export function Sessions({
 						{panel.groups.map((g) => (
 							<li key={g.project_id} className="sess-group">
 								<div className="sess-proj">
-									<span className="sess-name">{g.label}</span>
+									<span
+										className={`sess-name${g.unassigned ? " sess-nameless" : ""}`}
+									>
+										{g.label}
+									</span>
 									{g.tag && (
 										<span className={`tag tag-${g.tag.kind}`}>
 											{g.tag.text}

@@ -4,6 +4,7 @@ import { demoData } from "./demo.ts";
 import { toVillageModel } from "./model.ts";
 import { rowTag } from "./Sessions.tsx";
 import {
+	folderLabel,
 	GROUP_CAP,
 	type PanelInput,
 	panelHeight,
@@ -133,9 +134,11 @@ describe("which sessions show (15 §3)", () => {
 			0,
 		]);
 	});
-	test("a session outside any repo goes to 미지정", () => {
-		const p = panel([sess(null, "active", 1_000)]);
-		expect(p.groups[0]?.label).toBe("미지정");
+	test("a session outside any repo goes to 미지정 (or, since 16 A4-3, its folder's name)", () => {
+		expect(
+			panel([sess(null, "active", 1_000, { cwd: null })]).groups[0]?.label,
+		).toBe("미지정");
+		expect(panel([sess(null, "active", 1_000)]).groups[0]?.label).toBe("x");
 	});
 	test("tails: 2 lines on a screen under 1600 px", () => {
 		const p = panel([sess("o/a", "active", 1_000)], { tailMax: 2 });
@@ -417,5 +420,50 @@ describe("the demo's cases (?demo=1&case=…)", () => {
 		).toBe(true);
 		for (const s of d.sessions)
 			expect(s.repo_id?.startsWith("demo/")).toBe(true);
+	});
+});
+
+describe("repo-less sessions by folder (16 A4-3)", () => {
+	test("one dim group per folder, named by its last name; no folder or a home folder: 미지정", () => {
+		const p = panel([
+			sess(null, "active", 1_000, { cwd: "/Users/demo/work/scratchpad" }),
+			sess(null, "active", 2_000, { cwd: "/Users/demo/work/scratchpad" }),
+			sess(null, "idle", 3_000, { cwd: "/tmp/try-out" }),
+			sess(null, "active", 4_000, { cwd: "/Users/demo" }),
+			sess(null, "active", 5_000, { cwd: null }),
+			sess("o/a", "active", 6_000, { cwd: "/Users/demo/work/a" }),
+		]);
+		const groups = p.groups.map((g) => [
+			g.label,
+			g.unassigned ?? false,
+			g.rows.length,
+		]);
+		expect(groups).toContainEqual(["scratchpad", true, 2]);
+		expect(groups).toContainEqual(["try-out", true, 1]);
+		expect(groups).toContainEqual(["미지정", true, 2]);
+		expect(groups).toContainEqual(["a", false, 1]);
+		// the user's name never becomes a label
+		expect(p.groups.some((g) => g.label === "demo")).toBe(false);
+	});
+
+	test("folderLabel: never a home folder or above, never a secret-looking name, at most 40 characters", () => {
+		expect(folderLabel("/Users/demo/work/orchard")).toBe("orchard");
+		expect(folderLabel("/Users/demo/work/orchard/")).toBe("orchard");
+		expect(folderLabel("C:\\Users\\demo\\proj")).toBe("proj");
+		for (const home of [
+			"/Users/demo",
+			"/Users/demo/",
+			"/home/demo",
+			"C:\\Users\\demo",
+			"~",
+			"~demo",
+			"/",
+			"",
+			null,
+		])
+			expect(folderLabel(home)).toBeNull();
+		const fake = ["ghp_", "a".repeat(36)].join("");
+		expect(folderLabel(`/tmp/${fake}`)).toBeNull();
+		expect(folderLabel(`/tmp/${"x".repeat(60)}`)?.length).toBe(40);
 	});
 });

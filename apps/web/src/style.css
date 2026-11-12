@@ -752,6 +752,11 @@ tr.st-waiting td {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+/* a repo-less group named by its folder (16 A4-3): dim, it is not a project */
+.sess-name.sess-nameless {
+	color: var(--b-muted);
+	font-weight: 400;
+}
 .sess-proj .tag {
 	max-width: 55%;
 	overflow: hidden;

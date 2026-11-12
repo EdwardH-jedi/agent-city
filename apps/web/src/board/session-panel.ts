@@ -21,7 +21,7 @@
 // - caps: ROW_CAP rows in all; then it must fit `budget` px with no scroll — folding first the oldest
 //   active session's tail, then the waiting ones' tails, then rows (resting before old waits before
 //   active, the last groups first; a 입력 대기 row is the last to go), then whole groups from the end
-import { applyStale, type Session } from "@agent-city/schema";
+import { applyStale, redact, type Session } from "@agent-city/schema";
 import { PAUSED_TAG, PROVIDER_NAME, SHORT, tagOfCode } from "./copy.ts";
 import type { VillageModel } from "./model.ts";
 import { SESSION_RECENT_MS } from "./sessions.ts";
@@ -75,6 +75,8 @@ export interface GroupTag {
 export interface PanelGroup {
 	project_id: string;
 	label: string;
+	/** Sessions with no repo (16 A4-3): the label is their folder's last name (folderLabel), drawn dim. */
+	unassigned?: boolean;
 	tag: GroupTag | null;
 	/** The run's phase (0–8) for the thin bar under the project, or null. */
 	phase: number | null;
@@ -114,6 +116,32 @@ export function cwdLookup(
 ): (id: string) => string | null {
 	const m = new Map(sessions.map((s) => [s.id, s.cwd]));
 	return (id) => m.get(id) ?? null;
+}
+
+/**
+ * A repo-less session's group name (16 A4-3): the last name of its folder — never a home folder's (that is
+ * a user name: `/Users/<name>`, `/home/<name>`, `C:\Users\<name>`, `~`) or anything above one, never a
+ * name the redaction would touch; at most 40 characters. Null: the group stays 미지정. The folder itself is
+ * never drawn.
+ */
+export function folderLabel(cwd: string | null): string | null {
+	if (!cwd) return null;
+	const parts = cwd.split(/[\\/]+/).filter(Boolean);
+	const first = (parts[0] ?? "").toLowerCase();
+	const home =
+		first === "users" || first === "home"
+			? 2
+			: /^[a-z]:$/.test(first) && (parts[1] ?? "").toLowerCase() === "users"
+				? 3
+				: first.startsWith("~")
+					? 1
+					: 0;
+	if (parts.length <= home) return null;
+	const name = parts[parts.length - 1] ?? "";
+	if (!name || name.startsWith("~") || name === "." || name === "..")
+		return null;
+	if (redact(name) !== name) return null;
+	return name.length > 40 ? `${name.slice(0, 39)}…` : name;
 }
 
 /** Order in a group and what folds last (lower stays): a yellow wait, working, an old wait, resting. */
@@ -188,13 +216,14 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 	const { sessions, tails, model, now, ui } = input;
 	const counts = { active: 0, waiting: 0, idle: 0 };
 	const drafts = new Map<string, Draft>();
-	const draft = (project: string): Draft => {
+	const draft = (project: string, label?: string): Draft => {
 		let d = drafts.get(project);
 		if (!d) {
 			d = {
 				group: {
 					project_id: project,
-					label: projectLabel(project),
+					label: label ?? projectLabel(project),
+					...(project === UNASSIGNED || label ? { unassigned: true } : {}),
 					tag: null,
 					phase: null,
 					rows: [],
@@ -223,8 +252,11 @@ export function sessionPanel(input: PanelInput): SessionPanel {
 		if (resting) counts.idle++;
 		else if (status === "active") counts.active++;
 		else if (!waitedSince) counts.waiting++;
-		const project = s.repo_id ?? UNASSIGNED;
-		const d = draft(project);
+		// no repo: one group per folder, named by the folder's last name (dim), or 미지정
+		const folder = s.repo_id ? null : folderLabel(s.cwd);
+		const project =
+			s.repo_id ?? (folder ? `${UNASSIGNED}:${folder}` : UNASSIGNED);
+		const d = draft(project, folder ?? undefined);
 		const tail = tails.get(s.id);
 		d.group.rows.push({
 			id: s.id,
