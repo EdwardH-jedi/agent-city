@@ -46,10 +46,15 @@ describe("City cannot act on a run", () => {
 	});
 });
 
-// ── the main screen: apps/web/src/board/** (and apps/web/src/campus/** once the 3D scene lands) ──────
-// Screen code only: *.test.ts files are not scanned (they spell out the codes they test). A directory
-// that does not exist yet is skipped.
-const SCREEN_DIRS = ["apps/web/src/board", "apps/web/src/campus"];
+// ── the main screen: apps/web/src/board/**, the 3D campus apps/web/src/campus/** and the ring town ───
+// apps/web/src/town/** (`?scene=town`). Screen code only: *.test.ts files are not scanned (they spell
+// out the codes they test), nor is the ported engine's .mjs (TypeScript only). A directory that does not
+// exist yet is skipped.
+const SCREEN_DIRS = [
+	"apps/web/src/board",
+	"apps/web/src/campus",
+	"apps/web/src/town",
+];
 
 function screenFiles(dir: string): string[] {
 	const abs = join(ROOT, dir);
@@ -127,10 +132,13 @@ describe("the main screen cannot act on a run", () => {
 		}
 	});
 
-	test("the 3D scene listens to no input: no pointer, mouse, key, wheel or touch listener", () => {
-		const campus = FILES.filter((f) => f.includes("/campus/"));
-		expect(campus.some((f) => f.endsWith("campus/engine.ts"))).toBe(true);
-		for (const f of campus) {
+	test("the 3D scene and the town listen to no input: no pointer, mouse, key, wheel or touch listener", () => {
+		const scenes = FILES.filter(
+			(f) => f.includes("/campus/") || f.includes("/town/"),
+		);
+		expect(scenes.some((f) => f.endsWith("campus/engine.ts"))).toBe(true);
+		expect(scenes.some((f) => f.endsWith("town/stage.ts"))).toBe(true);
+		for (const f of scenes) {
 			const hit =
 				/addEventListener\(\s*["'](pointer\w*|mouse\w*|click|dblclick|key\w*|wheel|touch\w*|contextmenu)["']/.exec(
 					code(f),
@@ -139,13 +147,27 @@ describe("the main screen cannot act on a run", () => {
 		}
 	});
 
-	test("the scene is a lazy chunk and imports no hub, store or transport", () => {
+	test("the scenes are lazy chunks and import no hub, store or transport", () => {
 		const view = code("apps/web/src/campus/CampusView.tsx");
 		expect(view).toMatch(
 			/lazy\([\s\S]*?import\("\.\/CampusScene\.tsx"\)\.catch\(/,
 		);
 		expect(view).not.toMatch(/from "\.\/(CampusScene|engine|world)\.tsx?"/);
-		for (const f of FILES.filter((x) => x.includes("/campus/"))) {
+		const town = code("apps/web/src/town/TownView.tsx");
+		expect(town).toMatch(
+			/lazy\([\s\S]*?import\("\.\/TownScene\.tsx"\)\.catch\(/,
+		);
+		expect(town).not.toMatch(
+			/from "\.\/(TownScene|stage|pipeline|world|patrol|board-view)\.tsx?"|from "\.\/engine\/|from "three"/,
+		);
+		// the board reaches the town only through TownView and the tiny URL module
+		expect(
+			code("apps/web/src/board/Board.tsx").match(/from "\.\.\/town\/[^"]+"/g),
+		).toEqual(['from "../town/params.ts"', 'from "../town/TownView.tsx"']);
+		expect(code("apps/web/src/town/params.ts")).not.toMatch(/\bimport\b/);
+		for (const f of FILES.filter(
+			(x) => x.includes("/campus/") || x.includes("/town/"),
+		)) {
 			expect({
 				f,
 				hub: /useHub|workspace-m1|store\.ts|transport/.exec(code(f))?.[0],
@@ -210,5 +232,101 @@ describe("the main screen cannot act on a run", () => {
 			[...board.matchAll(/font-weight:\s*(\w+)/g)].map((m) => m[1]),
 		);
 		expect([...weights].sort()).toEqual(["400", "700"]);
+	});
+});
+
+// ── the town's ported engine: apps/web/src/town/engine/*.mjs ─────────────────────────────────────
+// Copied verbatim from the original game (engine/PROVENANCE.md), so it is plain JavaScript and the
+// TypeScript scan above does not see it. Scanned here for the same things: input listeners and
+// controls, requests, action words. The original's minimap DOM section (`minimapSection`: hover,
+// click, Escape and a Focus button that steers the original's guide) is the one known exception; it is
+// pinned below and no screen code may import it.
+const ENGINE_DIR = "apps/web/src/town/engine";
+const ENGINE_FILES = readdirSync(join(ROOT, ENGINE_DIR))
+	.filter((n) => n.endsWith(".mjs"))
+	.map((n) => `${ENGINE_DIR}/${n}`);
+const ENGINE_HIT =
+	/addEventListener\(|\.on(?:click|dblclick|key\w*|pointer\w*|mouse\w*|wheel|touch\w*|input|change|submit|contextmenu)\s*=|["'`](?:pointer\w*|mouse\w*|click|dblclick|key(?:down|up|press)|wheel|touch\w*|contextmenu|button|input|select|form|textarea)["'`]|<(?:button|form|input|select|textarea)\b|fetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource|method\s*:/g;
+
+/** File → every distinct ENGINE_HIT it may contain. Pinned by the test below so it cannot grow quietly. */
+const ALLOWED_ENGINE_HITS: Record<string, string[]> = {
+	"apps/web/src/town/engine/minimap.mjs": [
+		"'button'",
+		"'click'",
+		"'keydown'",
+		"'pointer'", // canvas.style.cursor on hover
+		"'pointerleave'",
+		"'pointermove'",
+		"addEventListener(",
+	],
+};
+
+describe("the town engine cannot act either", () => {
+	test("the scan finds the engine", () => {
+		expect(ENGINE_FILES.length).toBeGreaterThanOrEqual(20);
+		expect(ENGINE_FILES).toContain(`${ENGINE_DIR}/scene-ring.mjs`);
+		expect(ENGINE_FILES).toContain(`${ENGINE_DIR}/minimap.mjs`);
+	});
+
+	test("no listener, control or request outside the pinned list", () => {
+		for (const f of ENGINE_FILES) {
+			const hits = [
+				...new Set([...code(f).matchAll(ENGINE_HIT)].map((m) => m[0])),
+			].sort();
+			expect({ f, hits }).toEqual({ f, hits: ALLOWED_ENGINE_HITS[f] ?? [] });
+		}
+	});
+
+	test("no approve / launch / retry in the engine code", () => {
+		for (const f of ENGINE_FILES)
+			expect({ f, hit: ACTION_WORDS.exec(code(f))?.[0] }).toEqual({
+				f,
+				hit: undefined,
+			});
+	});
+
+	test("the allow-list stays exactly the minimap's DOM section", () => {
+		expect(Object.keys(ALLOWED_ENGINE_HITS)).toEqual([
+			"apps/web/src/town/engine/minimap.mjs",
+		]);
+		expect(ALLOWED_ENGINE_HITS["apps/web/src/town/engine/minimap.mjs"]).toEqual(
+			[
+				"'button'",
+				"'click'",
+				"'keydown'",
+				"'pointer'", // canvas.style.cursor on hover
+				"'pointerleave'",
+				"'pointermove'",
+				"addEventListener(",
+			],
+		);
+		// every hit in minimap.mjs lives inside minimapSection
+		const src = code("apps/web/src/town/engine/minimap.mjs");
+		const at = src.indexOf("export const minimapSection");
+		expect(at).toBeGreaterThan(0);
+		expect([...src.slice(0, at).matchAll(ENGINE_HIT)]).toEqual([]);
+	});
+
+	test("no screen code imports the minimap's DOM section", () => {
+		const town = FILES.filter((f) => f.includes("/town/"));
+		expect(town.length).toBeGreaterThan(0);
+		for (const f of FILES) {
+			const src = code(f);
+			expect({ f, hit: /minimapSection/.exec(src)?.[0] }).toEqual({
+				f,
+				hit: undefined,
+			});
+			// no namespace / default import of minimap.mjs either (it would carry the section along)
+			expect({
+				f,
+				hit: /import\s+(?:\*\s+as\s+\w+|\w+)\s+from\s+["'][^"']*minimap\.mjs["']/.exec(
+					src,
+				)?.[0],
+			}).toEqual({ f, hit: undefined });
+		}
+		// and the declarations give TypeScript no way to name it
+		const decl = join(ROOT, ENGINE_DIR, "minimap.d.mts");
+		if (existsSync(decl))
+			expect(readFileSync(decl, "utf8")).not.toMatch(/minimapSection/);
 	});
 });

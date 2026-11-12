@@ -869,6 +869,23 @@ tr.st-waiting td {
 .cmp-bubble[hidden] {
 	display: none;
 }
+/* ── the ring town (`?scene=town`, lazy): 384×288 at an integer scale, letterboxed in sky ─ */
+.town {
+	padding: 0;
+	position: relative;
+}
+.town.village-dim {
+	filter: saturate(0.35) brightness(0.6);
+}
+.town-stage {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+}
+.town-canvas {
+	display: block;
+	image-rendering: pixelated;
+}
 .campus-folded {
 	position: absolute;
 	right: 20px;

@@ -5,6 +5,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CampusView } from "../campus/CampusView.tsx";
 import { machinesAt, runsAt } from "../merge.ts";
+import { sceneOf } from "../town/params.ts";
+import { TownView } from "../town/TownView.tsx";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
 import { burnInShift } from "./burnin.ts";
 import { DEMO_LABEL } from "./demo-flag.ts";
@@ -149,6 +151,8 @@ export function BoardView({
 	error: string | null;
 	demo: boolean;
 }) {
+	// `?scene=town`: the ring town in the middle column (design doc 12); otherwise the 3D campus.
+	const [scene] = useState(() => sceneOf(window.location.search));
 	return (
 		<div className={`board border-${model.status.border}`}>
 			<header
@@ -181,7 +185,11 @@ export function BoardView({
 			{reconnecting && <div className="conn-band">화면 연결 끊김</div>}
 			<div className="board-body">
 				<Hq model={model} now={now} />
-				<CampusView model={model} now={now} />
+				{scene === "town" ? (
+					<TownView model={model} now={now} />
+				) : (
+					<CampusView model={model} now={now} />
+				)}
 				<Now model={model} now={now} />
 			</div>
 			{error && <div className="board-error">{error}</div>}
