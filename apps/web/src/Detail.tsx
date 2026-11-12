@@ -361,10 +361,12 @@ function EventList({
 	const shown = useMemo(() => {
 		if (!picked) return events;
 		// one session: oldest first, like a terminal (the hub lists newest first)
+		// equal times keep the hub's order reversed (it lists newest first), as the tails do
 		return events
-			.filter((e) => e.session_id === picked)
-			.slice()
-			.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+			.map((e, i) => ({ e, i }))
+			.filter(({ e }) => e.session_id === picked)
+			.sort((a, b) => (a.e.ts < b.e.ts ? -1 : a.e.ts > b.e.ts ? 1 : b.i - a.i))
+			.map(({ e }) => e);
 	}, [events, picked]);
 	return (
 		<section className="dpanel detail-events" aria-label="사건">

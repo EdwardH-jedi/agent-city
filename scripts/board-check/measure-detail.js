@@ -17,7 +17,8 @@
 				.trim(),
 		) || 1;
 	const allowed = (s) => s >= 10.5 * ui - 0.01 && s <= 14 * ui + 0.01;
-	const USER_PATH = /(^|[^A-Za-z0-9])(\/Users\/|\/home\/|[A-Za-z]:\\Users\\)/;
+	const USER_PATH =
+		/(^|[^A-Za-z0-9])(\/Users\/|\/home\/|\/Volumes\/|\/root\/|\/var\/folders\/|[A-Za-z]:\\Users\\)|(^|[\s"'=:(,])~[A-Za-z0-9_]/;
 	function measure(tag) {
 		const fonts = [];
 		for (const e of document.querySelectorAll(".detail *")) {
@@ -39,7 +40,11 @@
 			sizes: [...new Set(fonts.map((f) => f.size))].sort((a, b) => a - b),
 			outside: bad.slice(0, 5),
 		});
-		const page = document.documentElement.scrollWidth <= innerWidth + 1;
+		// the board frame is fixed and clips: measure its parts, not only the page
+		const page = [
+			document.documentElement,
+			...document.querySelectorAll(".detail-top, .detail-body"),
+		].every((e) => e.scrollWidth <= e.clientWidth + 1);
 		const wide = [
 			...document.querySelectorAll(".detail .dpanel, .detail .dscroll"),
 		]
@@ -69,6 +74,11 @@
 		},
 	);
 	measure("all");
+	// no live session: include the quiet and ended ones so a row can be picked
+	if (!document.querySelector(".detail .drow")) {
+		document.querySelector(".detail .dcheck input")?.click();
+		await frame();
+	}
 	const row = document.querySelector(".detail .drow");
 	if (row) {
 		row.click();
@@ -84,6 +94,11 @@
 		measure("picked");
 		row.click(); // back to every event
 		await frame();
-	} else check("detail_pick_session_terminal", true, "no session to pick");
+	} else
+		checks.push({
+			name: "detail_pick_session_terminal",
+			status: "KNOWN",
+			value: "no session at all on this hub: the picked view was not measured",
+		});
 	return { checks };
 })();

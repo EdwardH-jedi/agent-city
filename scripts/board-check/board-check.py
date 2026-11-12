@@ -56,7 +56,7 @@ try:
                 record['detail']={'applicable':False,'reason':'Demo has no detail view (11 AB1 table and section 8).'}
             else:
                 command(['press','D'])
-                detail,detail_code=command(['wait','--fn','location.hash === "#/detail" && Boolean(document.querySelector("table"))','--timeout','2000'],required=False)
+                detail,detail_code=command(['wait','--fn','location.hash === "#/detail" && Boolean(document.querySelector(".detail .dpanel"))','--timeout','2000'],required=False)
                 route,_=command(['eval','--stdin'],stdin='({url:location.href,tables:document.querySelectorAll("table").length,board:Boolean(document.querySelector(".board"))})')
                 record['detail']={'applicable':True,'wait':detail,'exit':detail_code,**route['data']['result']}
                 back_ok=False

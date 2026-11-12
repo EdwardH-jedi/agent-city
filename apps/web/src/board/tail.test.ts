@@ -455,6 +455,37 @@ describe("the detail screen's event lines (16 A3): every event, cleaned like the
 		).toBe("SessionStart");
 	});
 
+	test("a tool line the tails drop (Codex typing into a running command) shows its tool name only", () => {
+		const fake = ["hunter", "2"].join("");
+		const typed = ev({
+			tool: "exec",
+			summary: `exec: text(await tools.write_stdin({session_id:3,chars:"${fake}\\n"}))`,
+		});
+		expect(tailLine(typed, null)).toBeNull();
+		expect(eventLine(typed, null)).toBe("exec");
+		expect(eventLine({ ...typed, type: "PostToolUse" }, null)).toBe("exec");
+	});
+
+	test("another user's ~name never shows (tails and the detail screen)", () => {
+		const out = eventLine(
+			ev({
+				type: "Notification",
+				tool: null,
+				summary: "see ~alice/notes and ~bob",
+			}),
+			null,
+		);
+		expect(out).not.toContain("alice");
+		expect(out).not.toContain("bob");
+		expect(line({ summary: "Bash: ~carol/bin/run --fast" })).not.toContain(
+			"carol",
+		);
+		// a git revision is not a home folder
+		expect(line({ summary: "Bash: git show HEAD~2" })).toBe(
+			"$ git show HEAD~2",
+		);
+	});
+
 	test("a long line is cut at LINE_MAX", () => {
 		const out = eventLine(
 			ev({ type: "SessionStart", tool: null, summary: "x".repeat(500) }),
