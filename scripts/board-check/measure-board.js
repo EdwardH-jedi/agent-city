@@ -165,7 +165,31 @@
 			document.querySelectorAll(".incidents .inc").length,
 		cards,
 		cardsFullyVisible: cards.filter((c) => c.fullyVisible).length,
-		nowCount: document.querySelectorAll(".now-run").length,
+		sessions: {
+			groups: document.querySelectorAll(".sess-group").length,
+			rowsPerGroup: [...document.querySelectorAll(".sess-group")].map(
+				(g) => g.querySelectorAll(".sess-row").length,
+			),
+			rows: document.querySelectorAll(".sess-row").length,
+			tails: document.querySelectorAll(".sess-tail").length,
+			linesPerTail: [...document.querySelectorAll(".sess-tail")].map(
+				(t) => t.querySelectorAll(":scope > li").length,
+			),
+			tailText: [...document.querySelectorAll(".sess-tail > li")].map(text),
+		},
+		rightPanel: (() => {
+			const box = document.querySelector(".now .sessions");
+			const list = document.querySelector(".now .sess-list");
+			const now = document.querySelector(".now");
+			const over = (e) => (e ? e.scrollHeight - e.clientHeight : 0);
+			return {
+				box: over(box),
+				list: over(list),
+				column: over(now),
+				listBottom: list ? rect(list).bottom : null,
+				boxBottom: box ? rect(box).bottom : null,
+			};
+		})(),
 		fonts,
 		sizes,
 		weights: [...new Set(fonts.map((f) => f.weight))],
@@ -317,7 +341,44 @@
 		cards.every((c) => c.fullyVisible),
 		{ total: cards.length, fullyVisible: metrics.cardsFullyVisible },
 	);
-	check("now_at_most_five", metrics.nowCount <= 5, metrics.nowCount);
+	// 15 §3: at most 8 project groups, 4 session rows each, 16 rows in all, 6 tails of at most 3 lines
+	const ss = metrics.sessions;
+	check(
+		"sessions_caps",
+		ss.groups <= 8 &&
+			ss.rowsPerGroup.every((n) => n <= 4) &&
+			ss.rows <= 16 &&
+			ss.tails <= 6 &&
+			ss.linesPerTail.every((n) => n <= 3),
+		{
+			groups: ss.groups,
+			rowsPerGroup: ss.rowsPerGroup,
+			rows: ss.rows,
+			tails: ss.tails,
+			linesPerTail: ss.linesPerTail,
+		},
+	);
+	// 15 §3.1: a tail line never shows an absolute home path (macOS / Linux / Windows / UNC); on the
+	// 1920 demo (made-up `/Users/demo/…` paths in its events) there must be lines to look at
+	const ABS = /\/Users\/|\/home\/|\/Volumes\/|\\\\|(?<!\w)[A-Za-z]:[\\/]/;
+	const absolute = ss.tailText.filter((t) => ABS.test(t));
+	check(
+		"tail_no_absolute_path",
+		absolute.length === 0 &&
+			!(demo && innerWidth === 1920 && ss.tailText.length === 0),
+		{ lines: ss.tailText.length, absolute: absolute.slice(0, 3) },
+	);
+	// 15 §3: the right panel never scrolls — nothing in it is taller than its box, and its list ends
+	// inside the panel box
+	const rp = metrics.rightPanel;
+	check(
+		"right_panel_no_scroll",
+		rp.box <= 1 &&
+			rp.list <= 1 &&
+			rp.column <= 1 &&
+			(rp.listBottom === null || rp.listBottom <= rp.boxBottom + 1),
+		rp,
+	);
 	check(
 		"demo_label",
 		demo

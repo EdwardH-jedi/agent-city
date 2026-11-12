@@ -563,8 +563,7 @@ tr.st-waiting td {
 }
 /* a list that never cuts a row in half: what does not fit wraps into a second column out of sight */
 .cards,
-.incidents,
-.now-list {
+.incidents {
 	list-style: none;
 	margin: 0;
 	padding: 6px 10px;
@@ -578,8 +577,7 @@ tr.st-waiting td {
 	min-height: 0;
 }
 .cards > li,
-.incidents > li,
-.now-list > li {
+.incidents > li {
 	width: 100%;
 	flex: none;
 }
@@ -719,40 +717,180 @@ tr.st-waiting td {
 	color: var(--b-dim);
 	font-size: calc(11px * var(--ui));
 }
-/* §13.5: two lines per run */
-.now-line {
+/* ── SESSIONS (15 §3): project groups, session rows, terminal tails. Row heights are the numbers in
+   board/session-panel.ts PX (text rows × --ui), so the model can fold the list to fit without measuring. */
+.sessions {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+.sess-list {
+	list-style: none;
+	margin: 0;
+	padding: 4px 8px;
+	min-height: 0;
+	overflow: hidden;
+}
+.sess-group + .sess-group {
+	margin-top: 8px;
+}
+.sess-proj {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: calc(20px * var(--ui));
+	min-width: 0;
 	font-size: calc(13px * var(--ui));
 	font-weight: 700;
+	line-height: calc(20px * var(--ui));
+}
+.sess-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.sess-proj .tag {
+	max-width: 55%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* the run's phase: one thin bar under the project (filled to the current phase of nine) */
+.sess-phase {
+	height: 4px;
+	margin: 1px 0;
+	background: var(--b-line);
+}
+.sess-phase > i {
+	display: block;
+	height: 100%;
+	background: var(--b-ok);
+}
+.sess-rows {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.sess-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: calc(18px * var(--ui));
+	padding-left: 4px;
+	min-width: 0;
+	font-size: calc(12px * var(--ui));
+	line-height: calc(18px * var(--ui));
+	white-space: nowrap;
+}
+.sess-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--b-dim);
+}
+.st-active .sess-dot {
+	background: var(--b-ok);
+}
+.st-waiting .sess-dot {
+	background: var(--b-yellow);
+}
+.sess-who {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.st-idle .sess-who {
+	color: var(--b-muted);
+}
+.sess-sub {
+	flex: none;
+	font-size: calc(11px * var(--ui));
+	color: var(--b-muted);
+}
+.sess-age {
+	flex: none;
+	margin-left: auto;
+	font-size: calc(11px * var(--ui));
+	color: var(--b-dim);
+	font-variant-numeric: tabular-nums;
+}
+.sess-line .tag {
+	line-height: calc(14px * var(--ui));
+}
+.sess-row .tag-waiting,
+.sess-proj .tag-wait {
+	color: var(--b-yellow);
+	border-color: #8a6430;
+}
+.sess-proj .tag-stop {
+	color: var(--b-red);
+	border-color: #8a3a33;
+}
+.sess-proj .tag-run {
+	color: var(--b-ok);
+	border-color: #2f7a40;
+}
+.sess-row .tag-idle,
+.sess-proj .tag-pause,
+.sess-proj .tag-branch {
+	color: var(--b-dim);
+	border-color: var(--b-line);
+}
+/* the terminal tail: monospace, newest line at the bottom, a blinking cursor while the session works */
+.sess-tail {
+	list-style: none;
+	margin: 0 0 2px 16px;
+	padding: 4px 6px;
+	background: #0b0908;
+	border-left: 1px solid var(--b-line);
+	font-family: var(--b-mono);
+	font-size: calc(10.5px * var(--ui));
+	line-height: calc(15px * var(--ui));
+	color: var(--b-muted);
+	min-width: 0;
+}
+.sess-tail > li {
+	height: calc(15px * var(--ui));
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
-.now-age {
-	font-weight: 400;
-	color: var(--b-muted);
+.tail-n {
+	color: var(--b-dim);
 }
-.phases {
-	display: grid;
-	grid-template-columns: repeat(9, 1fr);
-	gap: 2px;
-	margin-top: 4px;
+.tail-live > li:last-child::after {
+	content: "";
+	display: inline-block;
+	width: 0.55em;
+	height: 1em;
+	margin-left: 2px;
+	vertical-align: -0.15em;
+	background: var(--b-muted);
+	animation: tail-cursor 1.1s steps(1) infinite;
 }
-.phase {
-	height: 4px;
-	border-radius: 1px;
-	background: var(--b-line);
+@keyframes tail-cursor {
+	50% {
+		opacity: 0;
+	}
 }
-.phase-done {
-	background: #2f7d4f;
+@media (prefers-reduced-motion: reduce) {
+	.tail-live > li:last-child::after {
+		animation: none;
+	}
 }
-.phase-now {
-	background: var(--b-ok);
+.sess-more {
+	margin: 0;
+	padding-left: 16px;
+	height: calc(16px * var(--ui));
+	font-size: calc(11px * var(--ui));
+	line-height: calc(16px * var(--ui));
+	color: var(--b-dim);
 }
-.now-slow .phase-now {
-	background: var(--b-yellow);
-}
-.now-stale {
-	opacity: 0.6;
+.sess-more-groups {
+	padding: 0 8px 4px;
 }
 
 /* ── the village (2D tile grid, §13.10) ───────────────────────────────────── */
@@ -1126,8 +1264,4 @@ tr.st-waiting td {
 }
 .town-map-canvas {
 	margin: 4px auto;
-}
-/* the run list keeps its size; 자리 비운 사이 takes what is left under it and drops whole lines */
-.scene-town .now-list {
-	flex: none;
 }

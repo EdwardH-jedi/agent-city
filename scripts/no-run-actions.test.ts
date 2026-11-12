@@ -188,12 +188,16 @@ describe("the main screen cannot act on a run", () => {
 		expect(hub).toMatch(/await fetch\(path\)/);
 	});
 
-	test("sessions (decision D4) come from useHub too, and the board never reads a session's folder or branch (D5)", () => {
+	test("sessions (decision D4) come from useHub too; only session-panel.ts reads a session's folder or branch (D5, D10)", () => {
 		expect(FILES.some((f) => f.endsWith("board/sessions.ts"))).toBe(true);
 		const sessions = code("apps/web/src/board/sessions.ts");
 		expect(sessions).not.toMatch(/useHub|fetch\(|WebSocket/);
 		expect(code("apps/web/src/board/Board.tsx")).toMatch(/hub\.sessions/);
-		for (const f of FILES) {
+		// decision D10 (15 §3): one pure module reads them — the folder only to make tail paths relative
+		// (never drawn), the branch as a project's tag; no component reads either
+		const READS = new Set(["apps/web/src/board/session-panel.ts"]);
+		expect(code("apps/web/src/board/session-panel.ts")).toMatch(/\.cwd\b/);
+		for (const f of FILES.filter((x) => !READS.has(x))) {
 			expect({ f, hit: /\.(cwd|branch)\b/.exec(code(f))?.[0] }).toEqual({
 				f,
 				hit: undefined,

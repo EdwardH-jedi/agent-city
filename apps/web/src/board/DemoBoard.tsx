@@ -2,13 +2,14 @@
 // bundle carries no fixture (§13.9). Nothing is fetched and nothing sounds.
 import { useMemo, useState } from "react";
 import { BoardView, useClock } from "./Board.tsx";
-import { demoData } from "./demo.ts";
+import { demoCaseOf, demoData } from "./demo.ts";
 import { toVillageModel } from "./model.ts";
 
 export default function DemoBoard() {
 	const now = useClock(1_000);
 	const [t0] = useState(() => Date.now());
-	const data = useMemo(() => demoData(t0), [t0]);
+	const [kase] = useState(() => demoCaseOf(window.location.search));
+	const data = useMemo(() => demoData(t0, kase), [t0, kase]);
 	const model = useMemo(
 		() => toVillageModel({ ...data, now, conn: "open" }),
 		[data, now],
@@ -20,6 +21,8 @@ export default function DemoBoard() {
 			reconnecting={false}
 			error={null}
 			demo={true}
+			sessions={data.sessions}
+			events={data.events}
 		/>
 	);
 }

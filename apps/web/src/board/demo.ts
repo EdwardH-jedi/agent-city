@@ -2,6 +2,7 @@
 // running Office. Everything is built from the page's load time; nothing is fetched and no name is a
 // real repo. The live board never uses it, and the screen says "예시 데이터" while it is shown.
 import type {
+	Event,
 	MachineView,
 	RunDisplay,
 	RunEventView,
@@ -22,9 +23,21 @@ export interface DemoData {
 	districts: Districts;
 	eventsByRun: EventsByRun;
 	sessions: Session[];
+	/** Session events for the right panel's terminal tails (15 §3.1). */
+	events: Event[];
 }
 
-export function demoData(t0: number): DemoData {
+/**
+ * `?demo=1&case=calm`: nothing waits for the owner (no 결재, no 멈춤, no 입력 대기). `case=busy`: many
+ * sessions in many projects, so the right panel's caps and folds show. Anything else: the default.
+ */
+export type DemoCase = "default" | "calm" | "busy";
+export function demoCaseOf(search: string): DemoCase {
+	const c = new URLSearchParams(search).get("case");
+	return c === "calm" || c === "busy" ? c : "default";
+}
+
+export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 	const at = (agoMs: number) => new Date(t0 - agoMs).toISOString();
 	const run = (
 		project: string,
@@ -62,7 +75,7 @@ export function demoData(t0: number): DemoData {
 			last_progress_at: at(agoMs),
 		});
 
-	const runs: RunView[] = [
+	const all: RunView[] = [
 		run("demo/harbor", "harbor-plan", "waiting_owner", {
 			phase: "Approval",
 			status: "WAITING_OWNER",
@@ -112,22 +125,35 @@ export function demoData(t0: number): DemoData {
 			last_progress_at: at(3 * HOUR),
 		}),
 	];
+	// calm: nothing waits for the owner and nothing is stopped
+	const runs =
+		kase === "calm"
+			? all.filter(
+					(r) => !r.needs_owner && !["hold", "stopped"].includes(r.display),
+				)
+			: all;
 
-	// decision D4: Claude Code / Codex sessions (made up; no folder, branch or real id)
+	// decision D4: Claude Code / Codex sessions (made up: `demo/…` repos, `/Users/demo/…` folders)
+	const MODEL: Record<Session["provider"], string> = {
+		claude: "claude-opus-5-5",
+		codex: "gpt-6-astra",
+		ollama: "llama-4",
+	};
 	const session = (
 		id: string,
 		repo: string,
 		status: Session["status"],
 		agoMs: number,
 		provider: Session["provider"] = "claude",
+		model: string | null = MODEL[provider],
 	): Session => ({
 		id: `${provider}:demo-${id}`,
 		provider,
 		machine_id: "cockpit",
 		repo_id: repo,
-		cwd: null,
-		branch: null,
-		model: null,
+		cwd: `/Users/demo/work/${repo.split("/")[1] ?? "x"}`,
+		branch: `feat/${id}-work`,
+		model,
 		status,
 		started_at: at(agoMs + 20 * MIN),
 		last_event_at: at(agoMs),
@@ -140,7 +166,144 @@ export function demoData(t0: number): DemoData {
 		session("c", "demo/harbor", "waiting", 4 * MIN),
 		session("d", "demo/ferry", "waiting", 52 * MIN),
 		session("e", "demo/attic", "ended", 2 * HOUR),
+		session("f", "demo/meadow", "idle", 8 * MIN, "claude", "claude-sonnet-5-5"),
 	];
+	if (kase === "busy")
+		sessions.push(
+			session(
+				"g",
+				"demo/orchard",
+				"active",
+				30_000,
+				"claude",
+				"claude-fable-5-2",
+			),
+			session("h", "demo/orchard", "active", 70_000, "codex"),
+			session("i", "demo/orchard", "idle", 6 * MIN),
+			session("j", "demo/orchard", "idle", 9 * MIN),
+			session("k", "demo/meadow", "active", 20_000),
+			session("l", "demo/meadow", "active", 90_000, "codex"),
+			session("m", "demo/garnet", "active", 15_000),
+			session("n", "demo/garnet", "waiting", 3 * MIN),
+			session(
+				"o",
+				"demo/willow",
+				"active",
+				50_000,
+				"claude",
+				"claude-sonnet-5-5",
+			),
+			session("p", "demo/willow", "idle", 11 * MIN),
+			session("q", "demo/beacon", "active", 25_000, "codex"),
+			session("r", "demo/hollow", "idle", 12 * MIN),
+			session("s", "demo/cinder", "active", 65_000),
+			session("t", "demo/basalt", "idle", 13 * MIN),
+			session("u", "demo/quarry", "active", 35_000),
+		);
+	if (kase === "calm")
+		for (const s of sessions) if (s.status === "waiting") s.status = "idle";
+
+	// the tails' events: what the hook sends (summaries with made-up absolute paths, which the panel
+	// must show relative or cut to their last two parts)
+	const events: Event[] = [];
+	let seq = 0;
+	const said = (
+		s: Session,
+		agoMs: number,
+		type: string,
+		tool: string | null,
+		summary: string,
+		agent: string | null = null,
+	) =>
+		events.push({
+			id: `demo:${s.id}:${seq++}`,
+			ts: at(agoMs),
+			machine_id: "cockpit",
+			session_id: s.id,
+			agent_id: agent ?? s.id,
+			provider: s.provider,
+			type,
+			tool,
+			summary,
+			repo_id: s.repo_id,
+			payload_redacted: {},
+		});
+	for (const s of sessions) {
+		if (s.status !== "active" && s.status !== "waiting") continue;
+		const t = Date.parse(at(0)) - Date.parse(s.last_event_at);
+		const cwd = `/Users/demo/work/${s.repo_id?.split("/")[1] ?? "x"}`;
+		if (s.provider === "codex") {
+			said(
+				s,
+				t + 40_000,
+				"PreToolUse",
+				"exec",
+				'exec: text(await tools.exec_command({cmd:"bun test apps/web\nexit"}))',
+			);
+			said(
+				s,
+				t + 30_000,
+				"PreToolUse",
+				"exec",
+				'exec: text(await tools.write_stdin({session_id:7,chars:""}))',
+			);
+			said(
+				s,
+				t + 20_000,
+				"PreToolUse",
+				"exec",
+				`exec: text(await tools.exec_command({cmd:"rg -n TODO ${cwd}/src"}))`,
+			);
+			said(
+				s,
+				t,
+				"PreToolUse",
+				"exec",
+				'exec: text(await tools.exec_command({cmd:"git diff --stat"}))',
+			);
+			continue;
+		}
+		said(s, t + 60_000, "UserPromptSubmit", null, "prompt (412 chars)");
+		said(s, t + 50_000, "PreToolUse", "Read", `Read ${cwd}/src/board/model.ts`);
+		said(s, t + 40_000, "PreToolUse", "Bash", "Bash: bun test");
+		said(s, t + 35_000, "PreToolUse", "Bash", "Bash: bun test");
+		// a subagent: still running in two sessions (`+1 sub`), finished in the others
+		const sub = `${s.id}/sub:toolu_demo${seq}`;
+		said(
+			s,
+			t + 30_000,
+			"PreToolUse",
+			"Agent",
+			"Agent → reviewer: check the diff",
+			sub,
+		);
+		if (!["claude:demo-a", "claude:demo-g"].includes(s.id))
+			said(
+				s,
+				t + 20_000,
+				"PostToolUse",
+				"Agent",
+				"Agent → reviewer: check the diff",
+				sub,
+			);
+		said(s, t + 10_000, "PreToolUse", "Edit", `Edit ${cwd}/src/style.css`);
+		if (s.status === "waiting")
+			said(
+				s,
+				t,
+				"Notification",
+				null,
+				"Claude needs your permission to use Bash",
+			);
+		else
+			said(
+				s,
+				t,
+				"PreToolUse",
+				"Bash",
+				`Bash: cat /Users/demo/Documents/notes/today.md && bun run lint`,
+			);
+	}
 
 	const ev = (
 		sequence: number,
@@ -232,5 +395,6 @@ export function demoData(t0: number): DemoData {
 		},
 		eventsByRun,
 		sessions,
+		events,
 	};
 }
