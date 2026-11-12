@@ -398,6 +398,16 @@ describe("credentials the shared redaction misses (INBOX-A B2 P1)", () => {
 		[`mysql --passphrase ${fake} db`, "$ mysql --passphrase [REDACTED]"],
 		[`export SECRET_KEY:${fake}`, "$ export SECRET_KEY:[REDACTED]"],
 		[`curl --cookie "sid=${fake}" x`, "$ curl --cookie [REDACTED]"],
+		// the A5 review's shapes the shared redaction misses
+		[`sshpass -p ${fake} ssh h`, "$ sshpass -p [REDACTED] ssh h"],
+		[`curl -u admin:${fake} x`, "$ curl -u admin:[REDACTED] x"],
+		[`curl --user admin:${fake} x`, "$ curl --user admin:[REDACTED] x"],
+		[`API_TOKEN+=${fake}`, "$ API_TOKEN+=[REDACTED]"],
+		[
+			`npm config set registry:_authToken ${fake}`,
+			"$ npm config set registry:_authToken [REDACTED]",
+		],
+		[`curl https://u:${fake}/x@h.test`, "$ curl https://u:[REDACTED]@h.test"],
 	];
 	for (const [input, shown] of cases)
 		test(`${input.replace(fake, "<fake>")} → ${shown}`, () => {
@@ -415,6 +425,10 @@ describe("credentials the shared redaction misses (INBOX-A B2 P1)", () => {
 			"$ curl --password",
 			'$ curl --password "[REDACTED]"',
 			"$ echo TOKEN=[REDACTED]",
+			"$ docker run -p 8080:80 img",
+			"$ ssh -p 22 host",
+			"$ curl -u admin x",
+			"$ git log -u",
 		])
 			expect(hideCredentials(s)).toBe(s);
 	});
@@ -424,6 +438,8 @@ describe("credentials the shared redaction misses (INBOX-A B2 P1)", () => {
 		const t = performance.now();
 		hideCredentials(long);
 		hideCredentials(`${"a ".repeat(100_000)}password`);
+		hideCredentials(`${"x://:".repeat(20_000)}`);
+		hideCredentials(` -u ${"a".repeat(100_000)}`);
 		expect(performance.now() - t).toBeLessThan(200);
 	});
 });
