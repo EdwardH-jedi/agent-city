@@ -1,4 +1,4 @@
-// The middle column as the ring town (design doc 12, `?scene=town`): the town when WebGL works, the 2D
+// The middle column as the ring town (design doc 12, the default scene; `?scene=campus` draws the 3D campus instead): the town when WebGL works, the 2D
 // tile grid otherwise — the same order and fallback as CampusView. The scene is a lazy chunk, fetched
 // only when a WebGL context can be made; if the chunk cannot be loaded, WebGL cannot start, or its
 // context is lost, the 2D grid takes over for good (until reload). This file imports no engine and no
@@ -59,7 +59,7 @@ const subscribeUp = (f: () => void) => {
 	};
 };
 
-/** The minimap for the top of the HQ column (`?scene=town`): a lazy chunk, mounted only while the town runs. */
+/** The minimap for the top of the HQ column (the town): a lazy chunk, mounted only while the town runs. */
 export function TownMinimapSlot() {
 	const up = useSyncExternalStore(subscribeUp, () => sceneUp);
 	if (!up) return null;

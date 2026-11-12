@@ -1,5 +1,5 @@
-// Left column: the 결재 cards waiting at the HQ, and (default screen) what happened while the owner was
-// away. Under `?scene=town` that history is `Away`, drawn in the right column under 지금 진행.
+// Left column: the 결재 cards waiting at the HQ, and (?scene=campus only) what happened while the owner
+// was away. In the town (default scene) that history is `Away`, drawn in the right column under 지금 진행.
 // Text only — the owner acts in Agent Office on the Mac, never here ("Mac에서 처리" is said once, in
 // the heading). The column never clips a card or a line in half: at most SIGN_SHOWN cards stand (the
 // rest are counted), and history lines are one short line each (§13.4) with a divider where the
@@ -42,9 +42,9 @@ export function Hq({
 }: {
 	model: VillageModel;
 	now: number;
-	/** `?scene=town`: the town's minimap above the queue (design doc 12 §3). */
+	/** The town (default scene): its minimap above the queue (design doc 12 §3). */
 	top?: ReactNode;
-	/** false: 자리 비운 사이 is drawn elsewhere (`<Away>` in the right column, `?scene=town`). */
+	/** false: 자리 비운 사이 is drawn elsewhere (`<Away>` in the right column, the town). */
 	away?: boolean;
 }) {
 	const signs = signCards(model.visits);

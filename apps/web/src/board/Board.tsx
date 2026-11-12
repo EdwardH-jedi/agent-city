@@ -151,7 +151,7 @@ export function BoardView({
 	error: string | null;
 	demo: boolean;
 }) {
-	// `?scene=town`: the ring town in the middle column (design doc 12); otherwise the 3D campus.
+	// The ring town in the middle column (design doc 12, the default); `?scene=campus`: the 3D campus.
 	const [scene] = useState(() => sceneOf(window.location.search));
 	const town = scene === "town";
 	return (

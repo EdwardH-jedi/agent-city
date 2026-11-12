@@ -14,12 +14,14 @@ import {
 } from "./patrol.ts";
 
 describe("URL switches", () => {
-	test("?scene=town picks the town; anything else keeps the campus", () => {
+	test("the town is the default; only ?scene=campus picks the 3D campus", () => {
+		expect(sceneOf("")).toBe("town");
+		expect(sceneOf("?demo=1")).toBe("town");
 		expect(sceneOf("?scene=town&demo=1")).toBe("town");
-		expect(sceneOf("?demo=1")).toBe("campus");
+		expect(sceneOf("?scene=TOWN")).toBe("town");
+		expect(sceneOf("?scene=whatever")).toBe("town");
 		expect(sceneOf("?scene=campus")).toBe("campus");
-		expect(sceneOf("?scene=TOWN")).toBe("campus");
-		expect(sceneOf("")).toBe("campus");
+		expect(sceneOf("?demo=1&scene=campus")).toBe("campus");
 	});
 
 	test("?time= pins day / dusk / night; a misspelt value is ignored", () => {

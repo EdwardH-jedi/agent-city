@@ -53,7 +53,7 @@ export function Now({
 }: {
 	model: VillageModel;
 	now: number;
-	/** `?scene=town`: 자리 비운 사이 under the run list (design doc 12 §3). */
+	/** the town (default scene): 자리 비운 사이 under the run list (design doc 12 §3). */
 	below?: ReactNode;
 }) {
 	const shown = model.now.slice(0, NOW_SHOWN);

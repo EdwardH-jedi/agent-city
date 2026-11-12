@@ -1,6 +1,7 @@
 // URL switches for the middle column (design doc 12 §0, §4). Pure and tiny: the board imports this
 // statically, so it must not import the engine or three (the town is a lazy chunk).
-//   ?scene=town            the ring town; anything else (or nothing) keeps the 3D campus
+//   (default)              the ring town (design doc 12)
+//   ?scene=campus          the 3D campus (the November scene, kept); any other value is the town
 //   ?time=day|dusk|night   pins the town's time of day; otherwise RX's local hour picks it
 
 export type SceneChoice = "campus" | "town";
@@ -9,9 +10,9 @@ export type TimeOfDay = "day" | "dusk" | "night";
 const TIMES: readonly TimeOfDay[] = ["day", "dusk", "night"];
 
 export function sceneOf(search: string): SceneChoice {
-	return new URLSearchParams(search).get("scene") === "town"
-		? "town"
-		: "campus";
+	return new URLSearchParams(search).get("scene") === "campus"
+		? "campus"
+		: "town";
 }
 
 /** The pinned time of day, or null when the URL does not pin one (a misspelt value is ignored). */

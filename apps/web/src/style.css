@@ -869,7 +869,7 @@ tr.st-waiting td {
 .cmp-bubble[hidden] {
 	display: none;
 }
-/* ── the ring town (`?scene=town`, lazy): 384×288 at an integer scale, letterboxed in sky ─ */
+/* ── the ring town (default scene, lazy): 384×288 at an integer scale, page-colour letterbox ─ */
 .town {
 	padding: 0;
 	position: relative;
@@ -905,7 +905,7 @@ tr.st-waiting td {
 	font-size: 24px;
 	pointer-events: none;
 }
-/* the town's minimap at the top of the HQ column (`?scene=town`; restyled in S4) */
+/* the town's minimap at the top of the HQ column (the town; restyled in S4) */
 .town-map {
 	flex: none;
 }

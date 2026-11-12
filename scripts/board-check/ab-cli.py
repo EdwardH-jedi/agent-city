@@ -17,7 +17,7 @@ if not DEFAULT_OUT.is_relative_to(CAPTURE_ROOT):
     raise ValueError('AGENTCITY_AB_OUT must stay under the approved capture directory')
 
 # The page under test. `AGENTCITY_BOARD_URL` (default: the hub's own port) may carry a query such as
-# `?scene=town`; `board_url()` merges what a case adds (`demo=1`) into it instead of appending blindly.
+# `?scene=campus`; `board_url()` merges what a case adds (`demo=1`) into it instead of appending blindly.
 # Only http://127.0.0.1[:port]/... is accepted (the browser is launched with --allowed-domains 127.0.0.1,
 # localhost, and the AB2 checks compare hosts to 127.0.0.1). The URL is rebuilt from its parsed parts, so
 # what is checked is what is opened; a backslash, `@`, whitespace or credentials in it are refused.

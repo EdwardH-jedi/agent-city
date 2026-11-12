@@ -47,7 +47,7 @@ describe("City cannot act on a run", () => {
 });
 
 // ── the main screen: apps/web/src/board/**, the 3D campus apps/web/src/campus/** and the ring town ───
-// apps/web/src/town/** (`?scene=town`). Screen code only: *.test.ts files are not scanned (they spell
+// apps/web/src/town/** (the default scene). Screen code only: *.test.ts files are not scanned (they spell
 // out the codes they test), nor is the ported engine's .mjs (TypeScript only). A directory that does not
 // exist yet is skipped.
 const SCREEN_DIRS = [

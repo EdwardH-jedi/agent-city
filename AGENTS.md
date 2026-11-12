@@ -11,7 +11,8 @@ Bun + TypeScript (strict) monorepo that watches Claude Code / Codex sessions acr
 ```
 apps/hub         Hono HTTP server on bun:sqlite (ingest, read API, ws, GitHub sync)  :4317
 apps/collector   per-machine agents: Claude Code hook (bin/claude-hook), Codex log tail, local spool
-apps/web         Vite + React 2D view (Phase 0); 3D city is Phase 1
+apps/web         Vite + React board; middle scene = ring town (src/town; engine/ copied from the original
+                 game, see engine/PROVENANCE.md; the only biome override), ?scene=campus = 3D campus
 packages/schema  zod types, status machine, redaction + secret patterns, SQL migrations (shared)
 config/          districts.yaml (repo → district)
 scripts/         repo tooling (check-secrets)
@@ -82,8 +83,11 @@ bun run check:secrets    # scan tracked/untracked files for token patterns
   agent. Event ids keep the 1f4f025 recipe (`cc:<raw>:<hook>:<tool_use_id>`, `codex:<raw>:<offset>`,
   golden test). Changing any of this needs `bun run db:reset` (no migration rewrites ids).
 - Repo ids: `.git` is stripped only while parsing a remote URL; `local/<dir>` keeps the folder name
-  verbatim. Collector, sync and hub all use `packages/schema/src/repo-slug.ts`.
+  verbatim. Collector, sync and hub all use `packages/schema/src/repo-slug.ts`. A linked worktree
+  without a github origin takes the main checkout's folder (collector, `apps/collector/src/git-info.ts`);
+  the hub's local scan still names a scanned worktree by its own folder (known difference).
 - `sessions.rev` is bumped on every write to a session row; clients merge by rev (higher wins,
   equal keeps). Bulk rewrites (repo remap) publish `{kind:"invalidate", scope:[…]}` on `/ws`.
 - Every env var the code reads is in both `.env.example` and the README table (a test enforces it).
-- When you change a screen, run `bun run check:board`.
+- When you change a screen, run `bun run check:board` (`AGENTCITY_BOARD_URL=http://127.0.0.1:<port>/`
+  points it at a dev server).
