@@ -3,15 +3,18 @@
 import { type Dirent, existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseGithubRemote } from "@agent-city/schema";
+import { type GitRemote, githubRepoFromRemotes } from "@agent-city/schema";
 
 export const MAX_DEPTH = 4;
 const SKIP_DIRS = new Set(["node_modules", "vendor", "target", "dist"]);
 
 export interface LocalCheckout {
 	path: string; // work tree top level
-	slug: string | null; // owner/name from a github.com origin
+	/** owner/name: origin's github.com repo, or with no origin the one github.com repo among the remotes */
+	slug: string | null;
 	isWorktree: boolean;
+	/** A linked worktree's git common dir (absolute): its main checkout names a local-only repo. */
+	commonDir?: string | null;
 	hasOrigin: boolean;
 	error: string | null;
 }
@@ -127,13 +130,25 @@ export async function probeCheckout(dir: string): Promise<LocalCheckout> {
 		};
 	}
 	const [top, gitDir, commonDir] = rp.out.split("\n");
-	const origin = await git(dir, ["remote", "get-url", "origin"]);
+	// every remote's url ("remote.<name>.url <url>" per line); urls may hold credentials — only the
+	// parsed slug leaves this function
+	const cfg = await git(dir, ["config", "--get-regexp", "^remote\\..*\\.url$"]);
+	const remotes: GitRemote[] = [];
+	if (cfg.ok)
+		for (const line of cfg.out.split("\n")) {
+			const m = /^remote\.(.+)\.url\s+(.+)$/.exec(line.trim());
+			if (m?.[1] && m[2] && !remotes.some((r) => r.name === m[1]))
+				remotes.push({ name: m[1], url: m[2] });
+		}
+	const origin = remotes.find((r) => r.name === "origin");
+	const isWorktree =
+		!!gitDir && !!commonDir && resolve(gitDir) !== resolve(commonDir);
 	return {
 		path: top || dir,
-		slug: origin.ok ? parseGithubRemote(origin.out) : null,
-		isWorktree:
-			!!gitDir && !!commonDir && resolve(gitDir) !== resolve(commonDir),
-		hasOrigin: origin.ok && origin.out.length > 0,
+		slug: githubRepoFromRemotes(remotes),
+		isWorktree,
+		commonDir: isWorktree && commonDir ? resolve(commonDir) : null,
+		hasOrigin: !!origin && origin.url.length > 0,
 		error: null,
 	};
 }

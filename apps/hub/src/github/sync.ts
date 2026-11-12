@@ -446,7 +446,8 @@ async function mapLocal(
 			if (repoId) {
 				result.mapped++;
 			} else {
-				repoId = c.slug ?? localRepoId(c.path);
+				repoId =
+					c.slug ?? localRepoId(c.path, c.isWorktree ? c.commonDir : null);
 				result.localOnly.push({
 					id: repoId,
 					path: c.path,

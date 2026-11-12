@@ -1,7 +1,7 @@
 // Fixture-only tests: no real GitHub API calls, only fictional repo names (octo-example/*).
 import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../db.ts";
@@ -540,6 +540,15 @@ describe("syncGithub", () => {
 				error: null,
 			},
 			{
+				// a linked worktree of /w/scratch elsewhere: the main checkout's folder, like the collector
+				path: "/w/wt/scratch-notes",
+				slug: null,
+				isWorktree: true,
+				commonDir: "/w/scratch/.git",
+				hasOrigin: false,
+				error: null,
+			},
+			{
 				path: "/w/gitlab-thing",
 				slug: null,
 				isWorktree: false,
@@ -567,13 +576,14 @@ describe("syncGithub", () => {
 			local: { machineId: "cockpit", roots: ["/w"], scan: async () => scan },
 		});
 		expect(s.local).toMatchObject({
-			scanned: 6,
+			scanned: 7,
 			mapped: 2,
-			worktrees: 1,
+			worktrees: 2,
 			errors: 1,
 		});
 		expect(s.local?.localOnly.map((l) => [l.id, l.reason])).toEqual([
 			["other-owner/tool", "origin not in this account's GitHub repos"],
+			["local/scratch", "no origin remote"],
 			["local/scratch", "no origin remote"],
 			["local/gitlab-thing", "origin is not github.com"],
 		]);
@@ -593,6 +603,11 @@ describe("syncGithub", () => {
 			},
 			{ path: "/w/scratch", repo_id: "local/scratch", is_worktree: 0 },
 			{ path: "/w/someone-else", repo_id: "other-owner/tool", is_worktree: 0 },
+			{
+				path: "/w/wt/scratch-notes",
+				repo_id: "local/scratch",
+				is_worktree: 1,
+			},
 		]);
 		expect(repoRow(db, "local/scratch")).toMatchObject({
 			is_local_only: 1,
@@ -602,8 +617,8 @@ describe("syncGithub", () => {
 			db.query("SELECT role FROM machines WHERE id = 'cockpit'").get(),
 		).toEqual({ role: "cockpit" });
 
-		// F07: the root had a probe error (/w/broken) → incomplete → a vanished checkout is NOT cleaned up
-		scan = asScan(checkouts.filter((c) => c.path !== "/w/scratch"));
+		// F07: the root had a probe error (/w/broken) → incomplete → vanished checkouts (scratch and its worktree) are NOT cleaned up
+		scan = asScan(checkouts.filter((c) => !c.path.includes("scratch")));
 		const partial = await syncGithub({
 			db,
 			client,
@@ -615,7 +630,9 @@ describe("syncGithub", () => {
 		expect(repoRow(db, "local/scratch")).not.toBeNull();
 
 		// complete scan of the root → its path and the orphaned local-only repo disappear; GitHub repos stay
-		scan = asScan(checkouts.filter((c) => c.path !== "/w/scratch" && !c.error));
+		scan = asScan(
+			checkouts.filter((c) => !c.path.includes("scratch") && !c.error),
+		);
 		await syncGithub({
 			db,
 			client,
@@ -737,6 +754,38 @@ describe("local scan (temp git repos)", () => {
 			isWorktree: false,
 		});
 		expect(JSON.stringify([main, wt, bare])).not.toContain("p".repeat(12));
+	});
+
+	test("no origin: the one github.com remote names it; a worktree reports its common dir", async () => {
+		const root = mkdtempSync(join(tmpdir(), "agentcity-scan-"));
+		const c = join(root, "rover");
+		mkdirSync(c, { recursive: true });
+		git(c, "init", "-q");
+		git(
+			c,
+			"remote",
+			"add",
+			"github-rover",
+			`https://someone:${"q".repeat(12)}@github.com/octo-example/rover.git`,
+		);
+		git(c, "commit", "-q", "--allow-empty", "-m", "init");
+		git(c, "worktree", "add", "-q", join(root, "wt", "notes-1"), "-b", "notes");
+		const main = await probeCheckout(c);
+		expect(main).toMatchObject({
+			slug: "octo-example/rover",
+			isWorktree: false,
+			hasOrigin: false,
+			error: null,
+		});
+		const wt = await probeCheckout(join(root, "wt", "notes-1"));
+		expect(wt).toMatchObject({ slug: "octo-example/rover", isWorktree: true });
+		expect(wt.commonDir && realpathSync(wt.commonDir)).toBe(
+			realpathSync(join(c, ".git")),
+		);
+		// two different github repos and no origin: no guess
+		git(c, "remote", "add", "fork", "git@github.com:someone/rover-fork.git");
+		expect((await probeCheckout(c)).slug).toBeNull();
+		expect(JSON.stringify([main, wt])).not.toContain("q".repeat(12));
 	});
 });
 

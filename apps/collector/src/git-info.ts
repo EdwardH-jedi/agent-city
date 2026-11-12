@@ -1,8 +1,9 @@
 // cwd → {toplevel, repo_id, branch} by reading .git files directly (no `git` spawn: the hook has a
-// ~50ms budget). The repo id rule must match the hub's local scan (github/sync.ts):
-//   parseGithubRemote(origin url) ?? localRepoId(main checkout of a linked worktree ?? toplevel)
-// (the main checkout is what the hub's local scan names; a linked worktree without a github origin
-// used to become its own local/<worktree dir> building)
+// ~50ms budget). The repo id rule is the hub's local scan's (github/local.ts + sync.ts), both from
+// @agent-city/schema repo-slug.ts:
+//   githubRepoFromRemotes(remotes of the common config) ?? localRepoId(toplevel, common dir of a worktree)
+// (origin's github repo; with no origin, the one github repo among the remotes; else local/<folder>,
+// the main checkout's folder for a linked worktree)
 // Remote URLs can embed credentials; only the parsed slug leaves this module.
 import {
 	closeSync,
@@ -12,8 +13,12 @@ import {
 	openSync,
 	readSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { localRepoId, parseGithubRemote } from "@agent-city/schema/core";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+	githubRepoFromRemotes,
+	localRepoId,
+	remotesFromConfig,
+} from "@agent-city/schema/core";
 
 export interface GitInfo {
 	toplevel: string;
@@ -79,18 +84,9 @@ function findDotGit(
 
 /** `url` of [remote "origin"] in a git config file. */
 export function originUrlFromConfig(config: string): string | null {
-	let inOrigin = false;
-	for (const raw of config.split("\n")) {
-		const line = raw.trim();
-		if (line.startsWith("[")) {
-			inOrigin = /^\[\s*remote\s+"origin"\s*\]$/i.test(line);
-			continue;
-		}
-		if (!inOrigin) continue;
-		const m = /^url\s*=\s*(.+)$/i.exec(line);
-		if (m?.[1]) return m[1].trim().replace(/^"(.*)"$/, "$1");
-	}
-	return null;
+	return (
+		remotesFromConfig(config).find((r) => r.name === "origin")?.url ?? null
+	);
 }
 
 export function gitInfo(cwd: string): GitInfo | null {
@@ -112,25 +108,15 @@ export function gitInfo(cwd: string): GitInfo | null {
 
 	const head = read(join(gitDir, "HEAD"))?.trim() ?? "";
 	const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-	const url = originUrlFromConfig(read(join(commonDir, "config")) ?? "");
+	const remotes = remotesFromConfig(read(join(commonDir, "config")) ?? "");
+	// only a linked worktree (its own git dir under the common one) names the main checkout
+	const linked = resolve(commonDir) !== resolve(gitDir);
 
 	return {
 		toplevel: found.toplevel,
 		repo_id:
-			(url ? parseGithubRemote(url) : null) ??
-			localRepoId(mainCheckout(commonDir, gitDir) ?? found.toplevel),
+			githubRepoFromRemotes(remotes) ??
+			localRepoId(found.toplevel, linked ? resolve(commonDir) : null),
 		branch: ref?.[1] ?? null, // detached HEAD → null
 	};
-}
-
-/**
- * The main checkout of a linked worktree (its common dir is `<main>/.git`), else null. Without a
- * github origin every worktree would otherwise be its own `local/<worktree dir>` building; the
- * main checkout's folder is also what the hub's local scan names it. A bare common dir (not
- * named `.git`) has no checkout folder: null, so the worktree keeps its own name.
- */
-function mainCheckout(commonDir: string, gitDir: string): string | null {
-	const c = resolve(commonDir);
-	if (c === resolve(gitDir)) return null;
-	return basename(c) === ".git" ? dirname(c) : null;
 }

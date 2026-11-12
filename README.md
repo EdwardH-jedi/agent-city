@@ -610,7 +610,7 @@ text; don't paste secrets into commands in the first place):
 | `403 forbidden host` / `forbidden origin` | Reaching the hub by a non-loopback name. Use `127.0.0.1`/`localhost`, or set `HUB_HOST` / `HUB_ALLOWED_ORIGINS`. |
 | Sync `ABORTED: rate-limit`                | It resumes on the next cycle; lengthen the interval if it repeats.                                        |
 | A repo is missing                         | Token scope (see *GitHub token*); compare with `gh repo list`.                                             |
-| Session repo shows `local/<dir>`          | The checkout has no github.com `origin`.                                                                   |
+| Session repo shows `local/<dir>`          | No github.com repo: `origin` is elsewhere, or there is no `origin` and not exactly one github.com remote. |
 
 ## Roadmap
 

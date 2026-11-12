@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { localRepoId, parseGithubRemote } from "./repo-slug.ts";
+import {
+	githubRepoFromRemotes,
+	localRepoId,
+	parseGithubRemote,
+	remotesFromConfig,
+} from "./repo-slug.ts";
 
 describe("parseGithubRemote", () => {
 	test.each([
@@ -47,5 +52,96 @@ describe("localRepoId", () => {
 	test("basename of the work tree", () => {
 		expect(localRepoId("/Users/example/code/scratch")).toBe("local/scratch");
 		expect(localRepoId("/Users/example/code/scratch/")).toBe("local/scratch");
+	});
+
+	test("a linked worktree (common dir `<main>/.git`) takes the main checkout's folder", () => {
+		expect(
+			localRepoId("/w/_worktrees/rover/notes-1", "/w/code/rover/.git"),
+		).toBe("local/rover");
+		expect(localRepoId("/w/code/rover", "/w/code/rover/.git")).toBe(
+			"local/rover",
+		);
+		// trailing separators, Windows paths, mixed separators
+		expect(localRepoId("/w/wt/", "/w/code/rover/.git/")).toBe("local/rover");
+		expect(localRepoId("C:\\code\\wt\\notes", "C:\\code\\rover\\.git\\")).toBe(
+			"local/rover",
+		);
+		expect(localRepoId("C:/code/wt", "C:\\code\\rover\\.git")).toBe(
+			"local/rover",
+		);
+	});
+
+	test("a bare common dir or none: the work tree's own folder, as before", () => {
+		expect(localRepoId("/w/wt/feature", "/w/repos/rover.git")).toBe(
+			"local/feature",
+		);
+		expect(localRepoId("/w/wt/feature", undefined)).toBe("local/feature");
+		expect(localRepoId("/w/wt/feature", "")).toBe("local/feature");
+		expect(localRepoId("/w/wt/feature", ".git")).toBe("local/feature");
+	});
+});
+
+describe("remotes", () => {
+	const cfg = [
+		"[core]",
+		"\tbare = false",
+		'[remote "upstream-x"]',
+		"\turl = git@github.com:octo-example/rover.git",
+		"\tfetch = +refs/heads/*:refs/remotes/upstream-x/*",
+		'[remote "mirror"]',
+		'\turl = "https://gitlab.example.invalid/octo/rover.git"',
+		'[branch "main"]',
+		"\tremote = upstream-x",
+	].join("\n");
+
+	test("remotesFromConfig: every [remote] url, quotes stripped, other sections ignored", () => {
+		expect(remotesFromConfig(cfg)).toEqual([
+			{ name: "upstream-x", url: "git@github.com:octo-example/rover.git" },
+			{ name: "mirror", url: "https://gitlab.example.invalid/octo/rover.git" },
+		]);
+		expect(remotesFromConfig("")).toEqual([]);
+	});
+
+	const gh = (name: string, slug: string) => ({
+		name,
+		url: `https://github.com/${slug}.git`,
+	});
+	test("origin wins when it is on github.com; a non-github origin stays local (unchanged)", () => {
+		expect(
+			githubRepoFromRemotes([
+				gh("upstream", "someone/else"),
+				gh("origin", "octo-example/alpha"),
+			]),
+		).toBe("octo-example/alpha");
+		expect(
+			githubRepoFromRemotes([
+				{ name: "origin", url: "https://gitlab.example.invalid/o/a.git" },
+				gh("github", "octo-example/alpha"),
+			]),
+		).toBeNull();
+	});
+
+	test("no origin: exactly one github.com repo among the remotes names it; two or none: null", () => {
+		expect(githubRepoFromRemotes(remotesFromConfig(cfg))).toBe(
+			"octo-example/rover",
+		);
+		expect(
+			githubRepoFromRemotes([
+				gh("github-rover", "octo-example/rover"),
+				gh("backup", "Octo-Example/Rover"), // the same repo spelled twice
+			]),
+		).toBe("octo-example/rover");
+		expect(
+			githubRepoFromRemotes([
+				gh("a", "octo-example/rover"),
+				gh("b", "octo-example/rover-fork"),
+			]),
+		).toBeNull();
+		expect(githubRepoFromRemotes([])).toBeNull();
+		expect(
+			githubRepoFromRemotes([
+				{ name: "mirror", url: "https://gitlab.example.invalid/o/a.git" },
+			]),
+		).toBeNull();
 	});
 });

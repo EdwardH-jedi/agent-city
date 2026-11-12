@@ -22,9 +22,12 @@ export {
 	type ToolInputSummary,
 } from "./redact.ts";
 export {
+	type GitRemote,
+	githubRepoFromRemotes,
 	localRepoId,
 	normalizeRepoId,
 	parseGithubRemote,
+	remotesFromConfig,
 	repoKey,
 } from "./repo-slug.ts";
 export {

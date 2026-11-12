@@ -149,9 +149,8 @@ describe("gitInfo (reads .git files, no spawn)", () => {
 		expect(gitInfo(tmp("norepo"))).toBeNull();
 	});
 
-	test("linked worktrees of a repo without an origin share one id: the main checkout's folder", () => {
-		// a repo whose only remote is not named "origin" (seen live: every worktree became its own
-		// building, local/<worktree dir>); the hub's local scan of the main checkout says local/<dir>
+	test("no origin but one github.com remote (named otherwise): main checkout and every worktree take it", () => {
+		// seen live: the only remote was not named "origin", so sessions were local/<dir> and runs owner/name
 		const root = tmp("git-noorigin");
 		const main = join(root, "station-x");
 		mkdirSync(main, { recursive: true });
@@ -169,13 +168,42 @@ describe("gitInfo (reads .git files, no spawn)", () => {
 		git(main, "worktree", "add", "-q", wt1, "-b", "notes");
 		git(main, "worktree", "add", "-q", wt2, "-b", "tests");
 
-		expect(gitInfo(main)?.repo_id).toBe("local/station-x");
+		expect(gitInfo(main)?.repo_id).toBe("octo-example/station-x");
 		expect(gitInfo(wt1)).toEqual({
 			toplevel: wt1,
-			repo_id: "local/station-x",
+			repo_id: "octo-example/station-x",
 			branch: "notes",
 		});
-		expect(gitInfo(wt2)?.repo_id).toBe("local/station-x");
+		expect(gitInfo(wt2)?.repo_id).toBe("octo-example/station-x");
+		// a second, different github repo among the remotes: no guess — the main checkout's folder
+		git(
+			main,
+			"remote",
+			"add",
+			"fork",
+			"git@github.com:someone/station-x-fork.git",
+		);
+		expect(gitInfo(wt1)?.repo_id).toBe("local/station-x");
+		expect(gitInfo(main)?.repo_id).toBe("local/station-x");
+	});
+
+	test("linked worktrees of a repo with no github remote share one id: the main checkout's folder", () => {
+		const root = tmp("git-nogithub");
+		const main = join(root, "rover");
+		mkdirSync(main, { recursive: true });
+		git(main, "init", "-q");
+		git(
+			main,
+			"remote",
+			"add",
+			"mirror",
+			"https://gitlab.example.invalid/o/rover.git",
+		);
+		git(main, "commit", "-q", "--allow-empty", "-m", "init");
+		const wt = join(root, "elsewhere", "rover-notes");
+		git(main, "worktree", "add", "-q", wt, "-b", "notes");
+		expect(gitInfo(main)?.repo_id).toBe("local/rover");
+		expect(gitInfo(wt)?.repo_id).toBe("local/rover");
 	});
 
 	test('originUrlFromConfig only reads [remote "origin"]', () => {
