@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { summarizeToolInput } from "@agent-city/schema";
 import {
 	codexCommand,
 	commandLine,
+	hideCredentials,
 	relPath,
 	runningSubagents,
 	scrubPaths,
@@ -374,6 +376,55 @@ describe("what a command shows (REVIEW 2026-11-13 #1)", () => {
 		expect(commandLine(huge)).toBe("A=…");
 		expect(commandLine(`cd ${"a ".repeat(50_000)}`)).toContain("cd");
 		expect(performance.now() - t0).toBeLessThan(200);
+	});
+});
+
+describe("credentials the shared redaction misses (INBOX-A B2 P1)", () => {
+	// a made-up value built at runtime: never a real secret in the repo
+	const fake = ["synthetic", "Canary42"].join("");
+	const bash = (command: string) =>
+		line({
+			summary: `Bash: ${summarizeToolInput("Bash", { command }).command}`,
+		});
+	const cases: [string, string][] = [
+		[`curl --password "${fake}`, "$ curl --password [REDACTED]"],
+		[`curl --password '${fake}`, "$ curl --password [REDACTED]"],
+		[
+			`curl -H "Authorization: Custom ${fake}" example.test`,
+			'$ curl -H "Authorization: [REDACTED]',
+		],
+		[`Invoke-X -Password '${fake}'`, "$ Invoke-X -Password [REDACTED]"],
+		[`echo password="${fake}`, "$ echo password=[REDACTED]"],
+		[`mysql --passphrase ${fake} db`, "$ mysql --passphrase [REDACTED]"],
+		[`export SECRET_KEY:${fake}`, "$ export SECRET_KEY:[REDACTED]"],
+		[`curl --cookie "sid=${fake}" x`, "$ curl --cookie [REDACTED]"],
+	];
+	for (const [input, shown] of cases)
+		test(`${input.replace(fake, "<fake>")} → ${shown}`, () => {
+			const out = bash(input);
+			expect(out).toBe(shown);
+			expect(out ?? "").not.toContain(fake);
+		});
+
+	test("a word with no value after it, or inside a longer name, is left alone", () => {
+		for (const s of [
+			"$ cat secret.txt",
+			"Edit src/token-store.ts",
+			"$ ls tokens/",
+			"$ pwd",
+			"$ curl --password",
+			'$ curl --password "[REDACTED]"',
+			"$ echo TOKEN=[REDACTED]",
+		])
+			expect(hideCredentials(s)).toBe(s);
+	});
+
+	test("linear in the line's length", () => {
+		const long = `${"token".repeat(20_000)}x`;
+		const t = performance.now();
+		hideCredentials(long);
+		hideCredentials(`${"a ".repeat(100_000)}password`);
+		expect(performance.now() - t).toBeLessThan(200);
 	});
 });
 
