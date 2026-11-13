@@ -75,12 +75,16 @@ const hasControl = (v: string): boolean => {
 };
 
 /**
- * A repo id that may be stored and shown: `owner/name` or `local/<folder>` with no whitespace, slash,
- * backslash or control character in the second part, and nothing secret-shaped; else null.
+ * A repo id that may be stored and shown: `owner/name` or `local/<folder>` with no slash, backslash,
+ * control character or whitespace other than an inner plain space in the second part, and nothing
+ * secret-shaped; else null.
  */
 export function usageProject(v: unknown): string | null {
+	// a plain space may sit inside a folder name (`local/My Project`); no other whitespace, never at an end
 	return typeof v === "string" &&
-		PROJECT.test(v) &&
+		v.trim() === v &&
+		!v.includes("/ ") &&
+		PROJECT.test(v.replaceAll(" ", "_")) &&
 		!hasControl(v) &&
 		redact(v) === v
 		? v
