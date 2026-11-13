@@ -17,11 +17,14 @@
 // Every file in the window is read from offset 0 (no EOF tailing): the hub keeps the larger value per
 // column, so a total restarted from part of a file would hide later growth.
 //
-// Backfill (18 §5.6 U4): the first scans read EVERY file on disk, whatever its mtime, under the same
-// per-file / per-scan byte caps. While it runs nothing is forgotten by day (a session read over several
-// scans, or a replay read in a later scan than its original, must still add up). When a full listing
-// ends with nothing left to read it is marked done in the state and never runs again (until
-// USAGE_BACKFILL_VERSION changes). After that only files modified in the last USAGE_WINDOW_MS are read,
+// Backfill (18 §5.6 U4): the first scans read EVERY file on disk (up to BACKFILL_MAX_FILES, the newest
+// kept), whatever its mtime, under the same per-file / per-scan byte caps, OLDEST FIRST by birth time —
+// the order a live collector met them in, so a resumed transcript's replayed messages stay counted in
+// the original's session as they were live. While it runs nothing is forgotten by day (a session read
+// over several scans must still add up). When a scan ends with no read cut short by a cap it is marked
+// done in the state and never runs again (until USAGE_BACKFILL_VERSION changes; a second backfill can
+// still over-count a replay whose original file has been deleted in between). A file ending in a cut-off
+// line (a crash) waits for the rest without holding the backfill or the 5 s poll. After that only files modified in the last USAGE_WINDOW_MS are read,
 // lines dated before the KEEP_DAYS cutoff are not counted (a replay of an old message must not count
 // twice, and the hub already holds those days), and an old day's totals leave the state only once the
 // hub accepted them (the session is no longer dirty).
@@ -40,6 +43,7 @@ import {
 	parseGithubRemote,
 	sessionId,
 	tokenCount,
+	USAGE_FIRST_DAY,
 	USAGE_ROW_MAX,
 	type UsageLimit,
 	type UsageRow,
@@ -63,10 +67,15 @@ export const USAGE_WINDOW_MS = 7 * 86_400_000;
 export const KEEP_DAYS = 8;
 /** Bump to make every collector read its whole history once more (e.g. after a parser fix). */
 export const USAGE_BACKFILL_VERSION = 1;
-const MAX_STATE_FILES = 4_000;
+/** The backfill lists at most this many files (the newest; the rest are counted in `cut`). */
+export const BACKFILL_MAX_FILES = 10_000;
+/** Above BACKFILL_MAX_FILES, so files the backfill already read are never evicted and read again. */
+const MAX_STATE_FILES = 12_000;
 const GIT_CACHE_MAX = 256;
 const ITERATIONS_MAX = 64;
-/** Distinct (day, model) keys one file may hold; past it new models count as `unknown`. */
+/** Distinct models one file may name on one day; past it new models count as `unknown`. */
+export const MODELS_PER_DAY_MAX = 16;
+/** A file's (day, model) keys: this plus one per day a line may be dated (see add). */
 export const FILE_KEYS_MAX = 128;
 /** Message ids remembered across files; past it the oldest days are forgotten first. */
 export const SEEN_MAX = 200_000;
@@ -149,6 +158,8 @@ export interface ScanOptions {
 	deps: ScanDeps;
 	perFileMax?: number;
 	totalMax?: number;
+	/** Tests: BACKFILL_MAX_FILES. */
+	backfillMaxFiles?: number;
 }
 
 export interface ScanResult {
@@ -166,13 +177,25 @@ const isObj = (v: unknown): v is Obj =>
 const str = (v: unknown): string | null =>
 	typeof v === "string" && v.length > 0 ? v : null;
 
+interface Listed {
+	path: string;
+	mtime: number;
+	/** Birth time (mtime where the file system has none). */
+	birth: number;
+}
+
 /** *.jsonl under `root` (depth ≤ 4) modified at or after `since`, newest first, at most `max`. */
 export function listUsageFiles(
 	root: string,
 	since: number,
 	max = MAX_FILES,
-): { path: string; mtime: number }[] {
-	const out: { path: string; mtime: number }[] = [];
+): Listed[] {
+	return walkUsageFiles(root, since).slice(0, max);
+}
+
+/** Every *.jsonl under `root` (depth ≤ 4) modified at or after `since`, newest first. */
+function walkUsageFiles(root: string, since: number): Listed[] {
+	const out: Listed[] = [];
 	const walk = (dir: string, depth: number) => {
 		let entries: Dirent[];
 		try {
@@ -185,8 +208,10 @@ export function listUsageFiles(
 			if (e.isDirectory() && depth < 4) walk(p, depth + 1);
 			else if (e.isFile() && e.name.endsWith(".jsonl")) {
 				try {
-					const m = statSync(p).mtimeMs;
-					if (m >= since) out.push({ path: p, mtime: m });
+					const st = statSync(p);
+					const m = st.mtimeMs;
+					const b = st.birthtimeMs > 0 ? st.birthtimeMs : m;
+					if (m >= since) out.push({ path: p, mtime: m, birth: b });
 				} catch {
 					// vanished
 				}
@@ -195,13 +220,13 @@ export function listUsageFiles(
 	};
 	walk(root, 0);
 	out.sort(byNewest);
-	return out.slice(0, max);
+	return out;
 }
 
-const byNewest = (
-	a: { path: string; mtime: number },
-	b: { path: string; mtime: number },
-) => b.mtime - a.mtime || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+const byPath = (a: { path: string }, b: { path: string }) =>
+	a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+const byNewest = (a: Listed, b: Listed) => b.mtime - a.mtime || byPath(a, b);
+const byBirth = (a: Listed, b: Listed) => a.birth - b.birth || byPath(a, b);
 
 function readRange(path: string, from: number, max: number): Buffer {
 	const fd = openSync(path, "r");
@@ -238,24 +263,39 @@ function projectResolver(deps: ScanDeps): Resolve {
 	};
 }
 
-function add(file: UsageFile, day: string, model: string, t: Totals): void {
+/**
+ * Add to a file's (day, model) totals. Past MODELS_PER_DAY_MAX models on one day a new model counts as
+ * `unknown` (a transcript naming endless models can't grow the state), so a file holds at most
+ * MODELS_PER_DAY_MAX + 1 keys a day; `keyCap` (FILE_KEYS_MAX + the days a line may be dated) is the hard
+ * stop, a bound that never drops a real day.
+ */
+function add(
+	file: UsageFile,
+	day: string,
+	model: string,
+	t: Totals,
+	keyCap: number,
+): void {
 	let key = `${day}|${model}`;
-	if (
-		file.totals[key] === undefined &&
-		Object.keys(file.totals).length >= FILE_KEYS_MAX
-	)
-		key = `${day}|unknown`; // a transcript naming endless models can't grow the state
-	if (
-		file.totals[key] === undefined &&
-		Object.keys(file.totals).length >= FILE_KEYS_MAX + KEEP_DAYS + 1
-	)
-		return;
+	if (file.totals[key] === undefined) {
+		const keys = Object.keys(file.totals);
+		const today = `${day}|`;
+		if (keys.filter((k) => k.startsWith(today)).length >= MODELS_PER_DAY_MAX)
+			key = `${day}|unknown`;
+		if (file.totals[key] === undefined && keys.length >= keyCap) return;
+	}
 	const cur = file.totals[key] ?? [0, 0, 0, 0, 0];
 	for (let i = 0; i < 5; i++) cur[i] = (cur[i] as number) + (t[i] as number);
 	file.totals[key] = cur;
 }
 
 const modelOf = (v: unknown): string => usageLabel(v) ?? "unknown";
+
+/** Lines dated before `minDay` are not counted; `keyCap` bounds a file's totals (see add). */
+interface DayRange {
+	minDay: string;
+	keyCap: number;
+}
 
 /** One Claude transcript line. Returns true when it added usage. */
 function claudeLine(
@@ -264,7 +304,7 @@ function claudeLine(
 	project: Resolve,
 	seen: Record<string, string>,
 	pathKey: string,
-	minDay: string,
+	{ minDay, keyCap }: DayRange,
 ): boolean {
 	if (!line.includes('"usage"') || !line.includes('"assistant"')) return false;
 	let r: Obj;
@@ -306,19 +346,25 @@ function claudeLine(
 		1,
 	];
 	if (own[0] + own[1] + own[2] + own[3] > 0) {
-		add(file, day, modelOf(m.model), own);
+		add(file, day, modelOf(m.model), own, keyCap);
 		added = true;
 	}
 	if (Array.isArray(u.iterations)) {
 		for (const it of u.iterations.slice(0, ITERATIONS_MAX)) {
 			if (!isObj(it) || it.type !== "advisor_message") continue;
-			add(file, day, modelOf(it.model), [
-				tokenCount(it.input_tokens),
-				tokenCount(it.output_tokens),
-				tokenCount(it.cache_read_input_tokens),
-				tokenCount(it.cache_creation_input_tokens),
-				1,
-			]);
+			add(
+				file,
+				day,
+				modelOf(it.model),
+				[
+					tokenCount(it.input_tokens),
+					tokenCount(it.output_tokens),
+					tokenCount(it.cache_read_input_tokens),
+					tokenCount(it.cache_creation_input_tokens),
+					1,
+				],
+				keyCap,
+			);
 			added = true;
 		}
 	}
@@ -375,7 +421,7 @@ function codexLine(
 	file: UsageFile,
 	project: Resolve,
 	onLimit: (l: UsageLimit) => void,
-	minDay: string,
+	{ minDay, keyCap }: DayRange,
 ): boolean {
 	if (!CODEX_KEYS.some((k) => line.includes(k))) return false;
 	let r: Obj;
@@ -413,13 +459,19 @@ function codexLine(
 		const u = p.usage;
 		const input = tokenCount(u.input_tokens);
 		const cached = Math.min(tokenCount(u.cached_input_tokens), input);
-		add(file, day, file.model ?? "unknown", [
-			input - cached,
-			tokenCount(u.output_tokens),
-			cached,
-			tokenCount(u.cache_write_input_tokens),
-			1,
-		]);
+		add(
+			file,
+			day,
+			file.model ?? "unknown",
+			[
+				input - cached,
+				tokenCount(u.output_tokens),
+				cached,
+				tokenCount(u.cache_write_input_tokens),
+				1,
+			],
+			keyCap,
+		);
 		return true;
 	}
 	if (
@@ -478,8 +530,17 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	if (state.backfill?.v !== USAGE_BACKFILL_VERSION)
 		state.backfill = freshBackfill();
 	const backfilling = state.backfill.done === null;
-	/** Lines dated before this are not counted (none while the backfill runs). */
-	const minDay = backfilling ? "" : cutoff;
+	const today = usageDay(opts.now) ?? "1970-01-01";
+	// Lines dated before this are not counted: the hub's floor while the backfill runs, else the cutoff.
+	const minDay = backfilling ? USAGE_FIRST_DAY : cutoff;
+	const spanDays = Math.max(
+		0,
+		Math.round(
+			(Date.parse(`${today}T00:00:00Z`) - Date.parse(`${minDay}T00:00:00Z`)) /
+				86_400_000,
+		),
+	);
+	const range: DayRange = { minDay, keyCap: FILE_KEYS_MAX + spanDays + 2 };
 	const minObserved = opts.now - KEEP_DAYS * 86_400_000;
 	if (!state.seen) state.seen = {};
 	const seenIds = state.seen;
@@ -494,22 +555,28 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		state.limits_dirty = true;
 	};
 
-	// the backfill lists every file (mtime ≥ 0); one more than MAX_FILES tells a cut listing
+	// After the backfill: files modified in the window, newest first, at most MAX_FILES. The backfill:
+	// every file (the newest BACKFILL_MAX_FILES when there are more), read oldest-born first.
 	const since = backfilling ? 0 : opts.now - USAGE_WINDOW_MS;
-	const listed: { path: string; mtime: number; tool: UsageTool }[] = [];
+	const maxFiles = backfilling
+		? (opts.backfillMaxFiles ?? BACKFILL_MAX_FILES)
+		: MAX_FILES;
+	let listed: (Listed & { tool: UsageTool })[] = [];
 	if (opts.claudeRoot)
-		for (const f of listUsageFiles(opts.claudeRoot, since, MAX_FILES + 1))
+		for (const f of walkUsageFiles(opts.claudeRoot, since))
 			listed.push({ ...f, tool: "claude" });
 	if (opts.codexRoot)
-		for (const f of listUsageFiles(opts.codexRoot, since, MAX_FILES + 1))
+		for (const f of walkUsageFiles(opts.codexRoot, since))
 			listed.push({ ...f, tool: "codex" });
 	listed.sort(byNewest);
-	const cut = Math.max(0, listed.length - MAX_FILES);
+	const cut = Math.max(0, listed.length - maxFiles);
+	listed = listed.slice(0, maxFiles);
+	if (backfilling) listed.sort(byBirth);
 
 	let bytes = 0;
 	let backlog = false;
 	const seen = new Set<string>();
-	for (const { path, tool, mtime } of listed.slice(0, MAX_FILES)) {
+	for (const { path, tool, mtime } of listed) {
 		seen.add(path);
 		let size: number;
 		let ino: number;
@@ -533,13 +600,14 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 			backlog = true;
 			continue;
 		}
+		// backlog = a read cut short by a cap. A file ending in a line without its newline yet (being
+		// written, or cut off by a crash) is not backlog: it waits for the next regular poll.
+		const want = size - file.offset;
+		const n = Math.min(perFileMax, budget, want);
+		if (n < want) backlog = true;
 		let buf: Buffer;
 		try {
-			buf = readRange(
-				path,
-				file.offset,
-				Math.min(perFileMax, budget, size - file.offset),
-			);
+			buf = readRange(path, file.offset, n);
 		} catch {
 			continue;
 		}
@@ -551,7 +619,6 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 			const nl = buf.indexOf(0x0a);
 			if (nl === -1) {
 				file.offset += buf.length;
-				if (file.offset < size) backlog = true;
 				continue;
 			}
 			pos = nl + 1;
@@ -565,8 +632,8 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 				const line = buf.subarray(pos, nl).toString("utf8");
 				const got =
 					tool === "claude"
-						? claudeLine(line, file, project, seenIds, pathKey, minDay)
-						: codexLine(line, file, project, onLimit, minDay);
+						? claudeLine(line, file, project, seenIds, pathKey, range)
+						: codexLine(line, file, project, onLimit, range);
 				if (got) added = true;
 			}
 			pos = nl + 1;
@@ -577,7 +644,6 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 			file.skip = true;
 		}
 		file.offset += pos;
-		if (file.offset < size) backlog = true;
 		if (added && file.session) dirty.add(file.session);
 	}
 
@@ -618,7 +684,7 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	for (const f of Object.values(state.files))
 		if (f.session) live.add(f.session);
 	state.dirty = [...dirty].filter((s) => live.has(s));
-	// a whole listing read to the end: the backfill is done (the newest MAX_FILES when it was cut)
+	// a whole listing read to the end: the backfill is done (the newest BACKFILL_MAX_FILES when cut)
 	const backfilled = backfilling && !backlog;
 	if (backfilled)
 		state.backfill = {

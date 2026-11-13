@@ -444,13 +444,18 @@ strip keeps ageing its last snapshot toward `offline` even if the hub still rece
 
 **Token usage (18 §5).** `collector:codex` also runs a usage poller (every 60 s; 5 s while a first
 read catches up).
-**Backfill (18 §5.6 U4).** The first time it runs, the poller reads **every** transcript and rollout on disk,
-whatever its age, under the same byte caps; while it runs no day is forgotten. When a whole listing has been
-read it writes `backfill: {v, done, files, cut}` into its state, logs `[usage] backfill done: N files`, and
+**Backfill (18 §5.6 U4).** The first time it runs, the poller reads **every** transcript and rollout on disk
+(at most 10,000, the newest; the rest are counted as `cut`), whatever its age, under the same byte caps,
+oldest-born first — the order a live collector met them in, so a resumed transcript's replayed messages stay
+in the original's session. Today's usage therefore arrives last on a first run (~18 min for 720 files).
+While it runs no day is forgotten. When a scan ends with no read cut short by a cap (a file ending in a
+cut-off line does not hold it) it writes `backfill: {v, done, files, cut}` into its state, logs `[usage] backfill done: N files`, and
 never does it again (a restart mid-way resumes; a state without the mark — e.g. from before U4 — keeps only
 its limits and starts it). Afterwards only files modified in the last 7 days are read, lines dated more than
 8 days back are not counted (the hub already holds those days; a late replay must not count twice), and an
-old day leaves the state only once the hub accepted it. Codex rollouts written before
+old day leaves the state only once the hub accepted it. A second backfill (a lost offsets file, or a new
+`USAGE_BACKFILL_VERSION`) can over-count a replay whose original file was deleted in between (the hub keeps
+both sessions' rows); one after a collector outage of more than 7 days does not fill that gap. Codex rollouts written before
 `token_usage_record` existed (only `token_count` events) count nothing. It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
 Codex rollouts by per-file offset, at most 4 MiB per file and 16 MiB per scan, and sends **numbers and
 identifiers only**: one cumulative row per `(session_id, day, model)` with `tool`, `project` (repo id or
@@ -461,7 +466,7 @@ log stated them (today Codex `rate_limits`; Claude transcripts carry none). The 
 transcript. `AGENTCITY_USAGE=0` turns the poller off.
 
 What the poller keeps in `~/.agentcity/usage-offsets.json`: per log file its offset and per-(day, model)
-totals (at most 128 keys a file), and Claude message ids only as hashes (at most 200k, across files, so a
+totals (at most 16 models a day, then `unknown`; at most 128 keys + one per countable day a file), and Claude message ids only as hashes (at most 200k, across files, so a
 resumed transcript that replays earlier messages counts them once — in whichever file was read first). A
 Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
 a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain

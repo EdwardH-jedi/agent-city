@@ -1125,3 +1125,122 @@ describe("backfill (18 §5.6 U4)", () => {
 		);
 	});
 });
+
+describe("U4 review fixes (break-it)", () => {
+	test("a file ending in a cut-off line does not hold the backfill or the 5 s poll", () => {
+		const root = tmp("bf-trunc");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const f = join(root, "p", "t.jsonl");
+		writeFileSync(
+			f,
+			`${claudeMsg({ id: "t1", session: "t", ts: isoDaysAgo(20) })}{"type":"assistant","trunc`,
+		);
+		age(f, 20);
+		const state = emptyUsageState();
+		const r = scan(root, null, state);
+		expect(r).toMatchObject({ backlog: false, backfilled: true });
+		expect(usageRows(state, ["claude:t"])[0]?.messages).toBe(1);
+		// a read cut by the budget is still backlog
+		const big = emptyUsageState();
+		expect(scan(root, null, big, { totalMax: 100 }).backlog).toBe(true);
+		expect(big.backfill.done).toBeNull();
+	});
+
+	test("a second backfill (offsets lost) counts a resumed transcript's replay where the live run did", async () => {
+		const root = tmp("bf-second");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const a = join(root, "p", "s1.jsonl");
+		writeFileSync(
+			a,
+			claudeMsg({ id: "r1", session: "s1", ts: isoDaysAgo(40) }) +
+				claudeMsg({ id: "r2", session: "s1", ts: isoDaysAgo(40) }),
+		);
+		age(a, 40);
+		const hub = maxHub();
+		const live = emptyUsageState();
+		scan(root, null, live); // backfill: only A exists
+		await sendUsage(sendCfg, live, hub.fetchImpl);
+		// later the session is resumed into a new file that replays A's messages, then adds one
+		const b = join(root, "p", "s2.jsonl");
+		writeFileSync(
+			b,
+			claudeMsg({ id: "r1", session: "s2", ts: isoDaysAgo(40) }) +
+				claudeMsg({ id: "r2", session: "s2", ts: isoDaysAgo(40) }) +
+				claudeMsg({ id: "n1", session: "s2" }),
+		);
+		scan(root, null, live);
+		await sendUsage(sendCfg, live, hub.fetchImpl);
+		expect(hub.total()[4]).toBe(3);
+		const again = emptyUsageState(); // lost offsets → a second backfill, oldest-born first
+		for (let i = 0; i < 50; i++) {
+			const r = scan(root, null, again, { perFileMax: 700, totalMax: 700 });
+			await sendUsage(sendCfg, again, hub.fetchImpl);
+			if (r.backfilled) break;
+		}
+		expect(again.backfill.done).not.toBeNull();
+		expect(hub.total()[4]).toBe(3);
+	});
+
+	test("a session file spanning more days than FILE_KEYS_MAX keeps every day during the backfill", () => {
+		const root = tmp("bf-long");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const f = join(root, "p", "long.jsonl");
+		let body = "";
+		for (let d = 0; d < 150; d++)
+			body += claudeMsg({
+				id: `d${d}`,
+				session: "long",
+				ts: isoDaysAgo(d + 1),
+			});
+		writeFileSync(f, body);
+		const state = emptyUsageState();
+		scan(root, null, state);
+		const rows = usageRows(state, ["claude:long"]);
+		expect(rows.reduce((n, r) => n + r.messages, 0)).toBe(150);
+		expect(rows.some((r) => r.model === "unknown")).toBe(false);
+	});
+
+	test("lines dated before the hub's first day are not counted", () => {
+		const root = tmp("bf-floor");
+		mkdirSync(join(root, "p"), { recursive: true });
+		writeFileSync(
+			join(root, "p", "f.jsonl"),
+			claudeMsg({ id: "a", session: "f", ts: "2024-06-01T00:00:00Z" }) +
+				claudeMsg({ id: "b", session: "f" }),
+		);
+		const state = emptyUsageState();
+		scan(root, null, state);
+		expect(usageRows(state, ["claude:f"]).map((r) => r.day)).toEqual([
+			"2026-11-13",
+		]);
+	});
+
+	test("over the backfill's file cap: the newest are read, the rest counted as cut, and it still ends", () => {
+		const root = tmp("bf-cap");
+		mkdirSync(join(root, "p"), { recursive: true });
+		for (let i = 0; i < 5; i++) {
+			const f = join(root, "p", `c${i}.jsonl`);
+			writeFileSync(
+				f,
+				claudeMsg({ id: `c${i}`, session: `c${i}`, ts: isoDaysAgo(30 - i) }),
+			);
+			age(f, 30 - i);
+		}
+		const state = emptyUsageState();
+		const r = scanUsage({
+			claudeRoot: root,
+			codexRoot: null,
+			state,
+			now: NOW,
+			deps,
+			backfillMaxFiles: 3,
+		});
+		expect(r.backfilled).toBe(true);
+		expect(state.backfill).toMatchObject({ files: 3, cut: 2 });
+		expect(
+			Object.values(state.files)
+				.map((f) => f.session)
+				.sort(),
+		).toEqual(["claude:c2", "claude:c3", "claude:c4"]);
+	});
+});

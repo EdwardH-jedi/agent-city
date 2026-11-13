@@ -260,6 +260,24 @@ describe("backfill → all-time total (18 §5.6 U4)", () => {
 		const t = Date.parse("2026-10-02T02:00:00Z") / 1000;
 		utimesSync(old, t, t);
 		utimesSync(rollout, t, t);
+		// a later resume of that session into a new file, replaying o1 and adding one message today
+		const resumed = join(
+			claudeRoot,
+			"p",
+			"55555555-aaaa-bbbb-cccc-000000000005.jsonl",
+		);
+		const rerun = () =>
+			writeFileSync(
+				resumed,
+				claude("o1", 1000, "2026-09-25T01:00:00Z").replaceAll(
+					SID,
+					"55555555-aaaa-bbbb-cccc-000000000005",
+				) +
+					claude("n1", 3).replaceAll(
+						SID,
+						"55555555-aaaa-bbbb-cccc-000000000005",
+					),
+			);
 		const cfg = (home: string) =>
 			({
 				hubUrl: "http://hub.test",
@@ -283,7 +301,7 @@ describe("backfill → all-time total (18 §5.6 U4)", () => {
 		const home = tmp("bf-home");
 		const poll = poller(home);
 		await poll();
-		const s = await read();
+		let s = await read();
 		expect(s.rows).toEqual([]); // nothing in the last 7 days
 		expect(s.total).toEqual({
 			since: "2026-09-20",
@@ -307,8 +325,12 @@ describe("backfill → all-time total (18 §5.6 U4)", () => {
 			],
 		});
 		await poll(); // done: the old files are forgotten and not read again
+		rerun(); // the resume happens live: its replay of o1 is not counted again
+		await poll();
+		s = await read();
+		expect(s.total?.tools[0]?.messages).toBe(3);
 		await poller(home)(); // restart
-		await poller(tmp("bf-home2"))(); // offsets lost → a second backfill
+		await poller(tmp("bf-home2"))(); // offsets lost → a second backfill (oldest-born first)
 		expect((await read()).total).toEqual(s.total);
 		const wire = bodies.join("\n");
 		for (const bad of [FAKE_GH, FAKE_ANT, "TOKEN=", "/Users/", "someone"])

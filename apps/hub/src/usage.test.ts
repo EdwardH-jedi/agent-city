@@ -613,7 +613,7 @@ describe("cumulative total (18 §5.6 U4)", () => {
 			console.log(
 				`[usage] summary over 200k rows: median ${median.toFixed(1)} ms`,
 			);
-			expect(median).toBeLessThan(500); // loose under load; the measured median goes in the report
+			expect(median).toBeLessThan(50); // 18 §5.6: 50 ms at 200k rows (measured ~2.6 ms)
 			expect(s?.total?.since).toBe(dayMinus("2026-11-13", 399));
 			expect(s?.total?.tools.map((t) => [t.tool, t.messages])).toEqual([
 				["claude", 300_000],
