@@ -8,8 +8,6 @@ import {
 	msToNextMinute,
 	sessionsToday,
 	TOP_FOLD,
-	tokensText,
-	tokensToday,
 } from "./today.ts";
 
 // local wall-clock times (the screen shows the device's local time; these are TZ-independent)
@@ -81,53 +79,6 @@ describe("세션 N: sessions active today (17 §2)", () => {
 	test("junk timestamps do not count", () => {
 		expect(sessionsToday([{ last_event_at: "nope" }], at(10, 0))).toBe(0);
 		expect(sessionsToday([], at(10, 0))).toBe(0);
-	});
-});
-
-describe("토큰: the runs' tokens_today (17 §2)", () => {
-	const now = at(10, 47);
-	const run = (
-		tokens: number | null,
-		unknown = false,
-		reported = at(10, 40),
-	) => ({
-		tokens_today: tokens,
-		usage_unknown: unknown,
-		reported_at: iso(reported),
-	});
-	test("sums the runs reported today", () => {
-		expect(tokensToday([run(120_000), run(83_000)], now)).toEqual({
-			total: 203_000,
-			floor: false,
-		});
-		expect(tokensText({ total: 203_000, floor: false })).toBe("203k");
-	});
-	test("usage_unknown on any run: a floor, `203k+`", () => {
-		const t = tokensToday([run(120_000), run(83_000), run(null, true)], now);
-		expect(t).toEqual({ total: 203_000, floor: true });
-		expect(t && tokensText(t)).toBe("203k+");
-	});
-	test("no figure at all: no cell (null), even with usage_unknown", () => {
-		expect(tokensToday([], now)).toBeNull();
-		expect(tokensToday([run(null), run(null, true)], now)).toBeNull();
-	});
-	test("a run last reported before midnight carries yesterday's figure: left out", () => {
-		expect(
-			tokensToday([run(50_000, false, at(23, 0, 0, 0, 12)), run(7_000)], now),
-		).toEqual({ total: 7_000, floor: false });
-		expect(
-			tokensToday([run(50_000, true, at(23, 0, 0, 0, 12))], now),
-		).toBeNull();
-	});
-	test("figures: k under a million, M above", () => {
-		const f = (n: number) => tokensText({ total: n, floor: false });
-		expect(f(0)).toBe("0");
-		expect(f(950)).toBe("950");
-		expect(f(12_400)).toBe("12k");
-		expect(f(999_400)).toBe("999k");
-		expect(f(999_600)).toBe("1M");
-		expect(f(1_240_000)).toBe("1.2M");
-		expect(f(34_000_000)).toBe("34M");
 	});
 });
 

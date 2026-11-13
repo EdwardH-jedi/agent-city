@@ -9,6 +9,7 @@ import type {
 	RunEventView,
 	RunView,
 	Session,
+	UsageSummary,
 } from "@agent-city/schema";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -64,6 +65,9 @@ export function useHub(filter: EventFilter) {
 	const [events, setEvents] = useState<Event[]>([]);
 	const [machines, setMachines] = useState<MachineView[]>([]);
 	const [runs, setRuns] = useState<RunView[]>([]);
+	// token usage (18 §5): only from /ws — the hub sends it when the socket opens and when it changes, so
+	// there is no request for it; an older hub sends none and it stays null
+	const [usage, setUsage] = useState<UsageSummary | null>(null);
 	const [conn, setConn] = useState<Conn>("connecting");
 	const [error, setError] = useState<string | null>(null);
 	const filterRef = useRef(filter);
@@ -149,6 +153,8 @@ export function useHub(filter: EventFilter) {
 					setMachines((cur) => mergeMachines(cur, [msg.data]));
 				} else if (msg.kind === "run") {
 					setRuns((cur) => mergeRuns(cur, [msg.data]));
+				} else if (msg.kind === "usage") {
+					setUsage(msg.data);
 				}
 			};
 			ws.onclose = () => {
@@ -168,7 +174,7 @@ export function useHub(filter: EventFilter) {
 		};
 	}, [loadSnapshot, loadSessions, loadEvents]);
 
-	return { districts, sessions, events, machines, runs, conn, error };
+	return { districts, sessions, events, machines, runs, usage, conn, error };
 }
 
 /** What the board needs to know changed about a run before its events are fetched again. */

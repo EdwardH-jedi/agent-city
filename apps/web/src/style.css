@@ -120,7 +120,7 @@ td {
 	white-space: nowrap;
 }
 th {
-	font-weight: 600;
+	font-weight: 700;
 	color: var(--muted);
 }
 /* long repo@branch cells wrap instead of pushing "last event" off-screen */
@@ -133,7 +133,7 @@ td.num {
 	font-variant-numeric: tabular-nums;
 }
 tr.has-live td {
-	font-weight: 600;
+	font-weight: 700;
 }
 
 .tag {
@@ -149,7 +149,7 @@ tr.has-live td {
 }
 .ci-failure {
 	color: var(--bad);
-	font-weight: 600;
+	font-weight: 700;
 }
 .ci-running {
 	color: var(--run);
@@ -186,7 +186,7 @@ tr.has-live td {
 	font-size: 12px;
 }
 .machine-name {
-	font-weight: 600;
+	font-weight: 700;
 }
 .machine-beat {
 	color: var(--muted);
@@ -243,7 +243,7 @@ tr.has-live td {
 }
 
 .status {
-	font-weight: 600;
+	font-weight: 700;
 }
 .status-active {
 	color: var(--ok);
@@ -256,7 +256,7 @@ tr.has-live td {
 tr.st-waiting td {
 	background: var(--waiting-bg);
 	color: var(--waiting-fg);
-	font-weight: 600;
+	font-weight: 700;
 }
 .waiting-count {
 	margin-left: 8px;
@@ -298,7 +298,7 @@ tr.st-waiting td {
 	color: var(--run);
 }
 .type {
-	font-weight: 600;
+	font-weight: 700;
 }
 
 /* ── board ──────────────────────────────────────────────────────────────────
@@ -1615,4 +1615,110 @@ tr.st-waiting td {
 .dterm .dline {
 	overflow-wrap: anywhere;
 	color: var(--b-muted);
+}
+/* 18 §5 U3: USAGE under LOG — never shrinks (it is short); text sizes stay in D10's 10.5–14 px × --ui */
+.hq-usage {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+}
+.usage-body {
+	padding: 6px 10px 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	min-width: 0;
+}
+.usage-tools,
+.usage-note {
+	margin: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-size: calc(12px * var(--ui));
+	color: var(--b-muted);
+}
+.usage-tools b {
+	color: var(--b-fg);
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+.usage-note {
+	font-size: calc(11px * var(--ui));
+	color: var(--b-dim);
+}
+.usage-bars {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.ubar {
+	display: grid;
+	grid-template-columns: minmax(0, 7.5em) minmax(0, 1fr) 3.4em;
+	align-items: center;
+	gap: 8px;
+	font-size: calc(12px * var(--ui));
+	color: var(--b-muted);
+	white-space: nowrap;
+}
+.ubar-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--b-fg);
+}
+.ubar-track {
+	height: calc(7px * var(--ui));
+	background: var(--b-line);
+}
+.ubar-track i {
+	display: block;
+	height: 100%;
+	background: var(--b-muted);
+}
+.ubar-n {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+.ubar-more {
+	display: block;
+	color: var(--b-dim);
+	font-size: calc(11px * var(--ui));
+}
+.usage-trend {
+	list-style: none;
+	margin: 2px 0 0;
+	padding: 0;
+	display: grid;
+	grid-template-columns: repeat(7, minmax(0, 1fr));
+	gap: 4px;
+	align-items: end;
+}
+.ut {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 2px;
+}
+.ut-bar {
+	height: calc(26px * var(--ui));
+	display: flex;
+	align-items: flex-end;
+	background: var(--b-line);
+}
+.ut-bar i {
+	display: block;
+	width: 100%;
+	min-height: 1px;
+	background: var(--b-dim);
+}
+.ut-today .ut-bar i {
+	background: var(--b-muted);
+}
+.ut-day {
+	text-align: center;
+	font-size: calc(10.5px * var(--ui));
+	color: var(--b-dim);
 }

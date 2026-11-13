@@ -3,7 +3,7 @@
 // `?demo=1` draws the same screen from made-up data instead (DemoBoard.tsx, a lazy chunk): no request,
 // no sound, and the screen says "예시 데이터".
 
-import type { RunView, Session } from "@agent-city/schema";
+import type { RunView, Session, UsageSummary } from "@agent-city/schema";
 import {
 	type CSSProperties,
 	memo,
@@ -49,10 +49,10 @@ import {
 	msToNextMinute,
 	sessionsToday,
 	TOP_FOLD,
-	tokensText,
-	tokensToday,
 } from "./today.ts";
 import { currentRuns } from "./types.ts";
+import { Usage } from "./Usage.tsx";
+import { USAGE_TREND_MIN_BODY, usagePanel, usageTopWord } from "./usage.ts";
 import { emptyWatch, stepWatch } from "./visits.ts";
 
 export type HubData = ReturnType<typeof useHub>;
@@ -191,6 +191,7 @@ export function Board({ hub }: { hub: HubData }) {
 			sessions={hub.sessions}
 			events={hub.events}
 			runs={hub.runs}
+			usage={hub.usage}
 		/>
 	);
 }
@@ -259,6 +260,7 @@ export function BoardView({
 	sessions,
 	events,
 	runs,
+	usage,
 }: {
 	model: VillageModel;
 	now: number;
@@ -268,8 +270,10 @@ export function BoardView({
 	/** The right panel's sessions and their events (what useHub holds; nothing more is fetched). */
 	sessions: readonly Session[];
 	events: readonly MemEvent[];
-	/** The runs useHub holds: only their `tokens_today` is summed for the top band (17 §2). */
+	/** The runs useHub holds (the flags and confetti of 17 §3). */
 	runs: readonly RunView[];
+	/** Token usage from /ws (18 §5): the top band's `토큰` and the USAGE box. Null: neither is drawn. */
+	usage: UsageSummary | null;
 }) {
 	// The ring town in the middle column (design doc 12, the default); `?scene=campus`: the 3D campus.
 	const [scene] = useState(() => sceneOf(window.location.search));
@@ -304,12 +308,14 @@ export function BoardView({
 		[finished, burstKey],
 	);
 	const sessionCount = sessionsToday(sessions, now);
-	const tokens = tokensToday(runs, now);
+	// 18 §5 U3: `토큰` is today's whole usage (every session the collectors saw), not Office's run figures;
+	// no usage today → no cell. Recomputed when the minute changes (Sydney midnight rolls it over).
+	const usageNow = useMemo(() => usagePanel(usage, minute), [usage, minute]);
 	// 17 §2: a band too narrow for one line hides the date, then the tokens, then the sessions. Measured
 	// before paint; starts over when the window or the band's words change.
 	const topRef = useRef<HTMLElement>(null);
 	const [fold, setFold] = useState(0);
-	const tokenWord = tokens ? tokensText(tokens) : null;
+	const tokenWord = usageTopWord(usageNow);
 	const sentence = model.status.sentence;
 	const { completed, running } = model.today;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: these are the band's words; a change re-measures from 0
@@ -380,6 +386,13 @@ export function BoardView({
 					model={model}
 					now={now}
 					top={town ? <TownMinimapSlot /> : null}
+					bottom={
+						<Usage
+							panel={usageNow}
+							pixel={town}
+							trend={cols.body >= USAGE_TREND_MIN_BODY}
+						/>
+					}
 					pixel={town}
 				/>
 				{town ? (

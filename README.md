@@ -90,10 +90,17 @@ engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or act
 - **Top band (doc 17 §2).** Right of the machine chips: this device's clock (`10:47`, local, 24 h, no seconds;
   the sentence's 28 px but weight 400 and muted, redrawn only when the minute changes; it keeps going while
   reports are cut) and the date (`11월 13일 금`), then `오늘 완료 N · 진행 N · 세션 N · 토큰 203k`. `세션` counts
-  the sessions whose last activity is after local midnight. `토큰` is the sum of `tokens_today` over the runs
-  reported today — only the figures Office signs in its run reports, **not the whole usage** of any account;
-  `+` when one of those runs says its usage is unknown, and no cell when none has a figure. A band too narrow
+  the sessions whose last activity is after local midnight. `토큰` is today's (Australia/Sydney) token usage of every
+  session the collectors saw (18 §5): `input + output + cache write`, cache reads left out (the USAGE box
+  says them apart); no cell when there is none today. A band too narrow
   for one line hides the date, then the tokens, then the sessions. While reports are cut the summary dims.
+- **USAGE (18 §5, `board/usage.ts`, `board/Usage.tsx`).** The left column's last box, under LOG: today's
+  figure and the 7-day sum in its head, `Claude N · Codex N` and a plan limit only as the tool's log stated it
+  (Codex `rate_limits`; shown while observed in the last 6 h and before its reset), today's tokens per project
+  (at most 4 bars, the rest counted; a project not shaped like a repo id is `저장소 밖`), the last 7 days as
+  small bars (left out when the board body is under 760 px, e.g. 1366×768), and the cache reads apart. The
+  summary comes on `/ws` (sent when the socket opens and when a report changes it), so the board makes no
+  extra request; with an older hub there is no box and no `토큰` cell.
 - **Finish show (doc 17 §3, `board/done.ts`, `town/done-fx.ts`).** When `visits.ts` makes a new
   `전부 끝났습니다.` report (a run seen to finish while the screen is open — a run already finished when the
   page opened is only remembered), that building's roof throws confetti for 20 s (24 pieces, two bursts at once, 48 at most; none in
