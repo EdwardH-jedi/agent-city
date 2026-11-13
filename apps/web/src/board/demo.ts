@@ -10,7 +10,9 @@ import type {
 	Session,
 } from "@agent-city/schema";
 import type { Districts, RepoView } from "../useHub.ts";
-import { type EventsByRun, runKey } from "./types.ts";
+import { PASSED_TEXT } from "./copy.ts";
+import { currentRuns, type EventsByRun, runKey } from "./types.ts";
+import { emptyWatch, type Watch } from "./visits.ts";
 
 export { DEMO_LABEL, isDemo } from "./demo-flag.ts";
 
@@ -18,6 +20,8 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 
 export interface DemoData {
+	/** `case=done` only: what the screen "saw" a moment ago (a run finishing), as visits.ts would. */
+	watch?: Watch;
 	runs: RunView[];
 	machines: MachineView[];
 	districts: Districts;
@@ -29,12 +33,14 @@ export interface DemoData {
 
 /**
  * `?demo=1&case=calm`: nothing waits for the owner (no 결재, no 멈춤, no 입력 대기). `case=busy`: many
- * sessions in many projects, so the right panel's caps and folds show. Anything else: the default.
+ * sessions in many projects, so the right panel's caps and folds show. `case=done` (17 §3): a calm day
+ * where one building has just finished (its confetti, for 20 s after the page opens) and one finished
+ * earlier today (its flag); few buildings, so both stand. Anything else: the default.
  */
-export type DemoCase = "default" | "calm" | "busy";
+export type DemoCase = "default" | "calm" | "busy" | "done";
 export function demoCaseOf(search: string): DemoCase {
 	const c = new URLSearchParams(search).get("case");
-	return c === "calm" || c === "busy" ? c : "default";
+	return c === "calm" || c === "busy" || c === "done" ? c : "default";
 }
 
 export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
@@ -126,12 +132,37 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 		}),
 	];
 	// calm: nothing waits for the owner and nothing is stopped
+	// done: the calm runs of five projects; quarry has just finished, willow finished earlier today
+	const sinceMidnight = t0 - new Date(t0).setHours(0, 0, 0, 0);
+	const DONE_CASE = new Set([
+		"demo/orchard",
+		"demo/meadow",
+		"demo/garnet",
+		"demo/quarry",
+		"demo/willow",
+	]);
 	const runs =
 		kase === "calm"
 			? all.filter(
 					(r) => !r.needs_owner && !["hold", "stopped"].includes(r.display),
 				)
-			: all;
+			: kase === "done"
+				? all
+						.filter((r) => DONE_CASE.has(r.project ?? ""))
+						.map((r) =>
+							r.project === "demo/willow"
+								? {
+										...r,
+										last_progress_at: at(
+											Math.max(
+												2 * MIN,
+												Math.min(130 * MIN, sinceMidnight - MIN),
+											),
+										),
+									}
+								: r,
+						)
+				: all;
 
 	// decision D4: Claude Code / Codex sessions (made up: `demo/…` repos, `/Users/demo/…` folders)
 	const MODEL: Record<Session["provider"], string> = {
@@ -205,6 +236,20 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 		);
 	if (kase === "calm")
 		for (const s of sessions) if (s.status === "waiting") s.status = "idle";
+	// done: the sessions of four projects (harbor's resting), so willow, the earlier finish, takes the
+	// seventh lot — the one the reduced-motion plaza shot frames
+	if (kase === "done") {
+		sessions.splice(
+			0,
+			sessions.length,
+			...sessions.filter((s) =>
+				["demo/orchard", "demo/quill", "demo/meadow", "demo/harbor"].includes(
+					s.repo_id ?? "",
+				),
+			),
+		);
+		for (const s of sessions) if (s.status === "waiting") s.status = "idle";
+	}
 
 	// the tails' events: what the hook sends (summaries with made-up absolute paths, which the panel
 	// must show relative or cut to their last two parts)
@@ -388,7 +433,18 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 		active_sessions: 0,
 	});
 
+	// done: the screen saw quarry finish 1.5 s before the page's time (visits.ts stepWatch would have)
+	const quarry = currentRuns(runs).find((c) => c.project_id === "demo/quarry");
+	const watch: Watch | undefined =
+		kase === "done" && quarry
+			? {
+					...emptyWatch(),
+					observed: [{ c: quarry, text: PASSED_TEXT, at: t0 - 1_500 }],
+				}
+			: undefined;
+
 	return {
+		...(watch ? { watch } : {}),
 		runs,
 		machines: [
 			machine("cockpit", "online"),

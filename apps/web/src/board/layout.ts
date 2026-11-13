@@ -2,11 +2,14 @@
 // Pure and tiny: the board imports this statically, so it must not import the engine or three (the town is
 // a lazy chunk). The rule is the original town's (renderer/panels.mjs `panelLayout`): the stage picks its
 // integer scale FIRST, then the two panels share what is left, each at most PANEL_MAX. The same widths are
-// used under ?scene=campus and the 2D fallback; the middle column takes the rest there.
+// used under ?scene=campus and the 2D fallback; the middle column takes the rest there. 17 F3: the town's
+// render target then grows to fill the column's height (rtH, 288..360; town/pipeline.ts fitStage).
 
 /** The original's render target (town/engine/pipeline-core.mjs RT_W_MAX × RT_H). */
 export const STAGE_W = 384;
 export const STAGE_H = 288;
+/** 17 F3: the tallest the town's target grows to fill the column (town/pipeline.ts RT_H_MAX). */
+export const STAGE_H_MAX = 360;
 /** Largest integer scale the town uses (town/pipeline.ts). */
 export const STAGE_MAX_SCALE = 4;
 /** The original's panel cap. */
@@ -28,11 +31,17 @@ export interface BoardColumns {
 	top: number;
 	/** Height of the columns (the window under the top band). */
 	body: number;
+	/**
+	 * 17 F3: the town's render-target height at this scale, clamp(floor(body / scale), 288, 360) — the
+	 * stage is 384·s × rtH·s (town/pipeline.ts fitStage picks the same).
+	 */
+	rtH: number;
 }
 
 /**
  * Columns for a window of width × height CSS px. Scale: the largest integer s ≤ 4 with 384·s beside two
- * PANEL_MIN panels and 288·s within the body; at least 1. Panels: min(PANEL_MAX, floor((width − 384·s) / 2)),
+ * PANEL_MIN panels and 288·s within the body; at least 1. Then (17 F3) the town's target height rtH fills
+ * the body: clamp(floor(body / s), 288, 360). Panels: min(PANEL_MAX, floor((width − 384·s) / 2)),
  * never under PANEL_MIN (a window too narrow even for 1× gives the middle what is left). Whole px only.
  */
 export function boardColumns(width: number, height: number): BoardColumns {
@@ -51,7 +60,11 @@ export function boardColumns(width: number, height: number): BoardColumns {
 		Math.min(PANEL_MAX, Math.floor((W - STAGE_W * scale) / 2)),
 	);
 	const middle = Math.max(0, W - 2 * each);
-	return { scale, left: each, middle, right: each, top: TOP_H, body };
+	const rtH = Math.max(
+		STAGE_H,
+		Math.min(STAGE_H_MAX, Math.floor(body / Math.max(1, scale))),
+	);
+	return { scale, left: each, middle, right: each, top: TOP_H, body, rtH };
 }
 
 /** `?ui=1.15` or `?ui=1.3` scales every panel text size (15 §1); any other value (or none) is 1. */

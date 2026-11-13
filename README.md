@@ -87,6 +87,22 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
 `apps/web/src/board/**`, `apps/web/src/campus/**` and `apps/web/src/town/**` (including the ported
 engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or action.
 
+- **Top band (doc 17 §2).** Right of the machine chips: this device's clock (`10:47`, local, 24 h, no seconds;
+  the sentence's 28 px but weight 400 and muted, redrawn only when the minute changes; it keeps going while
+  reports are cut) and the date (`11월 13일 금`), then `오늘 완료 N · 진행 N · 세션 N · 토큰 203k`. `세션` counts
+  the sessions whose last activity is after local midnight. `토큰` is the sum of `tokens_today` over the runs
+  reported today — only the figures Office signs in its run reports, **not the whole usage** of any account;
+  `+` when one of those runs says its usage is unknown, and no cell when none has a figure. A band too narrow
+  for one line hides the date, then the tokens, then the sessions. While reports are cut the summary dims.
+- **Finish show (doc 17 §3, `board/done.ts`, `town/done-fx.ts`).** When `visits.ts` makes a new
+  `전부 끝났습니다.` report (a run seen to finish while the screen is open — a run already finished when the
+  page opened is only remembered), that building's roof throws confetti for 20 s (24 pieces, two bursts at once, 48 at most; none in
+  reduced motion or while reports are cut) and the board chimes once (two short notes, E5 then G5, over the
+  soft C5 a passed run already played; same rules as every sound: `?sound=off`, quiet hours, the Mac
+  reporting, never on the first look or the settle window). A building whose `전부 끝남` line is from today
+  keeps a flag on its parapet until local midnight (recomputed from the runs, so a reload keeps it); only
+  standing buildings have one (the village shows at most eight). A task passing (`T2 통과`) is not a finish.
+  The camera does not go there; patrol and visits are unchanged.
 - **Current run.** Of several runs with the same `(project, workflow_id)` only the one with the latest
   `last_progress_at` counts (ties: higher `last_event_sequence`, then higher run id). The others show only
   in `#/detail`.
@@ -101,11 +117,16 @@ engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or act
 - **Screen rules (design doc 07 §13, panels per decision D10 / doc 15).** One fact, one place: a 결재 sentence
   only on its HQ 대기 row, the newest report only in the one bubble at the HQ door. The panels are the original
   town's panels (`apps/web/src/style.css`; titles `MAP` `HQ` `PAUSED` `LOG` `SESSIONS` in the town's pixel
-  font while the town runs). Text: the status sentence is the one big line (28 px); everything else is the
+  font while the town runs). Text: the status sentence is the one big line (28 px; the clock shares the size
+at weight 400); everything else is the
   panel scale, 10.5–14 px, times `?ui=1.15` or `?ui=1.3` (any other value is 1; for a monitor read from
   further away). Columns (`apps/web/src/board/layout.ts`): the stage picks its integer scale first (384×288 ·
   s under a 56 px top band), then the two panels share the rest, each 240–420 px — 384 / 1152 / 384 at
-  1920×1080, 299 / 768 / 299 at 1366×768; the campus and the 2D grid use the same widths.
+  1920×1080, 299 / 768 / 299 at 1366×768; the campus and the 2D grid use the same widths. The town's render
+  target then grows to fill the column's height (doc 17 F3): clamp(floor(body / s), 288, 360) rows — 1152×1023
+  at 1920×1080, 768×712 at 1366×768 — with the camera's fov widened to match, so buildings, people and signs keep
+  their pixel size and the view left to right is the same; only more sky and street show. The bubble and
+  `조용함 N곳` sit on the picture with a dark backing.
 - **Left panel.** HQ 대기 rows are two lines: project, a short tag (`통합 대기`, `계획 승인`, `입력 대기`, …; Office's
   code stays in `#/detail`) and how long, then the sentence on one dim line; a 2 px yellow (결재 · 입력 대기) or
   red (멈춤) bar. At most 3 rows, then `외 N건`; they are never cut. 쉬는 중 rows have the same shape and no bar.
@@ -207,7 +228,9 @@ engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or act
 - **`?demo=1`** draws the board from made-up data (`apps/web/src/board/demo.ts`, every name `demo/…`, in
   its own lazy chunk that the live page never loads) so it can be looked at without a running Office. It opens no hub connection, plays no sound and says
   `예시 데이터` in the top band. Without `?demo=1` only hub data is ever shown. `&case=calm` shows a day with
-nothing waiting for the owner, `&case=busy` many sessions (the right panel's caps and folds).
+nothing waiting for the owner, `&case=busy` many sessions (the right panel's caps and folds), `&case=done` a
+building that has just finished (its confetti flies for the first 20 s after the page opens) and one that
+finished earlier today (its flag).
 
 ### Serving the web UI from the hub
 
@@ -268,7 +291,7 @@ checks the column rule, the panel text scale, scroll, the 자리 비운 사이 r
 (no absolute path in a tail, no scroll in the right panel), the demo label, console errors and the `D`
 detail round trip (the detail screen: its four panels, text scale, no sideways scroll, no user path in
 its text or tooltips, a picked session's terminal — the one click it makes), at 1920×1080 and
-1366×768, live and `?demo=1`, and the `?case=busy` / `?case=calm` demo cases at 1920×1080 (add
+1366×768, live and `?demo=1`, and the `?case=busy` / `?case=calm` / `?case=done` demo cases at 1920×1080 (add
 `?ui=1.3` to the URL to check the larger text); `ab2`
 watches the live board for 90 s and checks that it sends only GETs to loopback and opens one
 `/ws`; `ab3` repeats the 1920×1080 cases with WebGL off (the 2D tiles fallback). It is read-only:

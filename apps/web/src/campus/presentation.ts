@@ -68,6 +68,16 @@ export interface CampusModel {
 	door: { label: string; text: string } | null;
 	/** The sessions as people (16 A1, the town only); absent = none. */
 	crew?: CampusCrew[];
+	/** The finish show (17 §3, the town only; board/done.ts); absent = none. */
+	done?: CampusDone;
+}
+
+/** Buildings that finished today (a flag each until midnight) and the bursts flying now (confetti). */
+export interface CampusDone {
+	/** repo ids whose `전부 끝남` line is from today. */
+	finished: string[];
+	/** New finishes younger than 20 s: when each began (ISO, wall time). */
+	bursts: { repo_id: string; at: string }[];
 }
 
 /** Props of the lazily loaded scene (CampusScene.tsx); here so the view needs no import of it. */
@@ -84,6 +94,7 @@ export interface CampusSceneProps {
 export function toCampusModel(
 	v: VillageModel,
 	crew?: CampusCrew[],
+	done?: CampusDone,
 ): CampusModel {
 	const shown = new Set(v.village.shown.map((p) => p.id));
 	return {
@@ -111,5 +122,6 @@ export function toCampusModel(
 			? { label: projectLabel(v.door.project_id), text: v.door.text }
 			: null,
 		...(crew ? { crew } : {}),
+		...(done ? { done } : {}),
 	};
 }

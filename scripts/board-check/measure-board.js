@@ -232,15 +232,72 @@
 		Math.min(420, Math.floor((innerWidth - 384 * scale) / 2)),
 	);
 	const widths = columns.map((c) => c.rect.width);
+	// 17 F3: the town's target then grows to fill the body: rtH = clamp(floor(body / s), 288, 360)
+	const rtHWant = Math.max(288, Math.min(360, Math.floor(body / scale)));
+	// the town's picture as the pipeline chose it (.town-stage data-*, set on resize); 3D town only
+	const townUp = document.querySelector(".town-stage canvas");
+	const stageEl = document.querySelector(".town-stage");
+	const picked = stageEl?.dataset ?? {};
+	const pickedOk =
+		!townUp ||
+		(Number(picked.scale) === scale &&
+			Number(picked.rtH) === rtHWant &&
+			Number(picked.pictureH) === rtHWant * scale);
 	check(
 		"columns_stage_first",
 		columns.length === 3 &&
 			Math.abs(widths[0] - each) < 1 &&
 			Math.abs(widths[2] - each) < 1 &&
 			widths[1] >= 384 * scale - 1 &&
-			288 * scale <= body,
-		{ widths, expected: [each, innerWidth - 2 * each, each], scale, body },
+			288 * scale <= body &&
+			rtHWant >= 288 &&
+			rtHWant <= 360 &&
+			pickedOk,
+		{
+			widths,
+			expected: [each, innerWidth - 2 * each, each],
+			scale,
+			body,
+			stage: [384 * scale, rtHWant * scale],
+		},
 	);
+	// 17 F3: the town's picture fills the body's height to under one scale step (unless clamped at 360
+	// rows), as the pipeline chose it (.town-stage data-*, set on resize); not the 2D grid, not the campus
+	// expected wherever WebGL works and the scene is the town (not ab3's 2D grid, not ?scene=campus): a
+	// town that did not come up FAILs here instead of skipping
+	const glWorks = (() => {
+		try {
+			const c = document.createElement("canvas");
+			return Boolean(c.getContext("webgl2") || c.getContext("webgl"));
+		} catch {
+			return false;
+		}
+	})();
+	const townWanted =
+		glWorks && new URLSearchParams(location.search).get("scene") !== "campus";
+	if (townWanted && !(townUp && stageEl && picked.pictureH))
+		check("stage_fills_height", false, {
+			townUp: Boolean(townUp),
+			marked: Boolean(picked.pictureH),
+		});
+	else if (townUp && stageEl) {
+		const d = stageEl.dataset;
+		const s = Number(d.scale);
+		const rows = Number(d.rtH);
+		const pic = Number(d.pictureH);
+		const hostH = Math.round(stageEl.getBoundingClientRect().height);
+		check(
+			"stage_fills_height",
+			s === scale &&
+				rows >= 288 &&
+				rows <= 360 &&
+				pic === rows * s &&
+				pic <= hostH &&
+				(hostH - pic < s || rows === 360) &&
+				Math.abs(hostH - body) <= 1,
+			{ scale: s, rtH: rows, picture: pic, stage: hostH, body },
+		);
+	}
 	if (innerWidth === 1920)
 		check(
 			"village_at_least_60_percent",
@@ -264,29 +321,28 @@
 			),
 		columns.map((c) => c.rect),
 	);
+	// the unscaled 28 px lines: the status sentence and (17 §2) the clock; every other text is panel scale
 	const sentenceEl = document.querySelector(".board-sentence");
+	const clockEl = document.querySelector(".board-time");
+	const BIG = ["board-sentence", "board-time"];
+	const big = (f) => f.class.split(" ").some((c) => BIG.includes(c));
 	const panelSizes = [
-		...new Set(
-			fonts
-				.filter((f) => !f.class.split(" ").includes("board-sentence"))
-				.map((f) => f.size),
-		),
+		...new Set(fonts.filter((f) => !big(f)).map((f) => f.size)),
 	].sort((a, b) => a - b);
 	check(
 		"font_panel_scale",
 		fonts.length > 0 &&
 			panelSizes.every(allowed) &&
 			!!sentenceEl &&
-			getComputedStyle(sentenceEl).fontSize === "28px",
+			getComputedStyle(sentenceEl).fontSize === "28px" &&
+			!!clockEl &&
+			getComputedStyle(clockEl).fontSize === "28px" &&
+			getComputedStyle(clockEl).fontWeight === "400",
 		{
 			ui,
 			sizes: panelSizes,
-			out: fonts
-				.filter(
-					(f) =>
-						!f.class.split(" ").includes("board-sentence") && !allowed(f.size),
-				)
-				.slice(0, 5),
+			clock: clockEl ? getComputedStyle(clockEl).fontSize : null,
+			out: fonts.filter((f) => !big(f) && !allowed(f.size)).slice(0, 5),
 		},
 	);
 	check(

@@ -118,6 +118,14 @@ TownRooControlsM2, six decorative townsfolk, the `d` key; replaced by `../patrol
    updates the target and the live camera's aspect, and hands 384 back on dispose and on a failed start.
    Letterbox (not engine): outside the integer-scaled picture the canvas is cleared to the board's page colour
    #0f0c0b, not the preset's sky as pipeline.mjs did — the original's picture sat inside a dark stage.
+   **17 F3 (fill the column's height):** `export const RT_H = 288` → `export let RT_H = 288` plus
+   `setRenderHeight(h)` (clamped 288..360), and the file's head comment. Every engine use of RT_H (camera aspect at
+   creation, `pixelWorldSize`, `worldPerPixel`, `skylineTexel`, the orbit rig's focal length, sprites' snapping)
+   reads the live binding inside a function; nothing caches it at load. `../pipeline.ts` `fitStage` picks
+   `rtH = clamp(floor(column height / s), 288, 360)` after the integer scale, sets it before a world is built, and
+   `../world.ts` builds the world with `fov' = 2·atan(tan(fov/2)·rtH/288)` (resolvePreset overrides; the preset in
+   `presets.mjs` is not edited), so tan(fov/2)/RT_H — the texel density — and the horizontal view are unchanged:
+   the picture only shows more sky above and more street below. 288 is handed back on dispose.
 
 7. **R1 (owner review: readable signs and pylon)** — marked `agent-city:`:
    - `scene-ring.mjs` `buildRingMeshes`: `L.signLit` forces the lit sign board even for a name facade-gen could

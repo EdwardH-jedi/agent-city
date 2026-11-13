@@ -415,12 +415,40 @@ tr.st-waiting td {
 .bm-unobserved {
 	color: var(--b-dim);
 }
+/* 17 §2: this device's clock, the sentence's size but quiet (weight 400, muted): it must not outshine the
+   sentence. The date beside it is panel text. It keeps going while reports are cut. */
+.board-clock {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	white-space: nowrap;
+	color: var(--b-muted);
+}
+.board-time {
+	font-size: 28px;
+	font-weight: 400;
+	line-height: var(--top-h);
+	font-variant-numeric: tabular-nums;
+}
+.board-date {
+	font-size: calc(13px * var(--ui));
+}
 .board-counts {
 	font-size: calc(13px * var(--ui));
 	display: flex;
 	align-items: baseline;
 	gap: 6px;
 	white-space: nowrap;
+}
+.count-sessions,
+.count-tokens {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+}
+/* reports cut (Mac or this screen): the summary dims like the village; the clock does not */
+.counts-still {
+	color: var(--b-dim);
 }
 .board-link {
 	font-size: calc(12px * var(--ui));
@@ -1214,6 +1242,14 @@ tr.st-waiting td {
 	position: absolute;
 	right: 20px;
 	bottom: 16px;
+}
+/* 17 F3: the town's stage fills the column, so 조용함 N곳 sits on the picture: a backing like the bubble's */
+.town .campus-folded {
+	margin: 0;
+	padding: 3px 10px;
+	border-radius: 3px;
+	background: #0e1013e6;
+	pointer-events: none;
 }
 /* reports stopped: every figure stands where it is */
 .village-dim .fig {

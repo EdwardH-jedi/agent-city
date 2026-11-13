@@ -24,6 +24,7 @@ import {
 	webglAvailable,
 } from "../campus/environment.ts";
 import {
+	type CampusDone,
 	type CampusSceneProps,
 	toCampusModel,
 } from "../campus/presentation.ts";
@@ -100,6 +101,7 @@ function SceneHost({
 	now,
 	sessions,
 	events,
+	done,
 	time,
 	onUnavailable,
 }: {
@@ -107,6 +109,7 @@ function SceneHost({
 	now: number;
 	sessions: readonly Session[];
 	events: readonly TailEvent[];
+	done: CampusDone | undefined;
 	time: TimeOfDay;
 	onUnavailable: () => void;
 }) {
@@ -122,8 +125,9 @@ function SceneHost({
 			toCampusModel(
 				model,
 				townCrew({ sessions, events, model, now, sessionWaitMs }),
+				done,
 			),
-		[model, sessions, events, now, sessionWaitMs],
+		[model, sessions, events, now, sessionWaitMs, done],
 	);
 	useEffect(() => () => setSceneUp(false), []);
 	const unavailable = useMemo(
@@ -164,12 +168,15 @@ export function TownView({
 	now,
 	sessions = [],
 	events = [],
+	done,
 }: {
 	model: VillageModel;
 	now: number;
 	/** The sessions and events useHub holds (the SESSIONS panel's), for the crew. */
 	sessions?: readonly Session[];
 	events?: readonly TailEvent[];
+	/** The finish show (17 §3, board/done.ts): flags of today's finishes, confetti of new ones. */
+	done?: CampusDone;
 }) {
 	const [gl, setGl] = useState(webglAvailable);
 	const fallBack = useMemo(() => () => setGl(false), []);
@@ -186,6 +193,7 @@ export function TownView({
 				now={now}
 				sessions={sessions}
 				events={events}
+				done={done}
 				time={time}
 				onUnavailable={fallBack}
 			/>
