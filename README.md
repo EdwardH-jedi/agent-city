@@ -467,7 +467,9 @@ Australia/Sydney date. A Claude advisor call counts under its own model. Plan li
 log stated them (today Codex `rate_limits`; Claude transcripts carry none). The hook never reads a
 transcript. `AGENTCITY_USAGE=0` turns the poller off.
 
-What the poller keeps in `~/.agentcity/usage-offsets.json`: per log file its offset and per-(day, model)
+What the poller keeps in `~/.agentcity/usage-offsets.json` (mode 0600): per log file — keyed by a hash of its
+path, so the file holds no path or folder name (format `v: 2`; a `v: 1` state keeps only its limits and the
+backfill runs again, 18 §9.7 P2-3) — its offset, birth time and per-(day, model)
 totals (at most 16 models a day, then `unknown`; at most 128 keys + one per countable day a file, older days still waiting for the hub not counted; a line that
 would pass that is not read: the poller stops before it until the hub has accepted the file's totals, then
 frees every day but that line's and reads on — nothing valid is dropped, and while the hub is away it waits

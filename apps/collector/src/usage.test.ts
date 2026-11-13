@@ -24,6 +24,7 @@ import {
 	claudeSessionFromPath,
 	emptyUsageState,
 	FILE_KEYS_MAX,
+	fileKey,
 	KEEP_DAYS,
 	type ScanDeps,
 	scanUsage,
@@ -519,6 +520,7 @@ describe("sending", () => {
 				totals[`2026-11-13|m${d}`] = [1, 1, 1, 1, 1];
 			s.files[`/f${i}`] = {
 				tool: "claude",
+				birth: 0,
 				ino: i,
 				offset: 1,
 				session: `claude:s${i}`,
@@ -703,6 +705,7 @@ describe("review fixes (break-it round 1)", () => {
 		for (let i = 0; i < 2; i++)
 			s.files[`/f${i}`] = {
 				tool: "claude",
+				birth: 0,
 				ino: i,
 				offset: 1,
 				session: `claude:s${i}`,
@@ -728,6 +731,7 @@ describe("review fixes (break-it round 1)", () => {
 		const s = emptyUsageState();
 		s.files["/f"] = {
 			tool: "claude",
+			birth: 0,
 			ino: 1,
 			offset: 1,
 			session: "claude:big",
@@ -754,7 +758,7 @@ describe("review fixes (break-it round 1)", () => {
 		writeFileSync(
 			p,
 			JSON.stringify({
-				v: 1,
+				v: 2,
 				files: {
 					x: null,
 					y: {
@@ -769,6 +773,7 @@ describe("review fixes (break-it round 1)", () => {
 					},
 					z: {
 						tool: "claude",
+						birth: 0,
 						ino: 1,
 						offset: 5,
 						session: "claude:z",
@@ -806,7 +811,7 @@ describe("state stays bounded", () => {
 		const state = emptyUsageState();
 		scan(root, null, state);
 		const keys = Object.keys(
-			state.files[join(root, "p", "many.jsonl")]?.totals ?? {},
+			state.files[fileKey(join(root, "p", "many.jsonl"))]?.totals ?? {},
 		);
 		expect(keys.length).toBeLessThanOrEqual(FILE_KEYS_MAX + 1);
 		const rows = usageRows(state, ["claude:many"]);
@@ -896,8 +901,8 @@ describe("backfill (18 §5.6 U4)", () => {
 		// sent → the next scan forgets the old file; it is not listed again, so it is never read again
 		const next = scan(root, null, state);
 		expect(next).toMatchObject({ bytes: 0, backfilled: false });
-		expect(state.files[old]).toBeUndefined();
-		expect(Object.keys(state.files)).toEqual([recent]);
+		expect(state.files[fileKey(old)]).toBeUndefined();
+		expect(Object.keys(state.files)).toEqual([fileKey(recent)]);
 		appendFileSync(
 			old,
 			claudeMsg({ id: "o3", session: "old", ts: isoDaysAgo(58) }),
@@ -921,12 +926,14 @@ describe("backfill (18 §5.6 U4)", () => {
 			new Response("", { status: 503 })) as unknown as typeof fetch;
 		expect((await sendUsage(sendCfg, state, down)).failed).toBe(503);
 		scan(root, null, state); // not backfilling any more, but the session is still dirty
-		expect(Object.keys(state.files[old]?.totals ?? {})).toHaveLength(1);
+		expect(Object.keys(state.files[fileKey(old)]?.totals ?? {})).toHaveLength(
+			1,
+		);
 		const hub = maxHub();
 		await sendUsage(sendCfg, state, hub.fetchImpl);
 		expect(hub.total()[4]).toBe(1);
 		scan(root, null, state);
-		expect(state.files[old]).toBeUndefined();
+		expect(state.files[fileKey(old)]).toBeUndefined();
 	});
 
 	test("restarted mid-backfill it resumes and reaches the same hub total as one read; repeats change nothing", async () => {
@@ -1768,6 +1775,7 @@ function wideState(n: number, sessionChar = "a"): UsageState {
 	}
 	s.files.fixture = {
 		tool: "claude",
+		birth: 0,
 		ino: 1,
 		offset: 0,
 		session: `claude:${sessionChar.repeat(128)}`,
@@ -1867,5 +1875,114 @@ describe("U5 · P2-2: chunks are cut by bytes; a refused chunk is split, never d
 		const out = await sendUsage(sendCfg, s, hubDown);
 		expect(out.failed).toBe(503);
 		expect(s.dirty).toHaveLength(1);
+	});
+});
+
+describe("U5 · P2-3: the state file holds no source path", () => {
+	test("Codex pathState: a secret-shaped directory and the absolute path never reach the saved state", () => {
+		const root = tmp("u5-path");
+		const dirName = `proj-${"q".repeat(12)}`;
+		const fake = `ghp_${"L".repeat(36)}`;
+		const dir = join(root, dirName, fake);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "session.jsonl"),
+			claudeMsg({ id: "safe", cwd: "/elsewhere" }), // no repo id → nothing with a slash
+		);
+		const state = emptyUsageState();
+		scan(root, null, state);
+		expect(usageRows(state, ["claude:session"])[0]?.messages).toBe(1);
+		const save = join(tmp("u5-path-state"), "state.json");
+		saveUsageState(save, state);
+		const saved = readFileSync(save, "utf8");
+		expect(saved.includes(fake)).toBe(false);
+		expect(saved.includes(root)).toBe(false);
+		expect(saved.includes(dirName)).toBe(false);
+		expect(saved.includes("session.jsonl")).toBe(false);
+		expect(saved.includes("/")).toBe(false); // no path of any kind
+		expect((statSync(save).mode & 0o777).toString(8)).toBe("600");
+		// reloaded, the same file is recognised: nothing is read again
+		const again = loadUsageState(save);
+		expect(scan(root, null, again).bytes).toBe(0);
+	});
+
+	test("a state of the path-keyed format (v1) is not reused: limits kept, every file read again", () => {
+		const home = tmp("u5-v1");
+		const save = join(home, "usage-offsets.json");
+		writeFileSync(
+			save,
+			JSON.stringify({
+				v: 1,
+				files: {
+					"/somewhere/x.jsonl": {
+						tool: "claude",
+						ino: 1,
+						offset: 10,
+						session: "claude:x",
+						project: null,
+						model: null,
+						last_id: null,
+						totals: {},
+						mtime: 0,
+					},
+				},
+				dirty: [],
+				limits: {
+					"codex|codex|10080": {
+						tool: "codex",
+						limit_id: "codex",
+						window_minutes: 10080,
+						used_percent: 5,
+						resets_at: null,
+						plan_type: null,
+						observed_at: new Date(NOW).toISOString(),
+					},
+				},
+				limits_dirty: false,
+				seen: {},
+				backfill: {
+					v: USAGE_BACKFILL_VERSION,
+					done: new Date(NOW).toISOString(),
+					files: 1,
+					cut: 0,
+				},
+			}),
+		);
+		const s = loadUsageState(save);
+		expect(Object.keys(s.files)).toEqual([]);
+		expect(s.backfill.done).toBeNull();
+		expect(Object.keys(s.limits)).toEqual(["codex|codex|10080"]);
+	});
+
+	test("a session's project is its oldest-born file's (the main transcript before its subagents)", () => {
+		const root = tmp("u5-proj");
+		mkdirSync(join(root, "p", "m", "subagents"), { recursive: true });
+		const main = join(root, "p", "m.jsonl");
+		writeFileSync(
+			main,
+			claudeMsg({ id: "1", session: "m", cwd: "/work/widget" }),
+		);
+		age(main, 2);
+		const sub = join(root, "p", "m", "subagents", "agent-z.jsonl");
+		writeFileSync(
+			sub,
+			claudeMsg({ id: "2", session: "m", cwd: "/work/other" }),
+		);
+		const twoRepos: ScanDeps = {
+			git: (cwd) => ({
+				toplevel: cwd,
+				repo_id: cwd.includes("widget") ? "acme/widget" : "acme/other",
+				branch: "main",
+			}),
+		};
+		const s = emptyUsageState();
+		scanUsage({
+			claudeRoot: root,
+			codexRoot: null,
+			state: s,
+			now: NOW,
+			deps: twoRepos,
+		});
+		expect(usageRows(s, ["claude:m"])[0]?.project).toBe("acme/widget");
 	});
 });

@@ -3,7 +3,7 @@
 //
 // - every USAGE_POLL_MS (USAGE_BACKLOG_MS while a first read is still catching up) it scans the
 //   Claude transcripts and Codex rollouts (usage-scan.ts, bounded) and saves the offsets/totals to
-//   ~/.agentcity/usage-offsets.json
+//   ~/.agentcity/usage-offsets.json (files keyed by a hash of their path: no path is written)
 // - then it POSTs the cumulative rows of every session that changed to /ingest/usage, in chunks that fit
 //   the hub's row and byte caps (a refused chunk is split; only a single refused row is dropped). A failed send
 //   is not spooled: the rows stay marked and are sent again next time (they are totals, so nothing
@@ -46,6 +46,7 @@ function validFile(f: unknown): f is UsageFile {
 	const strOrNull = (v: unknown) => v === null || typeof v === "string";
 	return (
 		(f.tool === "claude" || f.tool === "codex") &&
+		Number.isFinite(f.birth) &&
 		Number.isFinite(f.ino) &&
 		Number.isInteger(f.offset) &&
 		(f.offset as number) >= 0 &&
@@ -81,7 +82,8 @@ function validBackfill(b: unknown): b is UsageBackfill {
  *
  * A state without this USAGE_BACKFILL_VERSION's backfill mark (written before U4, or by another version)
  * keeps only its limits: its files had already forgotten their old days, so every file is read again
- * from the start by the backfill. A backfill that was still running resumes where it stopped.
+ * from the start by the backfill. A backfill that was still running resumes where it stopped. A state of
+ * the path-keyed format (v 1, before 18 §9.7 P2-3) also keeps only its limits.
  */
 export function loadUsageState(path: string): UsageState {
 	const state = emptyUsageState();
@@ -91,11 +93,11 @@ export function loadUsageState(path: string): UsageState {
 	} catch {
 		return state;
 	}
-	if (!isRecord(raw) || raw.v !== 1) return state;
+	if (!isRecord(raw) || (raw.v !== 1 && raw.v !== 2)) return state;
 	if (isRecord(raw.limits))
 		for (const [k, l] of Object.entries(raw.limits))
 			if (UsageLimitShape(l)) state.limits[k] = l;
-	if (!validBackfill(raw.backfill)) return state;
+	if (raw.v !== 2 || !validBackfill(raw.backfill)) return state;
 	state.backfill = raw.backfill;
 	if (isRecord(raw.files))
 		for (const [p, f] of Object.entries(raw.files))

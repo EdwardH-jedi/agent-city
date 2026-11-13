@@ -87,6 +87,8 @@ export type Totals = [number, number, number, number, number];
 
 export interface UsageFile {
 	tool: UsageTool;
+	/** Birth time (ms; mtime where the file system has none): orders a session's files (main first). */
+	birth: number;
 	ino: number;
 	offset: number;
 	/** The rest of an over-long line is still ahead: drop bytes up to the next newline. */
@@ -103,7 +105,9 @@ export interface UsageFile {
 }
 
 export interface UsageState {
-	v: 1;
+	/** 2: files are keyed by fileKey(path) — the state file holds no path (18 §9.7 P2-3). */
+	v: 2;
+	/** fileKey(path) → that file's progress and totals. */
 	files: Record<string, UsageFile>;
 	/** Sessions whose rows the hub has not acknowledged yet. */
 	dirty: string[];
@@ -111,7 +115,7 @@ export interface UsageState {
 	limits: Record<string, UsageLimit>;
 	limits_dirty: boolean;
 	/**
-	 * Claude message ids already counted, across files: fnv1a64(id) → `${fnv1a64(path)}|${day}`. A resumed
+	 * Claude message ids already counted, across files: fnv1a64(id) → `${fileKey(path)}|${day}`. A resumed
 	 * or forked transcript replays earlier messages into a new file; they count once, in the file read
 	 * first. Pruned with the days.
 	 */
@@ -138,8 +142,11 @@ export const freshBackfill = (): UsageBackfill => ({
 	cut: 0,
 });
 
+/** A file's key in the state: a hash of its path, so no path (or secret-shaped folder) is written. */
+export const fileKey = (path: string): string => fnv1a64(path);
+
 export const emptyUsageState = (): UsageState => ({
-	v: 1,
+	v: 2,
 	files: {},
 	dirty: [],
 	limits: {},
@@ -545,9 +552,11 @@ const freshFile = (
 	tool: UsageTool,
 	ino: number,
 	mtime: number,
+	birth: number,
 	path: string,
 ): UsageFile => ({
 	tool,
+	birth,
 	ino,
 	offset: 0,
 	session: tool === "claude" ? claudeSessionFromPath(path) : null,
@@ -626,8 +635,9 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	// The most one read can return: a piece this long without a newline is one over-long line.
 	const unit = Math.min(perFileMax, opts.totalMax ?? TOTAL_MAX);
 	const seen = new Set<string>();
-	for (const { path, tool, mtime } of listed) {
-		seen.add(path);
+	for (const { path, tool, mtime, birth } of listed) {
+		const key = fileKey(path);
+		seen.add(key);
 		let size: number;
 		let ino: number;
 		try {
@@ -637,20 +647,21 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		} catch {
 			continue;
 		}
-		let file = state.files[path];
+		let file = state.files[key];
 		if (!file || file.tool !== tool || file.ino !== ino || size < file.offset) {
 			// new, rotated or truncated → read it again from the start
 			if (file?.session) dirty.add(file.session);
-			file = freshFile(tool, ino, mtime, path);
-			state.files[path] = file;
+			file = freshFile(tool, ino, mtime, birth, path);
+			state.files[key] = file;
 		}
 		file.mtime = mtime;
+		file.birth = birth;
 		if (size <= file.offset) continue;
 		if (stopped) {
 			backlog = true;
 			continue;
 		}
-		const pathKey = fnv1a64(path);
+		const pathKey = key;
 		const read = (line: string): LineResult =>
 			tool === "claude"
 				? claudeLine(line, file, project, seenIds, pathKey, range)
@@ -734,12 +745,12 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 
 	// Forget old days — never while the backfill runs, and only once the hub took them (the session is
 	// not dirty) — and files that left the window once nothing they hold is left to send.
-	for (const [path, file] of Object.entries(state.files)) {
+	for (const [key, file] of Object.entries(state.files)) {
 		if (!backfilling && !(file.session && dirty.has(file.session)))
-			for (const key of Object.keys(file.totals))
-				if (key.slice(0, 10) < cutoff) delete file.totals[key];
-		if (!seen.has(path) && Object.keys(file.totals).length === 0)
-			delete state.files[path];
+			for (const k of Object.keys(file.totals))
+				if (k.slice(0, 10) < cutoff) delete file.totals[k];
+		if (!seen.has(key) && Object.keys(file.totals).length === 0)
+			delete state.files[key];
 	}
 	const paths = Object.keys(state.files);
 	if (paths.length > MAX_STATE_FILES) {
@@ -783,7 +794,7 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 
 /**
  * Rows for the given sessions: every file of a session (main transcript + subagents) summed per
- * (day, model). The session's project is the first one known in path order (the main file sorts first).
+ * (day, model). The session's project is the first one known in birth order (the main file first).
  */
 export function usageRows(
 	state: UsageState,
@@ -794,8 +805,10 @@ export function usageRows(
 		string,
 		{ tool: UsageTool; project: string | null; totals: Map<string, Totals> }
 	>();
-	for (const path of Object.keys(state.files).sort()) {
-		const f = state.files[path];
+	const files = Object.entries(state.files).sort(
+		([ka, a], [kb, b]) => a.birth - b.birth || (ka < kb ? -1 : ka > kb ? 1 : 0),
+	);
+	for (const [, f] of files) {
 		if (!f?.session || !wanted.has(f.session)) continue;
 		let s = bySession.get(f.session);
 		if (!s) {
