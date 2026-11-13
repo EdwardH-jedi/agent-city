@@ -466,7 +466,9 @@ describe("WebSocket /ws", () => {
 			const got: { kind: string; data: { id: string } }[] = [];
 			const twoMessages = new Promise<void>((resolve) => {
 				ws.onmessage = (m) => {
-					got.push(JSON.parse(String(m.data)));
+					const msg = JSON.parse(String(m.data));
+					if (msg.kind === "usage") return; // the open greeting (usage.test.ts)
+					got.push(msg);
 					if (got.length === 2) resolve();
 				};
 			});

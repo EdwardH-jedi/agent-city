@@ -450,8 +450,9 @@ transcript. `AGENTCITY_USAGE=0` turns the poller off.
 changes nothing; rows more than 40 days old or for a future day are ignored. A failed send is not
 queued: the collector sends the same totals again next poll. `GET /api/usage?days=7` (1–31) returns
 `{tz, today, days, rows, limits, updated_at}` — sums per `(day, project, tool, model)` with a `sessions`
-count, projects folded case-insensitively onto the repos row — and the same body is pushed on `/ws` as
-`{kind:"usage"}` whenever a report changed it.
+count, projects folded case-insensitively onto the repos row. The same body is sent on `/ws` as
+`{kind:"usage"}` to every socket when it opens and again whenever a report changed it, so the board
+makes no extra request (and an older hub without usage simply sends nothing).
 
 **Runs (Agent Office → City, read-only).** The cockpit's Agent Office exporter pushes a picture of its
 runs to `POST /ingest/runs` every 30 s; the *Runs* and *Needs owner* sections show them, each with

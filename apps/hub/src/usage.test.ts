@@ -8,8 +8,8 @@ import {
 	UsageSummary as UsageSummarySchema,
 } from "@agent-city/schema";
 import { openDb } from "./db.ts";
-import { createApp } from "./index.ts";
-import type { BroadcastKind } from "./routes/ws.ts";
+import { createApp, startHub } from "./index.ts";
+import { type BroadcastKind, createWebsocket } from "./routes/ws.ts";
 
 const TOKEN = "test-ingest-token";
 const FAKE_GH = `ghp_${"k".repeat(36)}`;
@@ -353,5 +353,77 @@ describe("limits", () => {
 		expect(s.limits.map((l) => [l.machine_id, l.used_percent])).toEqual([
 			["forge", 20],
 		]);
+	});
+});
+
+describe("/ws greeting", () => {
+	const firstMessage = (url: string) =>
+		new Promise<{ kind: string; data: unknown }>((resolve, reject) => {
+			const ws = new WebSocket(url);
+			const t = setTimeout(() => reject(new Error("no greeting")), 3000);
+			ws.onmessage = (m) => {
+				clearTimeout(t);
+				ws.close();
+				resolve(JSON.parse(String(m.data)));
+			};
+		});
+
+	test("a new socket gets the current usage summary first, then live pushes", async () => {
+		const db = openDb(":memory:");
+		const hub = startHub({
+			db,
+			ingestToken: TOKEN,
+			hostname: "127.0.0.1",
+			port: 0,
+		});
+		try {
+			const base = `127.0.0.1:${hub.server.port}`;
+			const empty = await firstMessage(`ws://${base}/ws`);
+			expect(empty.kind).toBe("usage");
+			expect(UsageSummarySchema.parse(empty.data).rows).toEqual([]);
+			const today = (UsageSummarySchema.parse(empty.data) as UsageSummary)
+				.today;
+			const res = await fetch(`http://${base}/ingest/usage`, {
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${TOKEN}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(report([row({ day: today })])),
+			});
+			expect(res.status).toBe(200);
+			const next = await firstMessage(`ws://${base}/ws`);
+			expect(UsageSummarySchema.parse(next.data).rows).toHaveLength(1);
+		} finally {
+			hub.stop();
+		}
+	});
+
+	test("a greeting that throws or returns null never fails the open", () => {
+		const sent: string[] = [];
+		let subscribed = 0;
+		const ws = {
+			subscribe: () => {
+				subscribed++;
+			},
+			send: (m: string) => {
+				sent.push(m);
+			},
+		} as unknown as Parameters<
+			NonNullable<ReturnType<typeof createWebsocket>["open"]>
+		>[0];
+		const quiet = console.error;
+		console.error = () => {};
+		try {
+			createWebsocket(() => {
+				throw new Error(`boom ${FAKE_GH}`);
+			}).open?.(ws);
+			createWebsocket(() => null).open?.(ws);
+			createWebsocket().open?.(ws);
+		} finally {
+			console.error = quiet;
+		}
+		expect(subscribed).toBe(3);
+		expect(sent).toEqual([]);
 	});
 });
