@@ -448,13 +448,16 @@ read catches up).
 (at most 10,000, the newest; the rest are counted as `cut`), whatever its age, under the same byte caps
 and order as every scan (below). Today's usage therefore arrives last on a first run (~18 min for 720 files).
 While it runs no day is forgotten. When a scan ends with no read cut short by a cap (a file ending in a
-cut-off line does not hold it) it writes `backfill: {v, done, files, cut}` into its state, logs `[usage] backfill done: N files`, and
+cut-off line does not hold it, and is not read again until its size changes, so it never eats a later scan's budget) it writes `backfill: {v, done, files, cut}` into its state, logs `[usage] backfill done: N files`, and
 never does it again (a restart mid-way resumes; a state without the mark — e.g. from before U4 — keeps only
 its limits and starts it). Afterwards only files modified in the last 7 days are read, lines dated more than
 8 days back are not counted (the hub already holds those days; a late replay must not count twice), and an
 old day leaves the state only once the hub accepted it. A second backfill (a lost offsets file, or a new
 `USAGE_BACKFILL_VERSION`) can over-count a replay whose original file was deleted in between (the hub keeps
-both sessions' rows); one after a collector outage of more than 7 days does not fill that gap. Codex rollouts written before
+both sessions' rows), and so can one after birth times changed (a restore from backup, or `touch` to an
+earlier date on macOS, which moves the birth time too): a replay's owner follows birth order. One after a
+collector outage of more than 7 days does not fill that gap, and a file first seen after the backfill counts
+only its lines from the last 8 days. Codex rollouts written before
 `token_usage_record` existed (2026-03 ~ 08: only `event_msg/token_count`) count each event's `last_token_usage`
 once, when its running `total_token_usage` differs from the file's previous one (a repeated event counts
 nothing); a rollout that has `token_usage_record` lines counts those only. It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
@@ -474,10 +477,14 @@ path, so the file holds no path or folder name (format `v: 2`; a `v: 1` state ke
 backfill runs again, 18 §9.7 P2-3) — its offset, birth time and per-(day, model)
 totals (at most 16 models a day, then `unknown`; at most 128 keys + one per countable day a file, older days still waiting for the hub not counted; a line that
 would pass that is not read: the poller stops before it until the hub has accepted the file's totals, then
-frees every day but that line's and reads on — nothing valid is dropped, and while the hub is away it waits
-on the 60 s poll. A later line on a freed (day, model) — out of order in that file, or in a later file of the
+frees every day but that line's and reads on — "accepted" means the session was not waiting to be sent when the
+scan began and that file has added nothing since (another file of the session may keep growing). Nothing valid
+is dropped; while the hub is away it waits on the 60 s poll (a collector restarted before every poll would keep
+it waiting, since a start marks every session to be sent again). A later line on a freed (day, model) — out of order in that file, or in a later file of the
 same session — is hidden by the hub's larger value, never counted twice), and Claude message ids only as hashes (at most 200k, across files, so a
-resumed transcript that replays earlier messages counts them once — in the oldest-born file holding them). A
+resumed transcript that replays earlier messages counts them once — in the oldest-born file holding them; past
+200k the oldest days are forgotten down to 190k the moment an id is added, so that happens at the same line
+wherever a scan ends). A line that does not fit in one read with its newline (4 MiB) is skipped. A
 Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
 a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
 spaces allowed, nothing secret-shaped), else it is null. A limit stamped more than a day ahead is dropped.

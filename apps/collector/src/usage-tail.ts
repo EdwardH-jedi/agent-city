@@ -58,6 +58,7 @@ function validFile(f: unknown): f is UsageFile {
 		(f.ctotal === undefined ||
 			(typeof f.ctotal === "number" && Number.isFinite(f.ctotal))) &&
 		(f.rec === undefined || typeof f.rec === "boolean") &&
+		(f.tail === undefined || Number.isInteger(f.tail)) &&
 		isRecord(f.totals) &&
 		Object.values(f.totals).every(
 			(t) =>

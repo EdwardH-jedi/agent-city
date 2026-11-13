@@ -30,8 +30,9 @@
 // kept), whatever its mtime, under the same caps and order. While it runs nothing is forgotten by day (a
 // session read over several scans must still add up). When a scan ends with no read cut short by a cap
 // it is marked done in the state and never runs again (until USAGE_BACKFILL_VERSION changes; a second
-// backfill can still over-count a replay whose original file has been deleted in between). A file ending
-// in a cut-off line (a crash) waits for the rest without holding the backfill or the 5 s poll. After that
+// backfill can still over-count a replay whose original file has been deleted in between, or after birth
+// times changed). A file ending in a cut-off line (a crash) waits for the rest without holding the backfill
+// or the 5 s poll, and is not read again until its size changes (it would eat every later scan's budget). After that
 // only files modified in the last USAGE_WINDOW_MS are read,
 // lines dated before the KEEP_DAYS cutoff are not counted (a replay of an old message must not count
 // twice, and the hub already holds those days), and an old day's totals leave the state only once the
@@ -99,6 +100,11 @@ export interface UsageFile {
 	offset: number;
 	/** The rest of an over-long line is still ahead: drop bytes up to the next newline. */
 	skip?: boolean;
+	/**
+	 * The file's size when a read last ended in a line without its newline (a crash, or still being
+	 * written): while the size stays the same the file is not read again, so it costs no budget.
+	 */
+	tail?: number;
 	session: string | null;
 	project: string | null;
 	/** Codex: the model of the current turn (turn_context sits behind the offset after a restart). */
@@ -179,6 +185,8 @@ export interface ScanOptions {
 	totalMax?: number;
 	/** Tests: BACKFILL_MAX_FILES. */
 	backfillMaxFiles?: number;
+	/** Tests: SEEN_MAX. */
+	seenMax?: number;
 }
 
 export interface ScanResult {
@@ -360,6 +368,7 @@ function claudeLine(
 	file: UsageFile,
 	project: Resolve,
 	seen: Record<string, string>,
+	remember: (id: string, value: string) => void,
 	pathKey: string,
 	range: DayRange,
 ): LineResult {
@@ -421,7 +430,7 @@ function claudeLine(
 	if (keys === null) return { full: day };
 	if (id !== null) file.last_id = id;
 	if (!counts) return false;
-	if (id !== null && first === undefined) seen[id] = `${pathKey}|${day}`;
+	if (id !== null && first === undefined) remember(id, `${pathKey}|${day}`);
 	if (!file.session) {
 		const raw = str(r.sessionId);
 		if (raw) file.session = sessionId("claude", raw);
@@ -635,6 +644,27 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	const minObserved = opts.now - KEEP_DAYS * 86_400_000;
 	if (!state.seen) state.seen = {};
 	const seenIds = state.seen;
+	// Past seenMax ids the oldest days are forgotten (a replay of those can then count again — bounded
+	// beats exact). It happens when an id is added, never at a scan's end, so it falls at the same line
+	// wherever a read cap ends a scan.
+	const seenMax = opts.seenMax ?? SEEN_MAX;
+	let seenCount = Object.keys(seenIds).length;
+	const remember = (id: string, value: string) => {
+		seenIds[id] = value;
+		if (++seenCount <= seenMax) return;
+		const ids = Object.keys(seenIds);
+		const order = ids.map((id, i) => ({
+			id,
+			i,
+			day: (seenIds[id] ?? "").slice(-10),
+		}));
+		order.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : a.i - b.i));
+		const keep = Math.floor(seenMax * 0.95);
+		for (const o of order.slice(0, ids.length - keep)) delete seenIds[o.id];
+		seenCount = keep;
+	};
+	/** Sessions the hub had taken whole when this scan began (see the full-file case below). */
+	const ackedAtStart = (session: string) => !state.dirty.includes(session);
 	const onLimit = (l: UsageLimit) => {
 		const observed = usageObservedAt(l.observed_at, opts.now);
 		if (observed === null || Date.parse(observed) < minObserved) return;
@@ -697,6 +727,7 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		file.mtime = mtime;
 		file.birth = birth;
 		if (size <= file.offset) continue;
+		if (file.tail === size) continue; // the same cut-off line as last time: nothing new to read
 		if (stopped) {
 			backlog = true;
 			continue;
@@ -704,10 +735,14 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		const pathKey = key;
 		const read = (line: string): LineResult =>
 			tool === "claude"
-				? claudeLine(line, file, project, seenIds, pathKey, range)
+				? claudeLine(line, file, project, seenIds, remember, pathKey, range)
 				: codexLine(line, file, project, onLimit, range);
 		// backlog = a read cut short by the budget. A file ending in a line without its newline yet (being
-		// written, or cut off by a crash) is not backlog: it waits for the next regular poll.
+		// written, or cut off by a crash) is not backlog: it waits for the next regular poll, and until its
+		// size changes it is not read again (it would charge every scan's budget, starving later files).
+		delete file.tail;
+		/** This file added usage in this scan (the hub has not seen it yet). */
+		let fileAdded = false;
 		while (file.offset < size) {
 			if (budget <= 0) {
 				backlog = true;
@@ -743,9 +778,10 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 					let got = read(line);
 					if (
 						typeof got === "object" &&
-						!(file.session && dirty.has(file.session))
+						!(file.session && (fileAdded || !ackedAtStart(file.session)))
 					) {
-						// the hub holds everything this file has counted: free it and read the line
+						// the hub held this file's totals when the scan began and the file has added nothing
+						// since (another file of the session growing meanwhile does not matter): free and read
 						freeKeys(file, got.full);
 						got = read(line);
 					}
@@ -754,7 +790,10 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 						paused = true;
 						break;
 					}
-					if (got && file.session) dirty.add(file.session);
+					if (got) {
+						fileAdded = true;
+						if (file.session) dirty.add(file.session);
+					}
 				}
 				pos = nl + 1;
 			}
@@ -770,16 +809,18 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 				file.skip = true;
 			}
 			file.offset += pos;
-			if (pos === 0) {
-				// no whole line in this piece and it was not the largest read: the file ends in a partial
-				// line (not backlog), or the budget ended inside one (backlog, caught at the loop's top)
-				if (buf.length >= want) break;
-				if (budget > 0) {
-					backlog = true;
-					stopped = true;
-					break;
-				}
+			if (buf.length >= want) {
+				// read to the end; what is left after the last newline is a cut-off line (not backlog)
+				if (file.offset < size) file.tail = size;
+				break;
 			}
+			if (pos === 0 && budget > 0) {
+				// no whole line in a short read: try again next scan
+				backlog = true;
+				stopped = true;
+				break;
+			}
+			// else: a piece boundary inside a line (next piece), or the budget ended inside one (loop top)
 		}
 	}
 
@@ -803,19 +844,11 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	}
 	for (const [key, l] of Object.entries(state.limits))
 		if (Date.parse(l.observed_at) < minObserved) delete state.limits[key];
-	// while the backfill runs every id stays (SEEN_MAX still bounds them): a replay read in a later scan
+	// while the backfill runs every id stays (SEEN_MAX still bounds them, see remember): a replay read in a later scan
 	// than its original must still count once
 	if (!backfilling)
 		for (const [id, v] of Object.entries(seenIds))
 			if (v.slice(-10) < cutoff) delete seenIds[id];
-	const ids = Object.keys(seenIds);
-	if (ids.length > SEEN_MAX) {
-		// forget the oldest days first (a replay of those can then count again — bounded beats exact)
-		const byDay = ids.sort((a, b) =>
-			(seenIds[a] ?? "").slice(-10) < (seenIds[b] ?? "").slice(-10) ? -1 : 1,
-		);
-		for (const id of byDay.slice(0, ids.length - SEEN_MAX)) delete seenIds[id];
-	}
 	const live = new Set<string>();
 	for (const f of Object.values(state.files))
 		if (f.session) live.add(f.session);

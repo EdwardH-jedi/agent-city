@@ -2112,3 +2112,137 @@ describe("U5 · Codex rollouts of the old format (token_count only)", () => {
 		]).toEqual([70, 55, 40, 2]);
 	});
 });
+
+describe("U5 · reviewer break-it (read-cap invariance)", () => {
+	const grid: [number, number][] = [
+		[100_000, 100_000],
+		[700, 700],
+		[1333, 900],
+		[4096, 1501],
+		[700, 2777],
+	];
+	const run = (
+		root: string,
+		caps: { perFileMax: number; totalMax: number },
+		seenMax?: number,
+	) => {
+		const s = emptyUsageState();
+		let done = false;
+		for (let i = 0; i < 500 && !done; i++)
+			done = scanUsage({
+				claudeRoot: root,
+				codexRoot: null,
+				state: s,
+				now: NOW,
+				deps,
+				...caps,
+				seenMax,
+			}).backfilled;
+		return { s, done };
+	};
+
+	test("forgetting message ids past the cap happens at the same line wherever a scan ends", () => {
+		const root = tmp("u5-seen");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const old = join(root, "p", "old.jsonl");
+		let body = "";
+		for (let i = 0; i < 6; i++)
+			body += claudeMsg({ id: `o${i}`, session: "old", ts: isoDaysAgo(60) }, 1);
+		writeFileSync(old, body);
+		age(old, 60);
+		for (let f = 0; f < 3; f++) {
+			const p = join(root, "p", `mid${f}.jsonl`);
+			let b = "";
+			for (let i = 0; i < 6; i++)
+				b += claudeMsg(
+					{ id: `m${f}-${i}`, session: `mid${f}`, ts: isoDaysAgo(30 - f) },
+					1,
+				);
+			writeFileSync(p, b);
+			age(p, 30 - f);
+		}
+		let r = pad(3);
+		for (let i = 0; i < 6; i++)
+			r += claudeMsg({ id: `o${i}`, session: "res", ts: isoDaysAgo(60) }, 1);
+		writeFileSync(
+			join(root, "p", "res.jsonl"),
+			`${r}${claudeMsg({ id: "n", session: "res" }, 1)}`,
+		);
+		const sessions = [
+			"claude:old",
+			"claude:mid0",
+			"claude:mid1",
+			"claude:mid2",
+			"claude:res",
+		];
+		const rows = (s: UsageState) =>
+			usageRows(s, sessions)
+				.map((x) => `${x.session_id}|${x.day}|${x.messages}`)
+				.sort();
+		const whole = rows(
+			run(root, { perFileMax: 100_000, totalMax: 100_000 }, 20).s,
+		);
+		for (const [perFileMax, totalMax] of grid) {
+			const { s, done } = run(root, { perFileMax, totalMax }, 20);
+			expect({ perFileMax, totalMax, done, rows: rows(s) }).toEqual({
+				perFileMax,
+				totalMax,
+				done: true,
+				rows: whole,
+			});
+		}
+	});
+
+	test("an older file ending in an unchanged cut-off line costs no budget: later files are read and the backfill ends", () => {
+		const root = tmp("u5-tail");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const a = join(root, "p", "a.jsonl");
+		writeFileSync(
+			a,
+			`${claudeMsg({ id: "a1", session: "a" }, 1)}{"type":"assistant","cut":"${"z".repeat(120)}`,
+		);
+		age(a, 2);
+		let b = "";
+		for (let i = 0; i < 5; i++)
+			b += claudeMsg({ id: `b${i}`, session: "b", text: "y".repeat(200) }, 1);
+		writeFileSync(join(root, "p", "b.jsonl"), b);
+		const longest = Math.max(...b.split("\n").map((l) => l.length + 1));
+		const { s, done } = run(root, {
+			perFileMax: longest + 50,
+			totalMax: longest + 50,
+		});
+		expect(done).toBe(true);
+		expect(usageRows(s, ["claude:b"])[0]?.messages).toBe(5);
+		// the cut-off line completed later is read then
+		appendFileSync(a, `"}\n${claudeMsg({ id: "a2", session: "a" }, 1)}`);
+		scan(root, null, s);
+		expect(usageRows(s, ["claude:a"])[0]?.messages).toBe(2);
+	});
+
+	test("a full file moves on once the hub has its totals, even while an older file of its session keeps growing", async () => {
+		const root = tmp("u5-keys-live");
+		mkdirSync(join(root, "p", "keys", "subagents"), { recursive: true });
+		const main = join(root, "p", "keys.jsonl");
+		writeFileSync(main, claudeMsg({ id: "main-0", session: "keys" }, 1));
+		age(main, 1);
+		writeFileSync(
+			join(root, "p", "keys", "subagents", "agent-1.jsonl"),
+			longHistory(
+				Array.from({ length: 280 }, (_, d) => d),
+				3,
+			),
+		);
+		const hub = maxHub();
+		const state = emptyUsageState();
+		let done = false;
+		for (let i = 0; i < 20 && !done; i++) {
+			appendFileSync(
+				main,
+				claudeMsg({ id: `main-${i + 1}`, session: "keys" }, 1),
+			);
+			done = scan(root, null, state).backfilled;
+			await sendUsage(sendCfg, state, hub.fetchImpl);
+		}
+		expect(done).toBe(true);
+	});
+});
