@@ -6,6 +6,7 @@ import { demoUsage } from "./demo.ts";
 import {
 	NO_PROJECT,
 	parseUsage,
+	sinceWord,
 	tokenWord,
 	USAGE_PROJECTS_SHOWN,
 	usagePanel,
@@ -241,5 +242,75 @@ describe("tokenWord and the demo", () => {
 			expect(p?.total).toBeGreaterThan(0);
 			expect(p?.limits).toEqual(["Codex 주간 42%"]);
 		}
+	});
+});
+
+describe("all-time total (18 §5.6 U4)", () => {
+	const total = (since: string | null, claudeIn = 100, codexOut = 7) => ({
+		since,
+		tools: [
+			{
+				tool: "claude" as const,
+				input_tokens: claudeIn,
+				output_tokens: 1_000,
+				cache_read_tokens: 900_000,
+				cache_write_tokens: 2_000,
+				messages: 9,
+			},
+			{
+				tool: "codex" as const,
+				input_tokens: 0,
+				output_tokens: codexOut,
+				cache_read_tokens: 5,
+				cache_write_tokens: 0,
+				messages: 1,
+			},
+		],
+	});
+
+	test("the same figure as the top band (input + output + cache write), over both tools, with its first day", () => {
+		const p = usagePanel(
+			{ ...summary([row()]), total: total("2026-11-06") },
+			NOW,
+		);
+		expect(p?.cumulative).toEqual({
+			tokens: 100 + 1_000 + 2_000 + 7,
+			since: "2026-11-06",
+		});
+		expect(sinceWord("2026-11-06", "2026-11-13")).toBe("11월 6일부터");
+		expect(sinceWord("2025-12-03", "2026-11-13")).toBe("2025년 12월 3일부터");
+	});
+
+	test("an older hub's summary (no total) still parses and shows no cumulative line", () => {
+		const p = usagePanel(parseUsage(summary([row()])), NOW);
+		expect(p).not.toBeNull();
+		expect(p?.cumulative).toBeNull();
+	});
+
+	test("nothing in the 7 days but an all-time total → the box stays, with the total", () => {
+		const p = usagePanel({ ...summary([]), total: total("2026-09-20") }, NOW);
+		expect(p?.weekTotal).toBe(0);
+		expect(p?.cumulative?.since).toBe("2026-09-20");
+		expect(usageTopWord(p)).toBeNull(); // still no 토큰 0 in the top band
+		expect(usagePanel({ ...summary([]), total: total(null) }, NOW)).toBeNull();
+		expect(
+			usagePanel({ ...summary([]), total: { since: null, tools: [] } }, NOW),
+		).toBeNull();
+	});
+
+	test("a malformed total drops the frame (the box keeps what it had)", () => {
+		for (const bad of [
+			{ since: "11월", tools: [] },
+			{ since: null, tools: [{ tool: "gpt", input_tokens: 1 }] },
+			{ since: null, tools: [{ ...total(null).tools[0], output_tokens: -1 }] },
+		])
+			expect(parseUsage({ ...summary([row()]), total: bad })).toBeNull();
+	});
+
+	test("the demo carries a total that starts before its 7 days", () => {
+		const d = demoUsage(NOW);
+		const p = usagePanel(d, NOW);
+		expect(p?.cumulative?.since).toBe("2026-10-07");
+		expect((p?.cumulative?.tokens ?? 0) > (p?.weekTotal ?? 0)).toBe(true);
 	});
 });

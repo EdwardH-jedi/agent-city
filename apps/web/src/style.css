@@ -1629,6 +1629,7 @@ tr.st-waiting td {
 	gap: 5px;
 	min-width: 0;
 }
+.usage-total,
 .usage-tools,
 .usage-note {
 	margin: 0;
@@ -1638,6 +1639,7 @@ tr.st-waiting td {
 	font-size: calc(12px * var(--ui));
 	color: var(--b-muted);
 }
+.usage-total b,
 .usage-tools b {
 	color: var(--b-fg);
 	font-weight: 700;

@@ -545,5 +545,27 @@ export function demoUsage(
 			},
 		],
 		updated_at: new Date(t0 - 60_000).toISOString(),
+		// 18 §5.6 U4: the all-time total, starting well before the 7 days shown
+		total: {
+			since: dayMinus(today, 37),
+			tools: [
+				{
+					tool: "claude",
+					input_tokens: 2_400_000,
+					output_tokens: 61_000_000,
+					cache_read_tokens: 3_100_000_000,
+					cache_write_tokens: 112_000_000,
+					messages: 41_000,
+				},
+				{
+					tool: "codex",
+					input_tokens: 38_000_000,
+					output_tokens: 4_100_000,
+					cache_read_tokens: 260_000_000,
+					cache_write_tokens: 0,
+					messages: 6_200,
+				},
+			],
+		},
 	};
 }

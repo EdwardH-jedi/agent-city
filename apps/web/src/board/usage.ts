@@ -10,6 +10,8 @@
 //   counted under "저장소 밖"). Model names are not shown.
 // - A plan limit is shown only as its tool's log stated it, only while fresh (observed in the last 6 h)
 //   and before its reset.
+// - The all-time total (18 §5.6 U4) uses the same figure, summed over the hub's `total` block, with the
+//   oldest day the hub holds; a summary without that block (an older hub) shows no such line.
 import {
 	dayMinus,
 	UsageSummary,
@@ -73,6 +75,8 @@ export interface UsagePanel {
 	weekTotal: number;
 	/** e.g. `Codex 주간 49%`. */
 	limits: string[];
+	/** All-time figure and its first day (`YYYY-MM-DD`); null when the hub sent none. */
+	cumulative: { tokens: number; since: string } | null;
 }
 
 export const NO_PROJECT = "저장소 밖";
@@ -165,7 +169,12 @@ export function usagePanel(
 			(l) =>
 				`${TOOL_WORD[l.tool]} ${windowWord(l.window_minutes)} ${Math.round(l.used_percent)}%`,
 		);
-	if (weekTotal === 0 && limits.length === 0) return null;
+	let all = 0;
+	for (const t of summary.total?.tools ?? []) all += fresh(t);
+	const since = summary.total?.since ?? null;
+	const cumulative = all > 0 && since !== null ? { tokens: all, since } : null;
+	if (weekTotal === 0 && limits.length === 0 && cumulative === null)
+		return null;
 	return {
 		today,
 		total,
@@ -177,7 +186,17 @@ export function usagePanel(
 		trend,
 		weekTotal,
 		limits,
+		cumulative,
 	};
+}
+
+/** `11월 6일부터`; the year too when it is not this year's (`2025년 12월 3일부터`). */
+export function sinceWord(since: string, today: string): string {
+	const m = Number(since.slice(5, 7));
+	const d = Number(since.slice(8, 10));
+	const year =
+		since.slice(0, 4) === today.slice(0, 4) ? "" : `${since.slice(0, 4)}년 `;
+	return `${year}${m}월 ${d}일부터`;
 }
 
 /** `950`, `12k`, `203k`, `1.2M`, `34M`, `1.2B` */

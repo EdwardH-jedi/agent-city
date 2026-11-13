@@ -95,12 +95,13 @@ engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or act
   says them apart); no cell when there is none today. A band too narrow
   for one line hides the date, then the tokens, then the sessions. While reports are cut the summary dims.
 - **USAGE (18 §5, `board/usage.ts`, `board/Usage.tsx`).** The left column's last box, under LOG: today's
-  figure and the 7-day sum in its head, `Claude N · Codex N` and a plan limit only as the tool's log stated it
+  figure and the 7-day sum in its head, then `누적 N · 11월 6일부터` — the all-time figure (same formula as
+  `토큰`) from the oldest day the hub holds, with the year when it is not this year's (18 §5.6 U4) — `Claude N · Codex N` and a plan limit only as the tool's log stated it
   (Codex `rate_limits`; shown while observed in the last 6 h and before its reset), today's tokens per project
   (at most 4 bars, the rest counted; a project not shaped like a repo id is `저장소 밖`), the last 7 days as
   small bars (left out when the board body is under 760 px, e.g. 1366×768), and the cache reads apart. The
   summary comes on `/ws` (sent when the socket opens and when a report changes it), so the board makes no
-  extra request; with an older hub there is no box and no `토큰` cell.
+  extra request; with an older hub there is no box and no `토큰` cell (a summary without `total`: no `누적` line).
 - **Finish show (doc 17 §3, `board/done.ts`, `town/done-fx.ts`).** When `visits.ts` makes a new
   `전부 끝났습니다.` report (a run seen to finish while the screen is open — a run already finished when the
   page opened is only remembered), that building's roof throws confetti for 20 s (24 pieces, two bursts at once, 48 at most; none in
@@ -442,7 +443,15 @@ strip keeps ageing its last snapshot toward `offline` even if the hub still rece
 `db:reset` reload the page, because a fresh `unobserved` row never overwrites a machine already seen.
 
 **Token usage (18 §5).** `collector:codex` also runs a usage poller (every 60 s; 5 s while a first
-read catches up). It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
+read catches up).
+**Backfill (18 §5.6 U4).** The first time it runs, the poller reads **every** transcript and rollout on disk,
+whatever its age, under the same byte caps; while it runs no day is forgotten. When a whole listing has been
+read it writes `backfill: {v, done, files, cut}` into its state, logs `[usage] backfill done: N files`, and
+never does it again (a restart mid-way resumes; a state without the mark — e.g. from before U4 — keeps only
+its limits and starts it). Afterwards only files modified in the last 7 days are read, lines dated more than
+8 days back are not counted (the hub already holds those days; a late replay must not count twice), and an
+old day leaves the state only once the hub accepted it. Codex rollouts written before
+`token_usage_record` existed (only `token_count` events) count nothing. It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
 Codex rollouts by per-file offset, at most 4 MiB per file and 16 MiB per scan, and sends **numbers and
 identifiers only**: one cumulative row per `(session_id, day, model)` with `tool`, `project` (repo id or
 null), `input_tokens` (not served from cache — Codex's cached part moves to `cache_read_tokens`),
@@ -463,12 +472,14 @@ those sessions go again when they change or the collector restarts.
 `POST /ingest/usage` uses the `INGEST_TOKEN` bearer, takes a strict body of at most 256 KiB
 (`schema`, `machine_id`, `rows` ≤ 500, `limits` ≤ 16; any other key → 400) and answers
 `{accepted, changed, ignored, limits}`. Every count keeps the larger value, so a repeated or older report
-changes nothing; rows more than 40 days old or for a future day are ignored, and rows past 40 days are
-pruned on each report. A count above 1e13 or a project that is not repo-id shaped is refused / stored as
+changes nothing. Rows are **never deleted** (the all-time total); a row for a day more than one day ahead,
+before 2025-01-01, or not a real date is ignored. Limit snapshots older than 40 days are pruned. A count above 1e13 or a project that is not repo-id shaped is refused / stored as
 null. A failed send is not
 queued: the collector sends the same totals again next poll. `GET /api/usage?days=7` (1–31) returns
-`{tz, today, days, rows, limits, updated_at}` — sums per `(day, project, tool, model)` with a `sessions`
-count, projects folded case-insensitively onto the repos row. The same body is sent on `/ws` as
+`{tz, today, days, rows, limits, updated_at, total}` — sums per `(day, project, tool, model)` with a `sessions`
+count, projects folded case-insensitively onto the repos row; `total` = `{since, tools: [{tool, input_tokens,
+output_tokens, cache_read_tokens, cache_write_tokens, messages}]}`, the all-time sums per tool and the oldest
+day held (kept in `usage_total` by migration 8's triggers, so it costs one row per tool, not a table scan). The same body is sent on `/ws` as
 `{kind:"usage"}` to every socket when it opens and again whenever a report changed it, so the board
 makes no extra request (and an older hub without usage simply sends nothing).
 

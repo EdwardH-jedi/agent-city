@@ -1,8 +1,9 @@
 // USAGE (18 §5 U3): the left column's last box, under LOG. Today's tokens per project (bars), the Claude /
-// Codex sums, a plan limit only when its tool's log stated it, and the last 7 days. Text and plain DOM
-// bars only; nothing is fetched (the summary comes with /ws). Not drawn at all when there is no usage.
+// Codex sums, a plan limit only when its tool's log stated it, and the last 7 days; first, the all-time
+// total with its first day (18 §5.6 U4). Text and plain DOM bars only; nothing is fetched (the summary
+// comes with /ws). Not drawn at all when there is no usage.
 import { PanelHead } from "./PanelHead.tsx";
-import { tokenWord, type UsagePanel } from "./usage.ts";
+import { sinceWord, tokenWord, type UsagePanel } from "./usage.ts";
 
 const WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"] as const;
 /** `2026-11-13` → `금` (a calendar date; no zone involved). */
@@ -13,11 +14,14 @@ export function Usage({
 	panel,
 	pixel,
 	trend,
+	total = true,
 }: {
 	panel: UsagePanel | null;
 	pixel: boolean;
 	/** The 7-day row; left out when the column is too short (18 §5.2 U3: 1366×768). */
 	trend: boolean;
+	/** The all-time line; left out only after the 7-day row when the column is shorter still. */
+	total?: boolean;
 }) {
 	if (!panel) return null;
 	const peak = Math.max(1, ...panel.trend.map((d) => d.tokens));
@@ -30,6 +34,12 @@ export function Usage({
 				pixel={pixel}
 			/>
 			<div className="usage-body">
+				{total && panel.cumulative && (
+					<p className="usage-total">
+						누적 <b>{tokenWord(panel.cumulative.tokens)}</b> ·{" "}
+						{sinceWord(panel.cumulative.since, panel.today)}
+					</p>
+				)}
 				<p className="usage-tools">
 					Claude <b>{tokenWord(panel.claude)}</b> · Codex{" "}
 					<b>{tokenWord(panel.codex)}</b>
