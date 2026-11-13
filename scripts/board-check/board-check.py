@@ -26,8 +26,9 @@ try:
     if MODE=='ab3': command(['--args','--disable-webgl','open'])
     else: command(['open'])
     cases=[(1920,1080,False,None),(1920,1080,True,None)]
-    # 16 A4-2: ab1 also opens the busy and calm demo cases (many sessions and waits; nothing waiting)
-    if MODE=='ab1': cases.extend([(1366,768,False,None),(1366,768,True,None),(1920,1080,True,'busy'),(1920,1080,True,'calm')])
+    # 16 A4-2: ab1 also opens the busy and calm demo cases (many sessions and waits; nothing waiting);
+    # 17 §3: and the done case (a building that has just finished, one that finished earlier today)
+    if MODE=='ab1': cases.extend([(1366,768,False,None),(1366,768,True,None),(1920,1080,True,'busy'),(1920,1080,True,'calm'),(1920,1080,True,'done')])
     for width,height,demo,case in cases:
         name=f'{MODE}-{width}x{height}-'+('demo' if demo else 'live')+(f'-{case}' if case else '')
         case_dir=OUT/name;case_dir.mkdir(parents=True,exist_ok=True)

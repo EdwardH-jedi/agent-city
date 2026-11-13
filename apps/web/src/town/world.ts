@@ -12,6 +12,7 @@ import {
 	Vector3,
 } from "three";
 import { type CrewFrames, createCrewFrames } from "./crew-sprites.ts";
+import { createDoneFrames, type DoneFrames } from "./done-fx.ts";
 import { horizonNdcY } from "./engine/camera-rig.mjs";
 import {
 	type BoardView,
@@ -71,6 +72,8 @@ export interface TownWorld {
 	readonly leads: LeadFrames;
 	/** The crew's and their name tags' runtime frames (16 A1). */
 	readonly crew: CrewFrames;
+	/** The finish show's flag and confetti frames (17 §3). */
+	readonly done: DoneFrames;
 	/**
 	 * Camera transform + actor sprites for this frame (pipeline.mjs render(), before the GL passes).
 	 * `shot` blends the orbit camera toward a fixed shot (0 = orbit, 1 = the shot).
@@ -109,11 +112,12 @@ export function buildTownWorld(spec: WorldSpec): TownWorld {
 	const atlas = buildSpriteAtlas({ rooArt: TownRooArtM2, npcs: [] });
 	const leads = createLeadFrames(TownArt);
 	const crew = createCrewFrames(TownArt);
+	const done = createDoneFrames();
 	const actors = createActorLayer(ring.scene, atlas, preset.actorTint, {
 		playerPxPerTexel: preset.playerPxPerTexel,
 		upright: preset.upright,
 		// crew and tag sprites carry a `kind`; a lead's does not
-		frameFor: (a) => crew.frameFor(a) ?? leads.frameFor(a),
+		frameFor: (a) => done.frameFor(a) ?? crew.frameFor(a) ?? leads.frameFor(a),
 	});
 	const shotCam = new PerspectiveCamera();
 	const q0 = new Quaternion();
@@ -159,6 +163,7 @@ export function buildTownWorld(spec: WorldSpec): TownWorld {
 		actors,
 		leads,
 		crew,
+		done,
 		skyColor,
 		setBoard(view) {
 			if (disposed) return;
@@ -191,6 +196,7 @@ export function buildTownWorld(spec: WorldSpec): TownWorld {
 			actors.dispose();
 			leads.dispose();
 			crew.dispose();
+			done.dispose();
 			made.dispose();
 			ring.dispose();
 		},

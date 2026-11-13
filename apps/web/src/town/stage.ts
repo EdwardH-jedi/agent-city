@@ -64,6 +64,16 @@ import {
 	type TagSprite,
 	tagKey,
 } from "./crew-sprites.ts";
+import {
+	type ConfettiSprite,
+	confettiAt,
+	doneKey,
+	FLAG_LOCK,
+	FLAG_PHASES,
+	type FlagSprite,
+	type RoofSpot,
+	roofSpot,
+} from "./done-fx.ts";
 import { turnBetween, yawOfDir } from "./engine/orbit-camera.mjs";
 import { LAMP_COLORS, type LampState } from "./engine/scene-ring.mjs";
 import type { Actor } from "./engine/sprites.mjs";
@@ -409,11 +419,16 @@ function buildStage(
 			});
 		});
 		pushCrew(actors, now, reduced, walk, viewYaw);
+		pushDone(actors, reduced, walk);
 		for (const id of leadFacing.keys())
 			if (!book.visits.some((v) => v.visit_id === id)) leadFacing.delete(id);
 		for (const id of places.keys())
 			if (!book.visits.some((v) => v.visit_id === id)) places.delete(id);
 		pipe.render(actors, { ...fixed.shot, blend: cam });
+		if (releaseConfetti) {
+			releaseConfetti = false;
+			pipe.world.done.releaseConfetti();
+		}
 		const live = townLive.get();
 		if (live)
 			live.guide = input.model.owner_present
@@ -425,6 +440,77 @@ function buildStage(
 		}
 		if (walk) schedule();
 	}
+
+	/** Whether confetti was on stage last frame (its frames are released when the last piece is gone). */
+	let confettiShown = false;
+	/**
+	 * The finish show (17 §3): a flag on the roof of each standing building that finished today (waving
+	 * while the scene moves), and confetti off the roof of one that has just finished. Never on the HQ or
+	 * the cafe; no confetti in reduced motion or while reports are cut (the model then sends no bursts).
+	 */
+	function pushDone(actors: Actor[], reduced: boolean, walk: boolean) {
+		const done = input.model.done;
+		const spotOf = (repo: string): RoofSpot | null => {
+			const lotId = assign.get(repo);
+			if (!lotId || lotId === HQ_LOT || lotId === CAFE_LOT) return null;
+			const lot = lots.find((l) => l.id === lotId);
+			return lot ? roofSpot(lot) : null;
+		};
+		const wall = Date.now();
+		let f = 0;
+		for (const repo of done?.finished ?? []) {
+			const spot = spotOf(repo);
+			if (!spot) continue;
+			const flag: FlagSprite = {
+				kind: "flag",
+				phase: walk ? Math.floor(wall / 450) % FLAG_PHASES : 0,
+			};
+			actors.push({
+				id: `flag:${f}`,
+				kind: "npc",
+				x: spot.x,
+				y: spot.y,
+				z: spot.z,
+				key: doneKey(flag),
+				// partly the fixed pixel size: at world size a 1.6-unit pole is a few pixels across the ring
+				lockedScale: FLAG_LOCK,
+				sprite: flag,
+			});
+			f += 1;
+		}
+		const bursts =
+			reduced || input.model.still
+				? []
+				: (done?.bursts ?? []).flatMap((b) => {
+						const spot = spotOf(b.repo_id);
+						const at = Date.parse(b.at);
+						return spot && Number.isFinite(at)
+							? [{ spot, at, seed: hash32(`${b.repo_id}|${b.at}`) }]
+							: [];
+					});
+		const pieces = confettiAt(bursts, wall);
+		pieces.forEach((p, i) => {
+			const bit: ConfettiSprite = {
+				kind: "confetti",
+				color: p.color,
+				shape: p.shape,
+			};
+			actors.push({
+				id: `bit:${i}`,
+				kind: "npc",
+				x: p.x,
+				y: p.y,
+				z: p.z,
+				key: doneKey(bit),
+				lockedScale: true,
+				sprite: bit,
+			});
+		});
+		if (confettiShown && pieces.length === 0) releaseConfetti = true;
+		confettiShown = pieces.length > 0;
+	}
+	/** Set by pushDone: release the confetti frames once this frame (which lists none) is drawn. */
+	let releaseConfetti = false;
 
 	/**
 	 * Spots at the HQ, every frame: the waiting leads in the model's order (the board's cards) take the

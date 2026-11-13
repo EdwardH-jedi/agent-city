@@ -20,6 +20,13 @@ import { TownMinimapSlot, TownView } from "../town/TownView.tsx";
 import { type Conn, type useHub, useRunEvents } from "../useHub.ts";
 import { burnInShift } from "./burnin.ts";
 import { DEMO_LABEL } from "./demo-flag.ts";
+import {
+	type BurstMemory,
+	type ChimeMemory,
+	finishedToday,
+	planChime,
+	stepBursts,
+} from "./done.ts";
 import { Hq } from "./Hq.tsx";
 import { type BoardColumns, boardColumns, uiScaleOf } from "./layout.ts";
 import { toVillageModel, type VillageModel } from "./model.ts";
@@ -144,6 +151,7 @@ export function Board({ hub }: { hub: HubData }) {
 	// sound: only while the Mac reports, the screen is connected, it is not quiet; never a pile afterwards
 	const prefs = useMemo(() => parseSoundPrefs(window.location.search), []);
 	const memory = useRef<SoundMemory | null>(null);
+	const chimed = useRef<ChimeMemory | null>(null);
 	const loaded = hub.machines.length > 0; // the first snapshot has arrived
 	useEffect(() => {
 		const cockpit =
@@ -160,6 +168,17 @@ export function Board({ hub }: { hub: HubData }) {
 		);
 		memory.current = plan.memory;
 		for (const cue of plan.cues) play(cue);
+		// 17 §3: a new finish chimes once (over the soft tone planSounds already plays for it); a tick the
+		// planner keeps silent (first look, settle window, not audible) only re-bases the chime's memory
+		const chime = planChime(loaded ? chimed.current : null, model.visits, {
+			prefs,
+			date: new Date(now),
+			cockpit,
+			conn: model.conn,
+			settled: now >= plan.memory.settleUntil,
+		});
+		chimed.current = chime.memory;
+		if (chime.chime) play("chime");
 	}, [model, now, prefs, loaded]);
 
 	return (
@@ -264,6 +283,26 @@ export function BoardView({
 		"--top-h": `${cols.top}px`,
 		"--ui": String(ui),
 	} as CSSProperties;
+	// 17 §3: today's finished buildings (flags) and the new finishes flying now (confetti)
+	// recomputed when the minute changes (midnight takes the flags down) or useHub's runs do
+	const minute = Math.floor(now / 60_000) * 60_000;
+	const finished = useMemo(
+		() => finishedToday(runs, minute + 59_999),
+		[runs, minute],
+	);
+	// a burst, once seen, flies its 20 s even if a newer report of the project takes the door
+	const burstMemory = useRef<BurstMemory>([]);
+	burstMemory.current = stepBursts(burstMemory.current, model.visits, now);
+	const bursts = model.status.dim ? [] : burstMemory.current;
+	const burstKey = bursts.map((b) => `${b.project_id}|${b.at}`).join(",");
+	// biome-ignore lint/correctness/useExhaustiveDependencies: a new object only when what it says changes
+	const done = useMemo(
+		() => ({
+			finished,
+			bursts: bursts.map((b) => ({ repo_id: b.project_id, at: b.at })),
+		}),
+		[finished, burstKey],
+	);
 	const sessionCount = sessionsToday(sessions, now);
 	const tokens = tokensToday(runs, now);
 	// 17 §2: a band too narrow for one line hides the date, then the tokens, then the sessions. Measured
@@ -349,6 +388,7 @@ export function BoardView({
 						now={now}
 						sessions={sessions}
 						events={events}
+						done={done}
 					/>
 				) : (
 					<CampusView model={model} now={now} />

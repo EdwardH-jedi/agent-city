@@ -246,6 +246,61 @@ describe("actors that come and go", () => {
 	});
 });
 
+describe("the finish show's frames (17 §3)", () => {
+	test("a burst of confetti and a flag: sprites released when gone, confetti frames released, the rest with the world", () => {
+		const world = buildTownWorld({ time: "day", lots: LOTS3 });
+		const childrenBefore = world.scene.children.length;
+		const disposed = new Set<unknown>();
+		const bit = (i: number) => ({
+			id: `bit:${i}`,
+			kind: "npc" as const,
+			x: 2,
+			y: 6,
+			z: 16,
+			key: `done|bit|${i % 6}|${Math.floor(i / 6) % 2}`,
+			lockedScale: true,
+			sprite: {
+				kind: "confetti" as const,
+				color: i % 6,
+				shape: Math.floor(i / 6) % 2,
+			},
+		});
+		const flag = {
+			id: "flag:0",
+			kind: "npc" as const,
+			x: 2,
+			y: 12.5,
+			z: 16,
+			key: "done|flag|0",
+			lockedScale: 0.35,
+			sprite: { kind: "flag" as const, phase: 0 },
+		};
+		world.stage([flag, ...Array.from({ length: 48 }, (_, i) => bit(i))]);
+		expect(world.actors.sprites.size).toBe(49);
+		expect(world.done.size).toBe(13); // 12 confetti looks + 1 flag phase, not one per piece
+		const textures = new Set<{
+			addEventListener(t: string, f: () => void): void;
+		}>();
+		for (const s of world.actors.sprites.values()) {
+			const m = (s.sprite as unknown as { material: { map: unknown } }).material
+				.map as { addEventListener(t: string, f: () => void): void };
+			textures.add(m);
+		}
+		for (const t of textures)
+			t.addEventListener("dispose", () => disposed.add(t));
+		world.stage([flag]);
+		expect(world.actors.sprites.size).toBe(1);
+		world.done.releaseConfetti();
+		expect(world.done.size).toBe(1);
+		expect(disposed.size).toBe(12); // each confetti frame once; the flag's is kept
+		world.stage([]);
+		expect(world.scene.children.length).toBe(childrenBefore);
+		world.dispose();
+		expect(world.done.size).toBe(0);
+		expect(disposed.size).toBe(13);
+	});
+});
+
 describe("colour management", () => {
 	test("the palette switch is turned off while mounted and handed back once", () => {
 		const before = ColorManagement.enabled;

@@ -3,7 +3,7 @@
 // No env variable: the quiet hours and the on/off switch come from the page URL (?quiet=23-8, ?sound=off).
 import type { MachineView } from "@agent-city/schema";
 
-export type Cue = "knock" | "low" | "soft";
+export type Cue = "knock" | "low" | "soft" | "chime";
 
 export const REMIND_MS = 30 * 60_000;
 
@@ -241,6 +241,11 @@ export function play(cue: Cue): void {
 			tone(c, t + 0.2, 190, 0.12, 0.5);
 		} else if (cue === "low") {
 			tone(c, t, 110, 0.9, 0.45);
+		} else if (cue === "chime") {
+			// 17 §3: a finish (board/done.ts planChime). Two short high notes, E5 then G5: over the soft
+			// C5 a passed run already plays they make a C major chord, and nothing like the knock's 190 Hz
+			tone(c, t + 0.12, 659, 0.35, 0.16);
+			tone(c, t + 0.32, 784, 0.5, 0.16);
 		} else {
 			tone(c, t, 523, 1.1, 0.25);
 		}
