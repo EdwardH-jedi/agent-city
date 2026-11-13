@@ -31,7 +31,7 @@ export function Usage({
 				pixel={pixel}
 			/>
 			<div className="usage-body">
-				{/* 1366×768: +21 px, taken from the map; LOG keeps its rows (measured), so it never folds */}
+				{/* 1366×768 (measured, demo and live): +21 px, from the map or LOG, whichever has room; no scroll, so it never folds */}
 				{panel.cumulative && (
 					<p className="usage-total">
 						누적 <b>{tokenWord(panel.cumulative.tokens)}</b> ·{" "}
