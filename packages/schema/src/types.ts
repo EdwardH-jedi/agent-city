@@ -448,3 +448,40 @@ export const UsageReport = z.strictObject({
 	limits: z.array(UsageLimit).max(USAGE_MAX_LIMITS),
 });
 export type UsageReport = z.infer<typeof UsageReport>;
+
+/** GET /api/usage row: sums over sessions for one (day, project, tool, model). */
+export const UsageSummaryRow = z.object({
+	day: UsageDay,
+	project: z.string().nullable(),
+	tool: UsageTool,
+	model: z.string(),
+	input_tokens: z.number().int().nonnegative(),
+	output_tokens: z.number().int().nonnegative(),
+	cache_read_tokens: z.number().int().nonnegative(),
+	cache_write_tokens: z.number().int().nonnegative(),
+	messages: z.number().int().nonnegative(),
+	sessions: z.number().int().nonnegative(),
+});
+export type UsageSummaryRow = z.infer<typeof UsageSummaryRow>;
+
+/** GET /api/usage limit: the newest observation per (tool, limit_id, window) across machines. */
+export const UsageLimitView = UsageLimit.extend({
+	machine_id: MachineRole,
+	received_at: Ts,
+});
+export type UsageLimitView = z.infer<typeof UsageLimitView>;
+
+/**
+ * GET /api/usage?days=N body (also pushed on /ws as `{kind:"usage"}` when a report changed it).
+ * `today` is the hub's Australia/Sydney day; `days` lists the N days ending today, oldest first.
+ */
+export const UsageSummary = z.object({
+	tz: z.string(),
+	today: UsageDay,
+	days: z.array(UsageDay),
+	rows: z.array(UsageSummaryRow),
+	limits: z.array(UsageLimitView),
+	/** Hub receive time of the newest report that changed a row; null when there is none. */
+	updated_at: Ts.nullable(),
+});
+export type UsageSummary = z.infer<typeof UsageSummary>;

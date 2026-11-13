@@ -4,6 +4,7 @@ import {
 	type Agent,
 	applyStale,
 	compareInstants,
+	dayMinus,
 	type Event,
 	endsAgent,
 	type Heartbeat,
@@ -13,6 +14,7 @@ import {
 	type MachineView,
 	machineStatus,
 	mainAgentId,
+	sessionId as namespacedSessionId,
 	namespaceIds,
 	nextStatus,
 	normalizeRepoId,
@@ -26,6 +28,13 @@ import {
 	STALE_AFTER_MS,
 	safeText,
 	sanitizeEvent,
+	USAGE_TZ,
+	type UsageLimitView,
+	type UsageReport,
+	type UsageSummary,
+	type UsageSummaryRow,
+	usageDay,
+	usageLabel,
 } from "@agent-city/schema";
 
 export interface IngestResult {
@@ -777,4 +786,169 @@ export function listRunEvents(
 		)
 		.all({ m: machine, r: runId, limit })
 		.map(({ commit_sha, ...rest }) => ({ ...rest, commit: commit_sha }));
+}
+
+// ── token usage (M1, 18 §5.1) ──────────────────────────────────────────────────────────────────────
+
+/** Rows for days outside this window around the hub's today are ignored (a skewed or replayed report). */
+export const USAGE_ACCEPT_PAST_DAYS = 40;
+
+export interface UsageResult {
+	/** Rows inside the accepted day window (stored or already equal). */
+	accepted: number;
+	/** Rows that grew (or were new). */
+	changed: number;
+	/** Rows outside the day window or naming a session of another tool. */
+	ignored: number;
+	limits: number;
+}
+
+/**
+ * Upsert one collector report. Per (session_id, day, model) every count keeps the larger value, so a
+ * repeat or an older total changes nothing. Strings are re-checked here (collectors are not trusted):
+ * the session id goes through ids.ts again, the model through usageLabel, the project through
+ * normalizeRepoId + safeText. Limits: the newest `observed_at` per (machine, tool, limit, window) wins.
+ */
+export function recordUsage(
+	db: Database,
+	report: UsageReport,
+	now: Date,
+): UsageResult {
+	const result: UsageResult = {
+		accepted: 0,
+		changed: 0,
+		ignored: 0,
+		limits: 0,
+	};
+	const today = usageDay(now) ?? now.toISOString().slice(0, 10);
+	const oldest = dayMinus(today, USAGE_ACCEPT_PAST_DAYS);
+	const newest = dayMinus(today, -1);
+	const at = now.toISOString();
+	const upsert = db.query(
+		`INSERT INTO usage (session_id, day, model, tool, project, machine_id, input_tokens,
+		   output_tokens, cache_read_tokens, cache_write_tokens, messages, updated_at)
+		 VALUES ($session, $day, $model, $tool, $project, $machine, $in, $out, $cr, $cw, $msgs, $at)
+		 ON CONFLICT(session_id, day, model) DO UPDATE SET
+		   input_tokens = max(input_tokens, excluded.input_tokens),
+		   output_tokens = max(output_tokens, excluded.output_tokens),
+		   cache_read_tokens = max(cache_read_tokens, excluded.cache_read_tokens),
+		   cache_write_tokens = max(cache_write_tokens, excluded.cache_write_tokens),
+		   messages = max(messages, excluded.messages),
+		   project = coalesce(excluded.project, project),
+		   machine_id = excluded.machine_id,
+		   updated_at = excluded.updated_at
+		 WHERE excluded.input_tokens > input_tokens
+		    OR excluded.output_tokens > output_tokens
+		    OR excluded.cache_read_tokens > cache_read_tokens
+		    OR excluded.cache_write_tokens > cache_write_tokens
+		    OR excluded.messages > messages
+		    OR (excluded.project IS NOT NULL AND project IS NULL)`,
+	);
+	const limit = db.query(
+		`INSERT INTO usage_limits (machine_id, tool, limit_id, window_minutes, used_percent, resets_at,
+		   plan_type, observed_at, received_at)
+		 VALUES ($machine, $tool, $id, $win, $pct, $resets, $plan, $observed, $at)
+		 ON CONFLICT(machine_id, tool, limit_id, window_minutes) DO UPDATE SET
+		   used_percent = excluded.used_percent, resets_at = excluded.resets_at,
+		   plan_type = excluded.plan_type, observed_at = excluded.observed_at,
+		   received_at = excluded.received_at
+		 WHERE excluded.observed_at > observed_at`,
+	);
+	db.transaction(() => {
+		for (const r of report.rows) {
+			const session = namespacedSessionId(r.tool, r.session_id);
+			if (
+				r.day < oldest ||
+				r.day > newest ||
+				!r.session_id.startsWith(`${r.tool}:`)
+			) {
+				result.ignored++;
+				continue;
+			}
+			const project =
+				r.project === null ? null : safeText(normalizeRepoId(r.project), 256);
+			const changes = upsert.run({
+				session,
+				day: r.day,
+				model: usageLabel(r.model) ?? "unknown",
+				tool: r.tool,
+				project: project || null,
+				machine: report.machine_id,
+				in: r.input_tokens,
+				out: r.output_tokens,
+				cr: r.cache_read_tokens,
+				cw: r.cache_write_tokens,
+				msgs: r.messages,
+				at,
+			}).changes;
+			result.accepted++;
+			if (changes > 0) result.changed++;
+		}
+		for (const l of report.limits) {
+			const observed = utc(l.observed_at);
+			if (Date.parse(observed) > now.getTime() + 86_400_000) continue; // a clock far ahead
+			result.limits += limit.run({
+				machine: report.machine_id,
+				tool: l.tool,
+				id: usageLabel(l.limit_id) ?? "default",
+				win: l.window_minutes,
+				pct: l.used_percent,
+				resets: l.resets_at === null ? null : utc(l.resets_at),
+				plan: usageLabel(l.plan_type),
+				observed,
+				at,
+			}).changes;
+		}
+	})();
+	return result;
+}
+
+/**
+ * Sums for the `days` days ending at the hub's Sydney today, per (day, project, tool, model). Projects
+ * are folded case-insensitively onto the repos row's spelling (a GitHub row before a local-only one),
+ * else the first spelling seen, so a later repo remap never splits a project.
+ */
+export function usageSummary(db: Database, now: Date, days = 7): UsageSummary {
+	const today = usageDay(now) ?? now.toISOString().slice(0, 10);
+	const list: string[] = [];
+	for (let i = days - 1; i >= 0; i--) list.push(dayMinus(today, i));
+	const from = list[0] ?? today;
+	const rows = db
+		.query<UsageSummaryRow, { from: string; to: string }>(
+			`WITH u AS (
+			   SELECT usage.*, coalesce(
+			     (SELECT id FROM repos WHERE id = usage.project COLLATE NOCASE
+			      ORDER BY is_local_only, id LIMIT 1),
+			     (SELECT min(project) FROM usage AS v WHERE v.project = usage.project COLLATE NOCASE)
+			   ) AS proj
+			   FROM usage WHERE day >= $from AND day <= $to
+			 )
+			 SELECT day, proj AS project, tool, model,
+			   sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
+			   sum(cache_read_tokens) AS cache_read_tokens, sum(cache_write_tokens) AS cache_write_tokens,
+			   sum(messages) AS messages, count(*) AS sessions
+			 FROM u GROUP BY day, proj, tool, model
+			 ORDER BY day, proj IS NULL, proj, tool, model`,
+		)
+		.all({ from, to: today });
+	const limits = db
+		.query<UsageLimitView, { since: string }>(
+			`SELECT machine_id, tool, limit_id, window_minutes, used_percent, resets_at, plan_type,
+			   observed_at, received_at
+			 FROM usage_limits AS l
+			 WHERE observed_at >= $since AND NOT EXISTS (
+			   SELECT 1 FROM usage_limits AS n
+			   WHERE n.tool = l.tool AND n.limit_id = l.limit_id AND n.window_minutes = l.window_minutes
+			     AND (n.observed_at > l.observed_at
+			          OR (n.observed_at = l.observed_at AND n.machine_id > l.machine_id)))
+			 ORDER BY tool, limit_id, window_minutes`,
+		)
+		.all({ since: new Date(now.getTime() - 8 * 86_400_000).toISOString() });
+	const updated =
+		db
+			.query<{ at: string | null }, { from: string }>(
+				"SELECT max(updated_at) AS at FROM usage WHERE day >= $from",
+			)
+			.get({ from })?.at ?? null;
+	return { tz: USAGE_TZ, today, days: list, rows, limits, updated_at: updated };
 }

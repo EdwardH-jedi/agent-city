@@ -77,7 +77,7 @@ describe("basics", () => {
 		expect(await res.json()).toMatchObject({ ok: true, ingest: "enabled" });
 	});
 
-	test("migrations: 9 tables, user_version 7, agents.ended_at, sessions.rev, machines.heartbeat_*, runs", () => {
+	test("migrations: 11 tables, user_version 8, agents.ended_at, sessions.rev, machines.heartbeat_*, runs", () => {
 		const tables = ctx.db
 			.query<{ name: string }, []>(
 				"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -94,11 +94,13 @@ describe("basics", () => {
 			"run_events",
 			"runs",
 			"sessions",
+			"usage",
+			"usage_limits",
 		]);
 		expect(
 			ctx.db.query<{ user_version: number }, []>("PRAGMA user_version").get()
 				?.user_version,
-		).toBe(7);
+		).toBe(8);
 		expect(
 			ctx.db
 				.query<{ name: string }, []>(

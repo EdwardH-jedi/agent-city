@@ -434,6 +434,25 @@ boot is taken as a restart (a sender needs the ingest token either way); while `
 strip keeps ageing its last snapshot toward `offline` even if the hub still receives beats; after
 `db:reset` reload the page, because a fresh `unobserved` row never overwrites a machine already seen.
 
+**Token usage (18 §5).** `collector:codex` also runs a usage poller (every 60 s; 5 s while a first
+read catches up). It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
+Codex rollouts by per-file offset, at most 4 MiB per file and 16 MiB per scan, and sends **numbers and
+identifiers only**: one cumulative row per `(session_id, day, model)` with `tool`, `project` (repo id or
+null), `input_tokens` (not served from cache — Codex's cached part moves to `cache_read_tokens`),
+`output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `messages`. `day` is the message's
+Australia/Sydney date. A Claude advisor call counts under its own model. Plan limits go only as a tool's
+log stated them (today Codex `rate_limits`; Claude transcripts carry none). The hook never reads a
+transcript. `AGENTCITY_USAGE=0` turns the poller off.
+
+`POST /ingest/usage` uses the `INGEST_TOKEN` bearer, takes a strict body of at most 256 KiB
+(`schema`, `machine_id`, `rows` ≤ 500, `limits` ≤ 16; any other key → 400) and answers
+`{accepted, changed, ignored, limits}`. Every count keeps the larger value, so a repeated or older report
+changes nothing; rows more than 40 days old or for a future day are ignored. A failed send is not
+queued: the collector sends the same totals again next poll. `GET /api/usage?days=7` (1–31) returns
+`{tz, today, days, rows, limits, updated_at}` — sums per `(day, project, tool, model)` with a `sessions`
+count, projects folded case-insensitively onto the repos row — and the same body is pushed on `/ws` as
+`{kind:"usage"}` whenever a report changed it.
+
 **Runs (Agent Office → City, read-only).** The cockpit's Agent Office exporter pushes a picture of its
 runs to `POST /ingest/runs` every 30 s; the *Runs* and *Needs owner* sections show them, each with
 "`<machine>` report · N s ago". City **stores and shows what it was told**; it never approves, launches
