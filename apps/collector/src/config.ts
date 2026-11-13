@@ -13,6 +13,8 @@ const KEYS = [
 	"AGENTCITY_MACHINE",
 	"AGENTCITY_HOME",
 	"AGENTCITY_DEBUG",
+	"AGENTCITY_USAGE",
+	"AGENTCITY_CLAUDE_PROJECTS_DIR",
 	"SPOOL_MAX_MB",
 	"SPOOL_MAX_AGE_DAYS",
 	"CODEX_SESSIONS_DIR",
@@ -37,6 +39,12 @@ export interface CollectorConfig {
 		backfillMs: number;
 		/** CODEX_BACKFILL_EVENT_FILTER=1: also drop first-sight records older than the window (F14). */
 		eventFilter: boolean;
+	};
+	usage: {
+		/** AGENTCITY_USAGE=0 turns the token usage poller off (default on). */
+		enabled: boolean;
+		/** AGENTCITY_CLAUDE_PROJECTS_DIR, default ~/.claude/projects (Claude Code transcripts). */
+		claudeProjectsDir: string;
 	};
 }
 
@@ -165,6 +173,12 @@ export function loadConfig(
 				get("CODEX_SESSIONS_DIR") ?? join(homedir(), ".codex", "sessions"),
 			backfillMs: nonNegative(get("CODEX_BACKFILL_HOURS"), 2) * 3_600_000,
 			eventFilter: get("CODEX_BACKFILL_EVENT_FILTER") === "1",
+		},
+		usage: {
+			enabled: get("AGENTCITY_USAGE") !== "0",
+			claudeProjectsDir:
+				get("AGENTCITY_CLAUDE_PROJECTS_DIR") ??
+				join(homedir(), ".claude", "projects"),
 		},
 	};
 }

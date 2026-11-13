@@ -6,7 +6,11 @@ import { runConfiguredSync } from "./github/sync.ts";
 import { createApi } from "./routes/api.ts";
 import { createIngest } from "./routes/ingest.ts";
 import { createRunsIngest } from "./routes/runs.ts";
-import { createBroadcaster, type Publish, websocket } from "./routes/ws.ts";
+import {
+	createBroadcaster,
+	createWebsocket,
+	type Publish,
+} from "./routes/ws.ts";
 import {
 	checkWsRequest,
 	corsGuard,
@@ -14,7 +18,7 @@ import {
 	type SecurityConfig,
 } from "./security.ts";
 import { resolveWebDist, webStatic } from "./static.ts";
-import { listReposByDistrict, sweepStale } from "./store.ts";
+import { listReposByDistrict, sweepStale, usageSummary } from "./store.ts";
 
 export const STALE_SWEEP_MS = 60_000;
 /** Default bind: loopback only. Serving the web UI does not change it. */
@@ -132,7 +136,13 @@ export function startHub(opts: HubOptions) {
 			}
 			return app.fetch(req);
 		},
-		websocket,
+		// each new socket gets the current 7-day usage summary (same body as GET /api/usage)
+		websocket: createWebsocket(() =>
+			JSON.stringify({
+				kind: "usage",
+				data: usageSummary(opts.db, new Date()),
+			}),
+		),
 	});
 	broadcaster.attach(server);
 

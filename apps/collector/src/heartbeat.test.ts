@@ -18,6 +18,7 @@ const cfg = (over: Partial<CollectorConfig> = {}): CollectorConfig => ({
 	debug: false,
 	spoolLimits: { maxBytes: 1, maxAgeMs: 1 },
 	codex: { sessionsDir: "unused", backfillMs: 0, eventFilter: false },
+	usage: { enabled: false, claudeProjectsDir: "unused" },
 	...over,
 });
 

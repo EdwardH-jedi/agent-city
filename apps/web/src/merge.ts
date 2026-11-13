@@ -8,7 +8,9 @@ import {
 	runStateAt,
 	type Session,
 	type SessionStatus,
+	type UsageSummary,
 } from "@agent-city/schema";
+import { parseUsage } from "./board/usage.ts";
 
 export const EVENT_LIMIT = 200;
 
@@ -52,6 +54,7 @@ export type HubMessage =
 	| { kind: "repo"; data: unknown }
 	| { kind: "machine"; data: MachineView }
 	| { kind: "run"; data: RunView }
+	| { kind: "usage"; data: UsageSummary }
 	| { kind: "invalidate"; scope: Scope[] };
 
 /** Parse one /ws frame; unknown or malformed frames → null. */
@@ -67,6 +70,11 @@ export function parseHubMessage(raw: string): HubMessage | null {
 			? SCOPES.filter((s) => (m.scope as unknown[]).includes(s))
 			: [];
 		return { kind: "invalidate", scope };
+	}
+	// usage: validated whole (it reaches the screen); a malformed frame is dropped
+	if (m?.kind === "usage") {
+		const data = parseUsage(m.data);
+		return data ? { kind: "usage", data } : null;
 	}
 	if (
 		m?.kind === "event" ||

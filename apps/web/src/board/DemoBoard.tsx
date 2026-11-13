@@ -24,6 +24,7 @@ export default function DemoBoard() {
 			sessions={data.sessions}
 			events={data.events}
 			runs={data.runs}
+			usage={data.usage}
 		/>
 	);
 }

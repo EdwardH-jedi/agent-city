@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { MachineRole, Provider, SessionStatus } from "@agent-city/schema";
+import {
+	MachineRole,
+	Provider,
+	SessionStatus,
+	USAGE_MAX_DAYS,
+} from "@agent-city/schema";
 import { Hono } from "hono";
 import {
 	listAgents,
@@ -9,6 +14,7 @@ import {
 	listRunEvents,
 	listRuns,
 	listSessions,
+	usageSummary,
 } from "../store.ts";
 
 const EVENTS_DEFAULT_LIMIT = 200;
@@ -45,6 +51,20 @@ export function createApi(
 				Math.min(limit, 1000),
 			),
 		});
+	});
+
+	// ?days=7 (1..USAGE_MAX_DAYS) — token usage summed per (day, project, tool, model) for the days
+	// ending at the hub's Australia/Sydney today, plus the newest plan limits a tool's log stated.
+	api.get("/usage", (c) => {
+		const raw = c.req.query("days");
+		const days = raw === undefined ? 7 : Number(raw);
+		if (!Number.isInteger(days) || days < 1 || days > USAGE_MAX_DAYS) {
+			return c.json(
+				{ error: `days must be an integer from 1 to ${USAGE_MAX_DAYS}` },
+				400,
+			);
+		}
+		return c.json(usageSummary(db, now(), days));
 	});
 
 	api.get("/repos", (c) => c.json({ districts: listReposByDistrict(db) }));

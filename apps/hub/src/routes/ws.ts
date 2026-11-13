@@ -1,7 +1,9 @@
 // GET /ws — Bun-native WebSocket pub/sub. Every client subscribes to one topic; the hub publishes
-// `{kind, data}` JSON on event / session / repo changes, and `{kind:"invalidate", scope:[…]}` when
-// existing rows were rewritten in bulk (repo remap) so clients re-fetch those snapshots (N07).
-// Server → client only.
+// `{kind, data}` JSON on event / session / repo / machine / run / usage changes, and
+// `{kind:"invalidate", scope:[…]}` when existing rows were rewritten in bulk (repo remap) so clients
+// re-fetch those snapshots (N07). On open a socket may also get one greeting (today: the 7-day token
+// usage summary as `{kind:"usage"}`), so the board needs no extra request and an older hub that has no
+// usage simply says nothing. Server → client only.
 import type { WebSocketHandler } from "bun";
 
 export type BroadcastKind =
@@ -10,6 +12,7 @@ export type BroadcastKind =
 	| "repo"
 	| "machine"
 	| "run"
+	| "usage"
 	| "invalidate";
 export type InvalidateScope = "sessions" | "events" | "repos";
 export type Publish = (kind: BroadcastKind, data: unknown) => void;
@@ -43,14 +46,32 @@ export function createBroadcaster(): Broadcaster {
 	};
 }
 
-export const websocket: WebSocketHandler<undefined> = {
-	open(ws) {
-		ws.subscribe(WS_TOPIC);
-	},
-	message() {
-		// clients don't send anything meaningful
-	},
-	close(ws) {
-		ws.unsubscribe(WS_TOPIC);
-	},
-};
+/**
+ * The /ws handler. `greet` builds one message sent to each socket right after it subscribes; a greeting
+ * that throws or returns null is skipped, never failing the open.
+ */
+export function createWebsocket(
+	greet?: () => string | null,
+): WebSocketHandler<undefined> {
+	return {
+		open(ws) {
+			ws.subscribe(WS_TOPIC);
+			if (!greet) return;
+			try {
+				const msg = greet();
+				if (msg) ws.send(msg);
+			} catch (err) {
+				console.error(`[hub] /ws greeting failed: ${(err as Error).name}`);
+			}
+		},
+		message() {
+			// clients don't send anything meaningful
+		},
+		close(ws) {
+			ws.unsubscribe(WS_TOPIC);
+		},
+	};
+}
+
+/** The handler without a greeting. */
+export const websocket: WebSocketHandler<undefined> = createWebsocket();

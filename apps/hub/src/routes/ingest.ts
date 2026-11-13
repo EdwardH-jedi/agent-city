@@ -6,10 +6,17 @@ import {
 	IngestBatch,
 	IngestEvent,
 	MAX_INGEST_BATCH,
+	USAGE_MAX_BODY_BYTES,
+	UsageReport,
 } from "@agent-city/schema";
 import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { ingestEvents, recordHeartbeat } from "../store.ts";
+import {
+	ingestEvents,
+	recordHeartbeat,
+	recordUsage,
+	usageSummary,
+} from "../store.ts";
 import type { Publish } from "./ws.ts";
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -147,6 +154,44 @@ export function createIngest({
 			const result = recordHeartbeat(db, parsed.data, now());
 			if (result.accepted) publish("machine", result.machine);
 			return c.json({ accepted: result.accepted });
+		},
+	);
+
+	// POST /ingest/usage — a collector's token usage (18 §5.1): cumulative per (session, Sydney day,
+	// model) plus the plan limits a tool's own log stated. Same bearer token as /ingest, a strict body
+	// (numbers and identifiers only) of at most USAGE_MAX_BODY_BYTES. Idempotent: every count keeps the
+	// larger value. When a row grew, the 7-day summary is pushed on /ws as `usage`.
+	ingest.post(
+		"/usage",
+		auth,
+		bodyLimit({
+			maxSize: USAGE_MAX_BODY_BYTES,
+			onError: (c) => c.json({ error: "payload too large" }, 413),
+		}),
+		async (c) => {
+			let raw: unknown;
+			try {
+				raw = await c.req.json();
+			} catch {
+				return c.json({ error: "invalid JSON" }, 400);
+			}
+			const parsed = UsageReport.safeParse(raw);
+			if (!parsed.success) {
+				// Paths and messages only; an unrecognized key's message names the key → never reflected.
+				const issues = parsed.error.issues
+					.slice(0, 20)
+					.map((i) =>
+						i.code === "unrecognized_keys"
+							? { path: i.path.join("."), message: "unknown key" }
+							: { path: i.path.join("."), message: i.message },
+					);
+				return c.json({ error: "invalid payload", issues }, 400);
+			}
+			const at = now();
+			const result = recordUsage(db, parsed.data, at);
+			if (result.changed > 0 || result.limits > 0)
+				publish("usage", usageSummary(db, at));
+			return c.json(result);
 		},
 	);
 

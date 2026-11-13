@@ -4,11 +4,10 @@
 // - Clock: this device's local time, 24 h, no seconds (`10:47`), and the date beside it (`11월 13일 금`).
 //   It is redrawn only when the minute changes (`minuteKey`, `msToNextMinute`).
 // - `세션 N`: sessions whose last activity is after local midnight.
-// - `토큰 203k`: the sum of `tokens_today` over the runs reported today. Only what Office signed in its
-//   run reports: not the whole usage. `+` when any of them says usage_unknown; no figure at all → no cell.
+// - `토큰 3.9M`: today's whole token usage (board/usage.ts, 18 §5 U3); no usage today → no cell.
 // - A band too narrow for one line hides the date, then the tokens, then the sessions (`TOP_FOLD`).
 
-import type { RunView, Session } from "@agent-city/schema";
+import type { Session } from "@agent-city/schema";
 
 const DAYS = ["일", "월", "화", "수", "목", "금", "토"] as const;
 
@@ -61,50 +60,6 @@ export function sessionsToday(
 ): number {
 	const t = localMidnight(now);
 	return sessions.filter((s) => after(s.last_event_at, t)).length;
-}
-
-export interface TokensToday {
-	total: number;
-	/** A run reported today says its usage is unknown: the figure is a floor (`203k+`). */
-	floor: boolean;
-}
-
-/**
- * The sum of `tokens_today` over the runs reported today (a run last reported yesterday carries
- * yesterday's figure). Null when none of them has a figure: the cell is not drawn.
- */
-export function tokensToday(
-	runs: readonly Pick<
-		RunView,
-		"tokens_today" | "usage_unknown" | "reported_at"
-	>[],
-	now: number,
-): TokensToday | null {
-	const t = localMidnight(now);
-	let total = 0;
-	let any = false;
-	let floor = false;
-	for (const r of runs) {
-		if (!after(r.reported_at, t)) continue;
-		if (r.usage_unknown) floor = true;
-		if (typeof r.tokens_today === "number" && Number.isFinite(r.tokens_today)) {
-			total += Math.max(0, r.tokens_today);
-			any = true;
-		}
-	}
-	return any ? { total, floor } : null;
-}
-
-/** `950`, `12k`, `203k`, `1.2M`, `34M` (+ when a floor). */
-export function tokensText(t: TokensToday): string {
-	const n = t.total;
-	let s: string;
-	if (n < 1000) s = String(Math.round(n));
-	else if (n < 999_500) s = `${Math.round(n / 1000)}k`;
-	else if (n < 9_950_000)
-		s = `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-	else s = `${Math.round(n / 1_000_000)}M`;
-	return t.floor ? `${s}+` : s;
 }
 
 /** What a narrow band hides, in order (17 §2): the date first, then the tokens, then the sessions. */

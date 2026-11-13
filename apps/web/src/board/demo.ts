@@ -1,13 +1,16 @@
 // 예시 데이터 for `?demo=1` only: a fixed, made-up village so the screen can be looked at without a
 // running Office. Everything is built from the page's load time; nothing is fetched and no name is a
 // real repo. The live board never uses it, and the screen says "예시 데이터" while it is shown.
-import type {
-	Event,
-	MachineView,
-	RunDisplay,
-	RunEventView,
-	RunView,
-	Session,
+import {
+	dayMinus,
+	type Event,
+	type MachineView,
+	type RunDisplay,
+	type RunEventView,
+	type RunView,
+	type Session,
+	type UsageSummary,
+	usageDay,
 } from "@agent-city/schema";
 import type { Districts, RepoView } from "../useHub.ts";
 import { PASSED_TEXT } from "./copy.ts";
@@ -29,6 +32,8 @@ export interface DemoData {
 	sessions: Session[];
 	/** Session events for the right panel's terminal tails (15 §3.1). */
 	events: Event[];
+	/** Token usage (18 §5): what the hub would push on /ws. Made up. */
+	usage: UsageSummary;
 }
 
 /**
@@ -445,6 +450,7 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 
 	return {
 		...(watch ? { watch } : {}),
+		usage: demoUsage(t0, kase),
 		runs,
 		machines: [
 			machine("cockpit", "online"),
@@ -461,5 +467,105 @@ export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
 		eventsByRun,
 		sessions,
 		events,
+	};
+}
+
+/**
+ * Made-up token usage for the demo board: 7 days, a few demo projects, Claude and Codex, one Codex
+ * weekly limit. `case=calm` is a quiet day; `case=busy` spreads today over many projects.
+ */
+export function demoUsage(
+	t0: number,
+	kase: DemoCase = "default",
+): UsageSummary {
+	const today = usageDay(t0) ?? new Date(t0).toISOString().slice(0, 10);
+	const days: string[] = [];
+	for (let i = 6; i >= 0; i--) days.push(dayMinus(today, i));
+	const projects =
+		kase === "busy"
+			? [
+					"demo/orchard",
+					"demo/attic",
+					"demo/basalt",
+					"demo/quarry",
+					"demo/harbor",
+					"demo/lantern",
+					null,
+				]
+			: ["demo/orchard", "demo/attic", "demo/basalt", null];
+	const rows: UsageSummary["rows"] = [];
+	days.forEach((day, d) => {
+		const scale =
+			kase === "calm" && day === today ? 0.15 : 0.6 + ((d * 37) % 9) / 10;
+		projects.forEach((project, p) => {
+			const base = Math.round((4_200_000 / (p + 1)) * scale);
+			rows.push({
+				day,
+				project,
+				tool: "claude",
+				model: "claude-opus-5-5",
+				input_tokens: Math.round(base * 0.01),
+				output_tokens: Math.round(base * 0.35),
+				cache_read_tokens: base * 18,
+				cache_write_tokens: Math.round(base * 0.64),
+				messages: 40 + p * 7,
+				sessions: 1 + (p % 3),
+			});
+			if (p % 2 === 0)
+				rows.push({
+					day,
+					project,
+					tool: "codex",
+					model: "gpt-6-astra",
+					input_tokens: Math.round(base * 0.3),
+					output_tokens: Math.round(base * 0.05),
+					cache_read_tokens: base * 2,
+					cache_write_tokens: 0,
+					messages: 20 + p,
+					sessions: 1,
+				});
+		});
+	});
+	return {
+		tz: "Australia/Sydney",
+		today,
+		days,
+		rows,
+		limits: [
+			{
+				machine_id: "cockpit",
+				tool: "codex",
+				limit_id: "codex",
+				window_minutes: 10080,
+				used_percent: 42,
+				resets_at: new Date(t0 + 3 * 86_400_000).toISOString(),
+				plan_type: "prolite",
+				observed_at: new Date(t0 - 10 * 60_000).toISOString(),
+				received_at: new Date(t0 - 9 * 60_000).toISOString(),
+			},
+		],
+		updated_at: new Date(t0 - 60_000).toISOString(),
+		// 18 §5.6 U4: the all-time total, starting well before the 7 days shown
+		total: {
+			since: dayMinus(today, 37),
+			tools: [
+				{
+					tool: "claude",
+					input_tokens: 2_400_000,
+					output_tokens: 61_000_000,
+					cache_read_tokens: 3_100_000_000,
+					cache_write_tokens: 112_000_000,
+					messages: 41_000,
+				},
+				{
+					tool: "codex",
+					input_tokens: 38_000_000,
+					output_tokens: 4_100_000,
+					cache_read_tokens: 260_000_000,
+					cache_write_tokens: 0,
+					messages: 6_200,
+				},
+			],
+		},
 	};
 }

@@ -42,12 +42,15 @@ export function Hq({
 	model,
 	now,
 	top,
+	bottom,
 	pixel = false,
 }: {
 	model: VillageModel;
 	now: number;
 	/** The town (default scene): its minimap above the queue (design doc 12 §3). */
 	top?: ReactNode;
+	/** Under LOG: the USAGE box (18 §5 U3). */
+	bottom?: ReactNode;
 	/** Titles in the town's pixel font (the town scene). */
 	pixel?: boolean;
 }) {
@@ -91,6 +94,7 @@ export function Hq({
 			</section>
 			<Paused model={model} now={now} pixel={pixel} />
 			<Away model={model} now={now} pixel={pixel} />
+			{bottom}
 		</aside>
 	);
 }

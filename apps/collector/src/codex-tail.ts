@@ -14,6 +14,7 @@
 //   works on copies and returns `commit()`; a failed delivery re-reads the same lines next tick
 //   (same deterministic ids → the hub dedupes)
 // - call_id → tool name survives across polls for the life of the process (F11)
+// - the same process also runs the token usage poller (usage-tail.ts, 18 §5) on its own timer
 import {
 	closeSync,
 	type Dirent,
@@ -39,6 +40,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { gitInfo } from "./git-info.ts";
 import { createTransport, deliver, Spool } from "./spool.ts";
+import { startUsagePoller } from "./usage-tail.ts";
 
 const MAX_READ = 4 * 1024 * 1024; // per file per poll
 const FIRST_LINE_MAX = 512 * 1024; // session_meta embeds long instructions
@@ -302,4 +304,11 @@ if (import.meta.main) {
 	};
 	await tick();
 	setInterval(tick, 1_000);
+	// Token usage (18 §5): its own timer and error handling — it never delays or breaks the tick above.
+	if (cfg.usage.enabled) {
+		startUsagePoller({ cfg });
+		console.log(
+			"[codex-tail] token usage poller on (AGENTCITY_USAGE=0 turns it off)",
+		);
+	}
 }

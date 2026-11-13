@@ -11,6 +11,7 @@ export const PANEL_TITLES = [
 	"HQ",
 	"PAUSED",
 	"LOG",
+	"USAGE",
 	"SESSIONS",
 	// the detail screen (16 A3)
 	"RUNS",

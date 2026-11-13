@@ -90,10 +90,18 @@ engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or act
 - **Top band (doc 17 §2).** Right of the machine chips: this device's clock (`10:47`, local, 24 h, no seconds;
   the sentence's 28 px but weight 400 and muted, redrawn only when the minute changes; it keeps going while
   reports are cut) and the date (`11월 13일 금`), then `오늘 완료 N · 진행 N · 세션 N · 토큰 203k`. `세션` counts
-  the sessions whose last activity is after local midnight. `토큰` is the sum of `tokens_today` over the runs
-  reported today — only the figures Office signs in its run reports, **not the whole usage** of any account;
-  `+` when one of those runs says its usage is unknown, and no cell when none has a figure. A band too narrow
+  the sessions whose last activity is after local midnight. `토큰` is today's (Australia/Sydney) token usage of every
+  session the collectors saw (18 §5): `input + output + cache write`, cache reads left out (the USAGE box
+  says them apart); no cell when there is none today. A band too narrow
   for one line hides the date, then the tokens, then the sessions. While reports are cut the summary dims.
+- **USAGE (18 §5, `board/usage.ts`, `board/Usage.tsx`).** The left column's last box, under LOG: today's
+  figure and the 7-day sum in its head, then `누적 N · 11월 6일부터` — the all-time figure (same formula as
+  `토큰`) from the oldest day the hub holds, with the year when it is not this year's (18 §5.6 U4) — `Claude N · Codex N` and a plan limit only as the tool's log stated it
+  (Codex `rate_limits`; shown while observed in the last 6 h and before its reset), today's tokens per project
+  (at most 4 bars, the rest counted; a project not shaped like a repo id is `저장소 밖`), the last 7 days as
+  small bars (left out when the board body is under 760 px, e.g. 1366×768), and the cache reads apart. The
+  summary comes on `/ws` (sent when the socket opens and when a report changes it), so the board makes no
+  extra request; with an older hub there is no box and no `토큰` cell (a summary without `total`: no `누적` line).
 - **Finish show (doc 17 §3, `board/done.ts`, `town/done-fx.ts`).** When `visits.ts` makes a new
   `전부 끝났습니다.` report (a run seen to finish while the screen is open — a run already finished when the
   page opened is only remembered), that building's roof throws confetti for 20 s (24 pieces, two bursts at once, 48 at most; none in
@@ -360,6 +368,8 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `AGENTCITY_DEBUG`          | collector      | `1` → `~/.agentcity/hook.log` with timings + error messages (never payloads).            |
 | `SPOOL_MAX_MB`             | collector      | Cap on `spool.jsonl` + `spool.*.flushing` together (default 20); oldest dropped first.   |
 | `SPOOL_MAX_AGE_DAYS`       | collector      | Spooled events older than this are dropped (default 7). Drops show on `/healthz`.        |
+| `AGENTCITY_USAGE`          | collector      | `0` → the token usage poller in `collector:codex` is off (default on).                   |
+| `AGENTCITY_CLAUDE_PROJECTS_DIR` | collector | Claude Code transcripts the usage poller reads (default `~/.claude/projects`).        |
 | `CODEX_SESSIONS_DIR`       | collector      | Codex log dir (default `~/.codex/sessions`).                                             |
 | `CODEX_BACKFILL_HOURS`     | collector      | First-sight window **by file mtime** (default 2; `0` = tail every new file from EOF).    |
 | `CODEX_BACKFILL_EVENT_FILTER` | collector   | `1` → during a file's initial backfill (until its first EOF) skip records older than that window. |
@@ -400,7 +410,7 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `db:backup`                   | Hub may keep running. Consistent dated copy of `DB_PATH` into `<data dir>/backups/`; `--keep N` prunes. See [Backing up the database](#backing-up-the-database). |
 | `districts:draft`             | Writes `config/districts.draft.yaml` (all repos by district; gitignored).        |
 | `collector:hooks`             | Print-only merge of the Claude hook into `~/.claude/settings.json`.              |
-| `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s).                     |
+| `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s) and the token usage poller (every 60 s: Claude transcripts + Codex logs → numbers and ids only → `/ingest/usage`). |
 | `collector:heartbeat`         | Resident machine heartbeat: one beat every 30 s to `POST /ingest/heartbeat`.     |
 | `collector:launchd`           | Print-only: launchd job files for the Mac's resident processes → `~/.agentcity/launchd/`. See [Mac login jobs](#mac-login-jobs-launchd). |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
@@ -431,6 +441,72 @@ wrong state; only the latest `boot_id` per machine is remembered, so a replayed 
 boot is taken as a restart (a sender needs the ingest token either way); while `/ws` is down the
 strip keeps ageing its last snapshot toward `offline` even if the hub still receives beats; after
 `db:reset` reload the page, because a fresh `unobserved` row never overwrites a machine already seen.
+
+**Token usage (18 §5).** `collector:codex` also runs a usage poller (every 60 s; 5 s while a first
+read catches up).
+**Backfill (18 §5.6 U4).** The first time it runs, the poller reads **every** transcript and rollout on disk
+(at most 10,000, the newest; the rest are counted as `cut`), whatever its age, under the same byte caps
+and order as every scan (below). Today's usage therefore arrives last on a first run (~18 min for 720 files).
+While it runs no day is forgotten. When a scan ends with no read cut short by a cap (a file ending in a
+cut-off line does not hold it, and is not read again until its size changes, so it never eats a later scan's budget) it writes `backfill: {v, done, files, cut}` into its state, logs `[usage] backfill done: N files`, and
+never does it again (a restart mid-way resumes; a state without the mark — e.g. from before U4 — keeps only
+its limits and starts it). Afterwards only files modified in the last 7 days are read, lines dated more than
+8 days back are not counted (the hub already holds those days; a late replay must not count twice), and an
+old day leaves the state only once the hub accepted it. A second backfill (a lost offsets file, or a new
+`USAGE_BACKFILL_VERSION`) can over-count a replay whose original file was deleted in between (the hub keeps
+both sessions' rows), and so can one after birth times changed (a restore from backup, or `touch` to an
+earlier date on macOS, which moves the birth time too): a replay's owner follows birth order. One after a
+collector outage of more than 7 days does not fill that gap, and a file first seen after the backfill counts
+only its lines from the last 8 days. Codex rollouts written before
+`token_usage_record` existed (2026-03 ~ 08: only `event_msg/token_count`) count each event's `last_token_usage`
+once, when its running `total_token_usage` differs from the file's previous one (a repeated event counts
+nothing); a rollout that has `token_usage_record` lines counts those only. It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
+Codex rollouts by per-file offset, at most 16 MiB per scan (read 4 MiB at a time), **oldest-born file first,
+each read to its end before the next** (when the 16 MiB run out inside a file the scan stops there and the
+next one resumes it): lines are met in the same order wherever a cap falls, so a resumed or forked
+transcript's replayed messages always stay in the oldest-born file holding them (18 §9.7 P1). It sends **numbers and
+identifiers only**: one cumulative row per `(session_id, day, model)` with `tool`, `project` (repo id or
+null), `input_tokens` (not served from cache — Codex's cached part moves to `cache_read_tokens`),
+`output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `messages`. `day` is the message's
+Australia/Sydney date. A Claude advisor call counts under its own model. Plan limits go only as a tool's
+log stated them (today Codex `rate_limits`; Claude transcripts carry none). The hook never reads a
+transcript. `AGENTCITY_USAGE=0` turns the poller off.
+
+What the poller keeps in `~/.agentcity/usage-offsets.json` (mode 0600): per log file — keyed by a hash of its
+path, so the file holds no path or folder name (format `v: 2`; a `v: 1` state keeps only its limits and the
+backfill runs again, 18 §9.7 P2-3) — its offset, birth time and per-(day, model)
+totals (at most 16 models a day, then `unknown`; at most 128 keys + one per countable day a file, older days still waiting for the hub not counted; a line that
+would pass that is not read: the poller stops before it until the hub has accepted the file's totals, then
+frees every day but that line's and reads on — "accepted" means the session was not waiting to be sent when the
+scan began and that file has added nothing since (another file of the session may keep growing). Nothing valid
+is dropped; while the hub is away it waits on the 60 s poll (a collector restarted before every poll would keep
+it waiting, since a start marks every session to be sent again). A later line on a freed (day, model) — out of order in that file, or in a later file of the
+same session — is hidden by the hub's larger value, never counted twice), and Claude message ids only as hashes (at most 200k, across files, so a
+resumed transcript that replays earlier messages counts them once — in the oldest-born file holding them; past
+200k the oldest days are forgotten down to 190k the moment an id is added — after the backfill, ids dated
+before the 8-day cutoff go first — so that happens at the same line wherever a scan ends; a replay of a
+forgotten id counts again). A line that does not fit in one read with its newline (4 MiB) is skipped. A
+Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
+a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
+spaces allowed, nothing secret-shaped), else it is null. A limit stamped more than a day ahead is dropped.
+Chunks are cut by row count (≤ 500) **and** by the body's UTF-8 bytes, envelope and limits included (≤ 256 KiB).
+If the hub still answers 400/413 the chunk is split in half and sent again, down to one row; only a single row
+it still refuses is dropped (limits riding along are tried apart first) rather than retried forever; that
+session goes again when it changes or the collector restarts.
+
+`POST /ingest/usage` uses the `INGEST_TOKEN` bearer, takes a strict body of at most 256 KiB
+(`schema`, `machine_id`, `rows` ≤ 500, `limits` ≤ 16; any other key → 400) and answers
+`{accepted, changed, ignored, limits}`. Every count keeps the larger value, so a repeated or older report
+changes nothing. Rows are **never deleted** (the all-time total); a row for a day more than one day ahead,
+before 2025-01-01, or not a real date is ignored. Limit snapshots older than 40 days are pruned. A count above 1e13 or a project that is not repo-id shaped is refused / stored as
+null. A failed send is not
+queued: the collector sends the same totals again next poll. `GET /api/usage?days=7` (1–31) returns
+`{tz, today, days, rows, limits, updated_at, total}` — sums per `(day, project, tool, model)` with a `sessions`
+count, projects folded case-insensitively onto the repos row; `total` = `{since, tools: [{tool, input_tokens,
+output_tokens, cache_read_tokens, cache_write_tokens, messages}]}`, the all-time sums per tool and the oldest
+day held (kept in `usage_total` by migration 8's triggers, so it costs one row per tool, not a table scan). The same body is sent on `/ws` as
+`{kind:"usage"}` to every socket when it opens and again whenever a report changed it, so the board
+makes no extra request (and an older hub without usage simply sends nothing).
 
 **Runs (Agent Office → City, read-only).** The cockpit's Agent Office exporter pushes a picture of its
 runs to `POST /ingest/runs` every 30 s; the *Runs* and *Needs owner* sections show them, each with
