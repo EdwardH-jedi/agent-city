@@ -2430,6 +2430,69 @@ describe("M1 re-review P2: the rate-limit state holds at most LIMITS_STATE_MAX s
 		expect(Object.keys(state.limits).length).toBe(LIMITS_STATE_MAX);
 	});
 
+	test("a snapshot no line could give (unparseable, far ahead) holds no slot: the live limit is kept", () => {
+		const dir = tmp("limits-bad-time");
+		const path = join(dir, "state.json");
+		const limits: Record<string, unknown> = {};
+		const at = (observed_at: string, id: string) => ({
+			tool: "codex",
+			limit_id: id,
+			window_minutes: 60,
+			used_percent: 1,
+			resets_at: null,
+			plan_type: null,
+			observed_at,
+		});
+		for (let i = 0; i < LIMITS_STATE_MAX; i++)
+			limits[`codex|ahead${i}|60`] = at(
+				"2099-01-01T00:00:00.000Z",
+				`ahead${i}`,
+			);
+		limits["codex|nan|60"] = at("not a time", "nan");
+		writeFileSync(path, JSON.stringify({ ...emptyUsageState(), limits }));
+		const s = loadUsageState(path);
+		expect(limitKeys(s)).toEqual([]);
+		// the same snapshots handed to a scan directly (a state built in memory) go too
+		Object.assign(s.limits, limits);
+		const root = tmp("limits-bad-time-root");
+		writeFileSync(
+			join(root, "rollout-a.jsonl"),
+			limitLine("codex", new Date(NOW - 60_000).toISOString(), 48),
+		);
+		scan(null, root, s);
+		expect(limitKeys(s)).toEqual(["codex|codex|60"]);
+		expect(s.limits_dirty).toBe(true);
+	});
+
+	test("which 16 are sent never depends on line order (ties go by key)", async () => {
+		const ts = new Date(NOW - 60_000).toISOString();
+		const sent: string[][] = [];
+		for (const order of [1, -1]) {
+			const root = tmp(`limits-tie-${order}`);
+			const ids = Array.from(
+				{ length: 40 },
+				(_, i) => `t${String(i).padStart(2, "0")}`,
+			);
+			if (order < 0) ids.reverse();
+			writeFileSync(
+				join(root, "rollout-a.jsonl"),
+				ids.map((id) => limitLine(id, ts)).join(""),
+			);
+			const s = emptyUsageState();
+			scan(null, root, s);
+			let got: string[] = [];
+			await sendUsage(sendCfg, s, (async (_u: string, init: RequestInit) => {
+				got = (
+					JSON.parse(String(init.body)) as { limits: { limit_id: string }[] }
+				).limits.map((l) => l.limit_id);
+				return new Response("{}");
+			}) as unknown as typeof fetch);
+			sent.push(got.sort());
+		}
+		expect(sent[0]).toHaveLength(USAGE_MAX_LIMITS);
+		expect(sent[1]).toEqual(sent[0] as string[]);
+	});
+
 	test("a state file already holding 30,000 limits is cut back on load (v2 and v1 alike); save/load keeps it", () => {
 		const dir = tmp("limits-load");
 		const limits: Record<string, unknown> = {};

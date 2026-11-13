@@ -706,6 +706,14 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	const ackedAtStart = (session: string) => !state.dirty.includes(session);
 	// Limit snapshots: at most LIMITS_STATE_MAX kept (the newest), cut back whenever twice that many pile up
 	// in a scan and again at its end. Only a changed snapshot that is still kept marks the limits to send.
+	// a snapshot no line could give (time unparseable, more than a day ahead, past the age) never holds a slot
+	const pruneLimits = () => {
+		for (const [key, l] of Object.entries(state.limits)) {
+			const at = usageObservedAt(l.observed_at, opts.now);
+			if (at === null || Date.parse(at) < minObserved) delete state.limits[key];
+		}
+	};
+	pruneLimits();
 	let limitCount = capLimits(state.limits);
 	const limitsChanged = new Set<string>();
 	const trimLimits = () => {
@@ -892,8 +900,7 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 			.slice(0, paths.length - MAX_STATE_FILES);
 		for (const p of oldest) delete state.files[p];
 	}
-	for (const [key, l] of Object.entries(state.limits))
-		if (Date.parse(l.observed_at) < minObserved) delete state.limits[key];
+	pruneLimits();
 	trimLimits();
 	if (limitsChanged.size > 0) state.limits_dirty = true;
 	// while the backfill runs every id stays (SEEN_MAX still bounds them, see remember): a replay read in a later scan

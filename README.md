@@ -490,7 +490,8 @@ Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`)
 a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
 spaces allowed, nothing secret-shaped), else it is null. A limit stamped more than a day ahead is dropped.
 The state keeps at most 64 limit snapshots — the newest by observed time, then by key, whatever order they
-came in (a state file holding more is cut back on load); the newest 16 are sent.
+came in (a state file holding more is cut back on load; one whose time does not parse or is more than a day ahead
+holds no slot); the newest 16 are sent, ties by key.
 Chunks are cut by row count (≤ 500) **and** by the body's UTF-8 bytes, envelope and limits included (≤ 256 KiB).
 If the hub still answers 400/413 the chunk is split in half and sent again, down to one row; only a single row
 it still refuses is dropped (limits riding along are tried apart first) rather than retried forever; that

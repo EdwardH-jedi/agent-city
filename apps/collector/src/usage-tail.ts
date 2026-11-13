@@ -18,6 +18,7 @@ import {
 	USAGE_MAX_ROWS,
 	type UsageLimit,
 	type UsageRow,
+	usageObservedAt,
 } from "@agent-city/schema/core";
 import type { CollectorConfig } from "./config.ts";
 import { gitInfo } from "./git-info.ts";
@@ -101,7 +102,8 @@ export function loadUsageState(path: string): UsageState {
 	if (!isRecord(raw) || (raw.v !== 1 && raw.v !== 2)) return state;
 	if (isRecord(raw.limits))
 		for (const [k, l] of Object.entries(raw.limits))
-			if (UsageLimitShape(l)) state.limits[k] = l;
+			if (UsageLimitShape(l) && usageObservedAt(l.observed_at, Date.now()))
+				state.limits[k] = l;
 	capLimits(state.limits); // a state written before the cap (M1 re-review P2) shrinks here
 	if (raw.v !== 2 || !validBackfill(raw.backfill)) return state;
 	state.backfill = raw.backfill;
@@ -210,9 +212,15 @@ export async function sendUsage(
 	const result: SendOutcome = { posted: 0, rows: 0, failed: null };
 	if (!MACHINES.has(cfg.machine)) return { ...result, failed: -1 };
 	let limits: UsageLimit[] = state.limits_dirty
-		? Object.values(state.limits)
-				.sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))
+		? Object.entries(state.limits)
+				// newest first, then by key: which 16 go never depends on the order they came in
+				.sort(
+					([ka, a], [kb, b]) =>
+						Date.parse(b.observed_at) - Date.parse(a.observed_at) ||
+						(ka < kb ? -1 : ka > kb ? 1 : 0),
+				)
 				.slice(0, USAGE_MAX_LIMITS)
+				.map(([, l]) => l)
 		: [];
 	const body = (rows: UsageRow[], lims: UsageLimit[]) =>
 		JSON.stringify({ schema: 1, machine_id: cfg.machine, rows, limits: lims });
