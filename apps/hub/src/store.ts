@@ -35,6 +35,8 @@ import {
 	type UsageSummaryRow,
 	usageDay,
 	usageLabel,
+	usageObservedAt,
+	usageProject,
 } from "@agent-city/schema";
 
 export interface IngestResult {
@@ -807,7 +809,8 @@ export interface UsageResult {
  * Upsert one collector report. Per (session_id, day, model) every count keeps the larger value, so a
  * repeat or an older total changes nothing. Strings are re-checked here (collectors are not trusted):
  * the session id goes through ids.ts again, the model through usageLabel, the project through
- * normalizeRepoId + safeText. Limits: the newest `observed_at` per (machine, tool, limit, window) wins.
+ * normalizeRepoId + usageProject (a repo id shape, else null). Limits: the newest `observed_at` per
+ * (machine, tool, limit, window) wins. Rows older than the accepted window are pruned here.
  */
 export function recordUsage(
 	db: Database,
@@ -866,7 +869,7 @@ export function recordUsage(
 				continue;
 			}
 			const project =
-				r.project === null ? null : safeText(normalizeRepoId(r.project), 256);
+				r.project === null ? null : usageProject(normalizeRepoId(r.project));
 			const changes = upsert.run({
 				session,
 				day: r.day,
@@ -885,52 +888,107 @@ export function recordUsage(
 			if (changes > 0) result.changed++;
 		}
 		for (const l of report.limits) {
-			const observed = utc(l.observed_at);
-			if (Date.parse(observed) > now.getTime() + 86_400_000) continue; // a clock far ahead
+			const observed = usageObservedAt(l.observed_at, now.getTime());
+			if (observed === null) continue; // a clock far ahead
+			const resets =
+				l.resets_at === null
+					? null
+					: usageObservedAt(l.resets_at, now.getTime() + 400 * 86_400_000);
 			result.limits += limit.run({
 				machine: report.machine_id,
 				tool: l.tool,
 				id: usageLabel(l.limit_id) ?? "default",
 				win: l.window_minutes,
 				pct: l.used_percent,
-				resets: l.resets_at === null ? null : utc(l.resets_at),
+				resets,
 				plan: usageLabel(l.plan_type),
 				observed,
 				at,
 			}).changes;
 		}
+		db.query("DELETE FROM usage WHERE day < $oldest").run({ oldest });
+		db.query("DELETE FROM usage_limits WHERE observed_at < $before").run({
+			before: new Date(
+				now.getTime() - USAGE_ACCEPT_PAST_DAYS * 86_400_000,
+			).toISOString(),
+		});
 	})();
 	return result;
 }
 
+type UsageSum = Omit<UsageSummaryRow, "sessions"> & { sessions: number };
+
 /**
  * Sums for the `days` days ending at the hub's Sydney today, per (day, project, tool, model). Projects
  * are folded case-insensitively onto the repos row's spelling (a GitHub row before a local-only one),
- * else the first spelling seen, so a later repo remap never splits a project.
+ * else the smallest spelling seen, so a later repo remap never splits a project. One indexed range
+ * query; the fold is a linear pass in JS (sums as floats in SQL, so nothing can overflow).
  */
 export function usageSummary(db: Database, now: Date, days = 7): UsageSummary {
 	const today = usageDay(now) ?? now.toISOString().slice(0, 10);
 	const list: string[] = [];
 	for (let i = days - 1; i >= 0; i--) list.push(dayMinus(today, i));
 	const from = list[0] ?? today;
-	const rows = db
-		.query<UsageSummaryRow, { from: string; to: string }>(
-			`WITH u AS (
-			   SELECT usage.*, coalesce(
-			     (SELECT id FROM repos WHERE id = usage.project COLLATE NOCASE
-			      ORDER BY is_local_only, id LIMIT 1),
-			     (SELECT min(project) FROM usage AS v WHERE v.project = usage.project COLLATE NOCASE)
-			   ) AS proj
-			   FROM usage WHERE day >= $from AND day <= $to
-			 )
-			 SELECT day, proj AS project, tool, model,
-			   sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
-			   sum(cache_read_tokens) AS cache_read_tokens, sum(cache_write_tokens) AS cache_write_tokens,
-			   sum(messages) AS messages, count(*) AS sessions
-			 FROM u GROUP BY day, proj, tool, model
-			 ORDER BY day, proj IS NULL, proj, tool, model`,
+	const raw = db
+		.query<UsageSum, { from: string; to: string }>(
+			`SELECT day, project, tool, model,
+			   total(input_tokens) AS input_tokens, total(output_tokens) AS output_tokens,
+			   total(cache_read_tokens) AS cache_read_tokens,
+			   total(cache_write_tokens) AS cache_write_tokens,
+			   total(messages) AS messages, count(*) AS sessions
+			 FROM usage WHERE day >= $from AND day <= $to
+			 GROUP BY day, project, tool, model`,
 		)
 		.all({ from, to: today });
+	const canonical = new Map<string, string>();
+	for (const r of db
+		.query<{ id: string }, []>(
+			"SELECT id FROM repos ORDER BY is_local_only DESC, id DESC",
+		)
+		.all())
+		canonical.set(r.id.toLowerCase(), r.id); // last write wins: GitHub rows, smallest id
+	const seen = new Map<string, string>();
+	for (const r of raw) {
+		if (r.project === null) continue;
+		const k = r.project.toLowerCase();
+		const cur = seen.get(k);
+		if (cur === undefined || r.project < cur) seen.set(k, r.project);
+	}
+	const fold = (p: string | null): string | null => {
+		if (p === null) return null;
+		const k = p.toLowerCase();
+		return canonical.get(k) ?? seen.get(k) ?? p;
+	};
+	const groups = new Map<string, UsageSummaryRow>();
+	const KEYS = [
+		"input_tokens",
+		"output_tokens",
+		"cache_read_tokens",
+		"cache_write_tokens",
+		"messages",
+		"sessions",
+	] as const;
+	for (const r of raw) {
+		const project = fold(r.project);
+		const key = JSON.stringify([r.day, project, r.tool, r.model]);
+		const g = groups.get(key);
+		if (!g) groups.set(key, { ...r, project });
+		else for (const c of KEYS) g[c] += r[c];
+	}
+	const rows = [...groups.values()].map((g) => {
+		for (const c of KEYS)
+			g[c] = Math.min(Math.round(g[c]), Number.MAX_SAFE_INTEGER);
+		return g;
+	});
+	const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+	rows.sort(
+		(a, b) =>
+			cmp(a.day, b.day) ||
+			Number(a.project === null) - Number(b.project === null) ||
+			cmp(a.project ?? "", b.project ?? "") ||
+			cmp(a.tool, b.tool) ||
+			cmp(a.model, b.model),
+	);
 	const limits = db
 		.query<UsageLimitView, { since: string }>(
 			`SELECT machine_id, tool, limit_id, window_minutes, used_percent, resets_at, plan_type,
