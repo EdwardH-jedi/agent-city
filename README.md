@@ -445,9 +445,8 @@ strip keeps ageing its last snapshot toward `offline` even if the hub still rece
 **Token usage (18 §5).** `collector:codex` also runs a usage poller (every 60 s; 5 s while a first
 read catches up).
 **Backfill (18 §5.6 U4).** The first time it runs, the poller reads **every** transcript and rollout on disk
-(at most 10,000, the newest; the rest are counted as `cut`), whatever its age, under the same byte caps,
-oldest-born first — the order a live collector met them in, so a resumed transcript's replayed messages stay
-in the original's session. Today's usage therefore arrives last on a first run (~18 min for 720 files).
+(at most 10,000, the newest; the rest are counted as `cut`), whatever its age, under the same byte caps
+and order as every scan (below). Today's usage therefore arrives last on a first run (~18 min for 720 files).
 While it runs no day is forgotten. When a scan ends with no read cut short by a cap (a file ending in a
 cut-off line does not hold it) it writes `backfill: {v, done, files, cut}` into its state, logs `[usage] backfill done: N files`, and
 never does it again (a restart mid-way resumes; a state without the mark — e.g. from before U4 — keeps only
@@ -457,7 +456,10 @@ old day leaves the state only once the hub accepted it. A second backfill (a los
 `USAGE_BACKFILL_VERSION`) can over-count a replay whose original file was deleted in between (the hub keeps
 both sessions' rows); one after a collector outage of more than 7 days does not fill that gap. Codex rollouts written before
 `token_usage_record` existed (only `token_count` events) count nothing. It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
-Codex rollouts by per-file offset, at most 4 MiB per file and 16 MiB per scan, and sends **numbers and
+Codex rollouts by per-file offset, at most 16 MiB per scan (read 4 MiB at a time), **oldest-born file first,
+each read to its end before the next** (when the 16 MiB run out inside a file the scan stops there and the
+next one resumes it): lines are met in the same order wherever a cap falls, so a resumed or forked
+transcript's replayed messages always stay in the oldest-born file holding them (18 §9.7 P1). It sends **numbers and
 identifiers only**: one cumulative row per `(session_id, day, model)` with `tool`, `project` (repo id or
 null), `input_tokens` (not served from cache — Codex's cached part moves to `cache_read_tokens`),
 `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `messages`. `day` is the message's
@@ -467,7 +469,7 @@ transcript. `AGENTCITY_USAGE=0` turns the poller off.
 
 What the poller keeps in `~/.agentcity/usage-offsets.json`: per log file its offset and per-(day, model)
 totals (at most 16 models a day, then `unknown`; at most 128 keys + one per countable day a file, older days still waiting for the hub not counted), and Claude message ids only as hashes (at most 200k, across files, so a
-resumed transcript that replays earlier messages counts them once — in whichever file was read first). A
+resumed transcript that replays earlier messages counts them once — in the oldest-born file holding them). A
 Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
 a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
 spaces allowed, nothing secret-shaped), else it is null. A limit stamped more than a day ahead is dropped.

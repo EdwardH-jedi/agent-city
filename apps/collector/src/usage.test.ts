@@ -1268,3 +1268,220 @@ describe("U4 review fixes (break-it round 2)", () => {
 			expect(today.map((r) => r.messages)).toEqual([1]);
 		});
 });
+
+// ── U5: Codex M1 review (WORK-REPORT-M1-REVIEW.md, 18 §9.7) ───────────────────────────────────────
+
+/** Per-session totals the hub holds: session → [input, output, cache read, cache write, messages]. */
+function hubBySession(
+	hub: ReturnType<typeof maxHub>,
+): Record<string, number[]> {
+	const out: Record<string, number[]> = {};
+	for (const [k, r] of hub.rows) {
+		const s = k.split("|")[0] ?? "";
+		const t = out[s] ?? [0, 0, 0, 0, 0];
+		out[s] = t;
+		[
+			"input_tokens",
+			"output_tokens",
+			"cache_read_tokens",
+			"cache_write_tokens",
+			"messages",
+		].forEach((c, i) => {
+			t[i] = (t[i] as number) + (r[c] ?? 0);
+		});
+	}
+	return out;
+}
+
+/** Scan + send until the backfill is done (or `max` polls). */
+async function backfillAll(
+	root: string,
+	state: UsageState,
+	hub: ReturnType<typeof maxHub>,
+	caps: { perFileMax?: number; totalMax?: number } = {},
+	max = 500,
+) {
+	for (let i = 0; i < max; i++) {
+		const r = scan(root, null, state, caps);
+		await sendUsage(sendCfg, state, hub.fetchImpl);
+		if (r.backfilled) return i + 1;
+	}
+	throw new Error("backfill did not end");
+}
+
+const pad = (n: number) =>
+	jl({ type: "user", message: { content: "x".repeat(200) } }).repeat(n);
+
+describe("U5 · P1: a replay's owner does not depend on where a read cap falls", () => {
+	test("Codex boundedReplay: the original past the per-file cap keeps its message through a second backfill (103 → 103)", async () => {
+		const root = tmp("u5-replay");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const caps = { perFileMax: 1000, totalMax: 4000 };
+		const a = join(root, "p", "a.jsonl");
+		// the shared message sits beyond the first per-file read of A
+		writeFileSync(
+			a,
+			pad(10) +
+				claudeMsg(
+					{ id: "shared-id", session: "a", usage: { input_tokens: 100 } },
+					1,
+				),
+		);
+		expect(statSync(a).size).toBeGreaterThan(caps.perFileMax);
+		const hub = maxHub();
+		const live = emptyUsageState();
+		await backfillAll(root, live, hub, caps);
+		const b = join(root, "p", "b.jsonl");
+		writeFileSync(
+			b,
+			claudeMsg(
+				{ id: "shared-id", session: "b", usage: { input_tokens: 100 } },
+				1,
+			) +
+				claudeMsg(
+					{ id: "new-id", session: "b", usage: { input_tokens: 3 } },
+					1,
+				),
+		);
+		scan(root, null, live, caps);
+		await sendUsage(sendCfg, live, hub.fetchImpl);
+		expect(hub.total()[0]).toBe(103);
+		expect(hub.total()[4]).toBe(2);
+		// offsets lost → a second backfill under the same caps
+		await backfillAll(root, emptyUsageState(), hub, caps);
+		expect(hubBySession(hub)).toEqual({
+			"claude:a": [100, 0, 0, 0, 1],
+			"claude:b": [3, 0, 0, 0, 1],
+		});
+	});
+
+	test("live scans keep the same owner as a later backfill (an older file grows while a newer one replays it)", async () => {
+		const root = tmp("u5-live");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const a = join(root, "p", "a.jsonl");
+		writeFileSync(a, claudeMsg({ id: "m1", session: "a" }));
+		age(a, 1); // born a day ago (macOS moves the birth time back with an earlier mtime)
+		const hub = maxHub();
+		const live = emptyUsageState();
+		await backfillAll(root, live, hub);
+		// in one poll gap: A gains m2, then a newer B replays m1 and m2 and adds m3
+		appendFileSync(a, claudeMsg({ id: "m2", session: "a" }));
+		const b = join(root, "p", "b.jsonl");
+		writeFileSync(
+			b,
+			claudeMsg({ id: "m1", session: "b" }) +
+				claudeMsg({ id: "m2", session: "b" }) +
+				claudeMsg({ id: "m3", session: "b" }),
+		);
+		const later = Date.now() / 1000 + 60;
+		utimesSync(b, later, later); // B is born after A and is the newest by mtime
+		scan(root, null, live);
+		await sendUsage(sendCfg, live, hub.fetchImpl);
+		await backfillAll(root, emptyUsageState(), hub);
+		const by = hubBySession(hub);
+		expect(by["claude:a"]?.[4]).toBe(2);
+		expect(by["claude:b"]?.[4]).toBe(1);
+		expect(hub.total()[4]).toBe(3);
+	});
+
+	test("every (per-file, per-scan) cap pair gives each session the rows of one unbounded read", () => {
+		const root = tmp("u5-grid");
+		mkdirSync(join(root, "p", "a", "subagents"), { recursive: true });
+		const files: [string, string][] = [
+			[
+				"a.jsonl",
+				pad(3) +
+					claudeMsg({ id: "g1", session: "a" }) +
+					pad(2) +
+					claudeMsg({ id: "g2", session: "a", ts: isoDaysAgo(3) }) +
+					pad(4) +
+					claudeMsg({ id: "g3", session: "a" }) +
+					pad(1) +
+					claudeMsg({ id: "g4", session: "a", model: "claude-sonnet-5-5" }),
+			],
+			[
+				"a/subagents/agent-1.jsonl",
+				claudeMsg({ id: "s1", session: "a" }) +
+					pad(5) +
+					claudeMsg({ id: "s2", session: "a" }),
+			],
+			[
+				"b.jsonl",
+				claudeMsg({ id: "g2", session: "b", ts: isoDaysAgo(3) }) +
+					claudeMsg({ id: "g4", session: "b", model: "claude-sonnet-5-5" }) +
+					pad(3) +
+					claudeMsg({ id: "b1", session: "b" }) +
+					claudeMsg({ id: "s2", session: "b" }),
+			],
+			[
+				"c.jsonl",
+				pad(2) +
+					claudeMsg({ id: "g1", session: "c" }) +
+					claudeMsg({ id: "b1", session: "c" }) +
+					claudeMsg({ id: "c1", session: "c" }) +
+					pad(6) +
+					claudeMsg({ id: "g3", session: "c" }),
+			],
+		];
+		for (const [name, body] of files)
+			writeFileSync(join(root, "p", name), body);
+		const sessions = ["claude:a", "claude:b", "claude:c"];
+		const sorted = (s: UsageState) =>
+			usageRows(s, sessions).sort((x, y) =>
+				`${x.session_id}|${x.day}|${x.model}` <
+				`${y.session_id}|${y.day}|${y.model}`
+					? -1
+					: 1,
+			);
+		const whole = emptyUsageState();
+		expect(scan(root, null, whole).backfilled).toBe(true);
+		const expected = sorted(whole);
+		expect(expected.reduce((n, r) => n + r.messages, 0)).toBe(8);
+		const longest = Math.max(
+			...files.flatMap(([, body]) => body.split("\n").map((l) => l.length + 1)),
+		);
+		for (const perFileMax of [longest, 700, 1333, 4096])
+			for (const totalMax of [longest, 900, 1501, 2777, 100_000]) {
+				const s = emptyUsageState();
+				let done = false;
+				for (let i = 0; i < 500 && !done; i++)
+					done = scan(root, null, s, { perFileMax, totalMax }).backfilled;
+				expect({ perFileMax, totalMax, done }).toEqual({
+					perFileMax,
+					totalMax,
+					done: true,
+				});
+				expect({ perFileMax, totalMax, rows: sorted(s) }).toEqual({
+					perFileMax,
+					totalMax,
+					rows: expected,
+				});
+			}
+	});
+
+	test("a line longer than the per-scan cap (but not the per-file cap) is skipped, not a stall", () => {
+		const root = tmp("u5-stall");
+		mkdirSync(join(root, "p"), { recursive: true });
+		writeFileSync(
+			join(root, "p", "a.jsonl"),
+			claudeMsg({ id: "x1", session: "a", text: "y".repeat(900) }, 1) +
+				claudeMsg({ id: "x2", session: "a" }, 1),
+		);
+		writeFileSync(
+			join(root, "p", "b.jsonl"),
+			claudeMsg({ id: "x3", session: "b" }, 1),
+		);
+		const s = emptyUsageState();
+		let done = false;
+		for (let i = 0; i < 50 && !done; i++)
+			done = scan(root, null, s, {
+				perFileMax: 2000,
+				totalMax: 600,
+			}).backfilled;
+		expect(done).toBe(true);
+		const msgs = usageRows(s, ["claude:a", "claude:b"]).map(
+			(r) => `${r.session_id}:${r.messages}`,
+		);
+		expect(msgs.sort()).toEqual(["claude:a:1", "claude:b:1"]);
+	});
+});

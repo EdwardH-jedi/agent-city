@@ -12,19 +12,21 @@
 // What leaves this module: per (session, Sydney day, model) cumulative counts, the session's repo id,
 // and Codex's own limit snapshots. Never a line's text, a cwd, a path or a parse error message.
 //
-// Bounded: at most PER_FILE_MAX bytes per file and TOTAL_MAX bytes per scan (newest files first; the
-// rest is read on the next scans), at most MAX_FILES files, a substring filter before JSON.parse.
+// Bounded: at most TOTAL_MAX bytes per scan, read PER_FILE_MAX at a time, at most MAX_FILES files, a
+// substring filter before JSON.parse. Every scan takes its files OLDEST-BORN FIRST and reads each one to
+// its end (or until the scan's budget runs out — then the scan stops there and the next one resumes that
+// file) before the next: lines are met in the same order wherever a cap falls, so a resumed or forked
+// transcript's replayed messages are always owned by the oldest-born file holding them (18 §9.7 P1).
 // Every file in the window is read from offset 0 (no EOF tailing): the hub keeps the larger value per
 // column, so a total restarted from part of a file would hide later growth.
 //
 // Backfill (18 §5.6 U4): the first scans read EVERY file on disk (up to BACKFILL_MAX_FILES, the newest
-// kept), whatever its mtime, under the same per-file / per-scan byte caps, OLDEST FIRST by birth time —
-// the order a live collector met them in, so a resumed transcript's replayed messages stay counted in
-// the original's session as they were live. While it runs nothing is forgotten by day (a session read
-// over several scans must still add up). When a scan ends with no read cut short by a cap it is marked
-// done in the state and never runs again (until USAGE_BACKFILL_VERSION changes; a second backfill can
-// still over-count a replay whose original file has been deleted in between). A file ending in a cut-off
-// line (a crash) waits for the rest without holding the backfill or the 5 s poll. After that only files modified in the last USAGE_WINDOW_MS are read,
+// kept), whatever its mtime, under the same caps and order. While it runs nothing is forgotten by day (a
+// session read over several scans must still add up). When a scan ends with no read cut short by a cap
+// it is marked done in the state and never runs again (until USAGE_BACKFILL_VERSION changes; a second
+// backfill can still over-count a replay whose original file has been deleted in between). A file ending
+// in a cut-off line (a crash) waits for the rest without holding the backfill or the 5 s poll. After that
+// only files modified in the last USAGE_WINDOW_MS are read,
 // lines dated before the KEEP_DAYS cutoff are not counted (a replay of an old message must not count
 // twice, and the hub already holds those days), and an old day's totals leave the state only once the
 // hub accepted them (the session is no longer dirty).
@@ -184,7 +186,7 @@ interface Listed {
 	birth: number;
 }
 
-/** *.jsonl under `root` (depth ≤ 4) modified at or after `since`, newest first, at most `max`. */
+/** *.jsonl under `root` (depth ≤ 4) modified at or after `since`, newest first (by mtime), at most `max`. */
 export function listUsageFiles(
 	root: string,
 	since: number,
@@ -560,8 +562,8 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		state.limits_dirty = true;
 	};
 
-	// After the backfill: files modified in the window, newest first, at most MAX_FILES. The backfill:
-	// every file (the newest BACKFILL_MAX_FILES when there are more), read oldest-born first.
+	// After the backfill: files modified in the window (the newest MAX_FILES). The backfill: every file
+	// (the newest BACKFILL_MAX_FILES when there are more). Either way read oldest-born first (below).
 	const since = backfilling ? 0 : opts.now - USAGE_WINDOW_MS;
 	const maxFiles = backfilling
 		? (opts.backfillMaxFiles ?? BACKFILL_MAX_FILES)
@@ -576,10 +578,17 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	listed.sort(byNewest);
 	const cut = Math.max(0, listed.length - maxFiles);
 	listed = listed.slice(0, maxFiles);
-	if (backfilling) listed.sort(byBirth);
+	// Oldest-born first, every scan (backfill or not), and each file read to its end before the next:
+	// the order lines are met in is then the same wherever a byte cap falls, so a replayed message is
+	// always owned by the oldest-born file that holds it (18 §9.7 P1).
+	listed.sort(byBirth);
 
 	let bytes = 0;
 	let backlog = false;
+	/** The budget ran out inside a file: no later file is read this scan. */
+	let stopped = false;
+	// The most one read can return: a piece this long without a newline is one over-long line.
+	const unit = Math.min(perFileMax, opts.totalMax ?? TOTAL_MAX);
 	const seen = new Set<string>();
 	for (const { path, tool, mtime } of listed) {
 		seen.add(path);
@@ -601,54 +610,71 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		}
 		file.mtime = mtime;
 		if (size <= file.offset) continue;
-		if (budget <= 0) {
+		if (stopped) {
 			backlog = true;
 			continue;
 		}
-		// backlog = a read cut short by a cap. A file ending in a line without its newline yet (being
-		// written, or cut off by a crash) is not backlog: it waits for the next regular poll.
-		const want = size - file.offset;
-		const n = Math.min(perFileMax, budget, want);
-		if (n < want) backlog = true;
-		let buf: Buffer;
-		try {
-			buf = readRange(path, file.offset, n);
-		} catch {
-			continue;
-		}
-		budget -= buf.length;
-		bytes += buf.length;
 		const pathKey = fnv1a64(path);
-		let pos = 0;
-		if (file.skip) {
-			const nl = buf.indexOf(0x0a);
-			if (nl === -1) {
-				file.offset += buf.length;
-				continue;
-			}
-			pos = nl + 1;
-			file.skip = false;
-		}
 		let added = false;
-		for (;;) {
-			const nl = buf.indexOf(0x0a, pos);
-			if (nl === -1) break; // partial trailing line: wait for the rest
-			if (nl > pos) {
-				const line = buf.subarray(pos, nl).toString("utf8");
-				const got =
-					tool === "claude"
-						? claudeLine(line, file, project, seenIds, pathKey, range)
-						: codexLine(line, file, project, onLimit, range);
-				if (got) added = true;
+		// backlog = a read cut short by the budget. A file ending in a line without its newline yet (being
+		// written, or cut off by a crash) is not backlog: it waits for the next regular poll.
+		while (file.offset < size) {
+			if (budget <= 0) {
+				backlog = true;
+				stopped = true;
+				break;
 			}
-			pos = nl + 1;
+			const want = size - file.offset;
+			const n = Math.min(perFileMax, budget, want);
+			let buf: Buffer;
+			try {
+				buf = readRange(path, file.offset, n);
+			} catch {
+				break;
+			}
+			if (buf.length === 0) break;
+			budget -= buf.length;
+			bytes += buf.length;
+			let pos = 0;
+			if (file.skip) {
+				const nl = buf.indexOf(0x0a);
+				if (nl === -1) {
+					file.offset += buf.length;
+					continue;
+				}
+				pos = nl + 1;
+				file.skip = false;
+			}
+			for (;;) {
+				const nl = buf.indexOf(0x0a, pos);
+				if (nl === -1) break; // partial line: the next piece (or poll) has the rest
+				if (nl > pos) {
+					const line = buf.subarray(pos, nl).toString("utf8");
+					const got =
+						tool === "claude"
+							? claudeLine(line, file, project, seenIds, pathKey, range)
+							: codexLine(line, file, project, onLimit, range);
+					if (got) added = true;
+				}
+				pos = nl + 1;
+			}
+			if (pos === 0 && buf.length === unit) {
+				// one line longer than the largest read: skip it (never parse a fragment)
+				pos = buf.length;
+				file.skip = true;
+			}
+			file.offset += pos;
+			if (pos === 0) {
+				// no whole line in this piece and it was not the largest read: the file ends in a partial
+				// line (not backlog), or the budget ended inside one (backlog, caught at the loop's top)
+				if (buf.length >= want) break;
+				if (budget > 0) {
+					backlog = true;
+					stopped = true;
+					break;
+				}
+			}
 		}
-		if (pos === 0 && buf.length === perFileMax) {
-			// one line longer than a whole read: skip it (never parse a fragment)
-			pos = buf.length;
-			file.skip = true;
-		}
-		file.offset += pos;
 		if (added && file.session) dirty.add(file.session);
 	}
 
