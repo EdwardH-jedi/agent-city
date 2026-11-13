@@ -184,6 +184,44 @@ describe("what reaches the screen", () => {
 	});
 });
 
+describe("break-it round 2", () => {
+	test("two repos with the same name stay two bars, with their owners", () => {
+		const p = usagePanel(
+			summary([
+				row({ project: "a/web", output_tokens: 5_000 }),
+				row({ project: "b/web" }),
+				row({ project: "c/api" }),
+			]),
+			NOW,
+		);
+		expect(p?.projects.map((b) => b.label)).toEqual(["a/web", "b/web", "api"]);
+	});
+
+	test("limits: one per tool and window (the newest), none from the future, at most 16 in a frame", () => {
+		const p = usagePanel(
+			summary(
+				[row()],
+				[
+					limit({ limit_id: "codex", used_percent: 12, window_minutes: 300 }),
+					limit({
+						limit_id: "default",
+						used_percent: 15,
+						window_minutes: 300,
+						observed_at: "2026-11-13T08:40:00.000Z",
+					}),
+					limit({ observed_at: "2026-11-13T20:00:00.000Z", used_percent: 99 }),
+				],
+			),
+			NOW,
+		);
+		expect(p?.limits).toEqual(["Codex 5시간 15%"]);
+		const many = Array.from({ length: 17 }, (_, i) =>
+			limit({ limit_id: `l${i}` }),
+		);
+		expect(parseUsage(summary([row()], many))).toBeNull();
+	});
+});
+
 describe("tokenWord and the demo", () => {
 	test("short forms", () => {
 		expect(

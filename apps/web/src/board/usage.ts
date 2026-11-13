@@ -27,12 +27,20 @@ export const USAGE_TREND_DAYS = 7;
  */
 export const USAGE_TREND_MIN_BODY = 760;
 const LIMIT_FRESH_MS = 6 * 3_600_000;
+/** A limit stamped further ahead of this device's clock than this is not believed. */
+const LIMIT_SKEW_MS = 5 * 60_000;
 const ROWS_MAX = 5_000;
+const LIMITS_MAX = 16;
 
 /** The validated summary, or null for anything malformed (the panel then stays as it was). */
 export function parseUsage(data: unknown): UsageSummary | null {
 	const r = UsageSummary.safeParse(data);
-	if (!r.success || r.data.rows.length > ROWS_MAX) return null;
+	if (
+		!r.success ||
+		r.data.rows.length > ROWS_MAX ||
+		r.data.limits.length > LIMITS_MAX
+	)
+		return null;
 	return r.data;
 }
 
@@ -69,12 +77,16 @@ export interface UsagePanel {
 
 export const NO_PROJECT = "저장소 밖";
 
+/** The repo id that may be shown (repo-id shaped and unchanged by the screen's scrub), else null. */
+function shownProject(project: string | null): string | null {
+	const p = usageProject(project);
+	return p !== null && hideCredentials(p) === p ? p : null;
+}
+
 /** `harbor` from `demo/harbor` (`local/<folder>` → the folder), scrubbed again; else 저장소 밖. */
 export function usageProjectLabel(project: string | null): string {
-	const p = usageProject(project);
-	if (!p) return NO_PROJECT;
-	const name = p.slice(p.indexOf("/") + 1);
-	return hideCredentials(name) === name ? name : NO_PROJECT;
+	const p = shownProject(project);
+	return p === null ? NO_PROJECT : p.slice(p.indexOf("/") + 1);
 }
 
 function windowWord(minutes: number): string {
@@ -109,27 +121,45 @@ export function usagePanel(
 		cacheRead += r.cache_read_tokens;
 		if (r.tool === "claude") claude += n;
 		else codex += n;
-		const label = usageProjectLabel(r.project);
-		byProject.set(label, (byProject.get(label) ?? 0) + n);
+		// grouped by the full repo id: two repos with the same name stay two bars
+		const id = shownProject(r.project) ?? NO_PROJECT;
+		byProject.set(id, (byProject.get(id) ?? 0) + n);
 	}
 	const sorted = [...byProject]
 		.filter(([, n]) => n > 0)
 		.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
 	const top = sorted[0]?.[1] ?? 0;
-	const projects = sorted
-		.slice(0, USAGE_PROJECTS_SHOWN)
-		.map(([label, tokens]) => ({
-			label,
-			tokens,
-			share: top > 0 ? tokens / top : 0,
-		}));
+	const shown = sorted.slice(0, USAGE_PROJECTS_SHOWN);
+	const nameOf = (id: string) =>
+		id === NO_PROJECT ? id : id.slice(id.indexOf("/") + 1);
+	const names = new Map<string, number>();
+	for (const [id] of shown)
+		names.set(nameOf(id), (names.get(nameOf(id)) ?? 0) + 1);
+	const projects = shown.map(([id, tokens]) => ({
+		// the owner only when two shown repos share a name
+		label: (names.get(nameOf(id)) ?? 0) > 1 ? id : nameOf(id),
+		tokens,
+		share: top > 0 ? tokens / top : 0,
+	}));
 	const trend = days.map((day) => ({ day, tokens: perDay.get(day) ?? 0 }));
 	const weekTotal = trend.reduce((n, d) => n + d.tokens, 0);
-	const limits = summary.limits
-		.filter(
-			(l) =>
-				now - Date.parse(l.observed_at) <= LIMIT_FRESH_MS &&
-				(l.resets_at === null || Date.parse(l.resets_at) > now),
+	// one per (tool, window): the newest observation, only while fresh, not from the future, before reset
+	const newest = new Map<string, UsageSummary["limits"][number]>();
+	for (const l of summary.limits) {
+		const age = now - Date.parse(l.observed_at);
+		if (!(age <= LIMIT_FRESH_MS && age >= -LIMIT_SKEW_MS)) continue;
+		if (l.resets_at !== null && Date.parse(l.resets_at) <= now) continue;
+		const key = `${l.tool}|${l.window_minutes}`;
+		const cur = newest.get(key);
+		if (!cur || l.observed_at > cur.observed_at) newest.set(key, l);
+	}
+	const limits = [...newest.values()]
+		.sort((a, b) =>
+			a.tool === b.tool
+				? a.window_minutes - b.window_minutes
+				: a.tool < b.tool
+					? -1
+					: 1,
 		)
 		.map(
 			(l) =>
