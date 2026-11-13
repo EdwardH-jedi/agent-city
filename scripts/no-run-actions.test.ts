@@ -212,7 +212,7 @@ describe("the main screen cannot act on a run", () => {
 		}
 	});
 
-	test("nothing on screen is smaller than 10.5px; the status sentence is the one big line (28px)", () => {
+	test("nothing on screen is smaller than 10.5px; 28px (the sentence, the clock) is the largest", () => {
 		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
 		const board = css.slice(css.indexOf("/* ── board"));
 		expect(board.length).toBeGreaterThan(100);
@@ -221,17 +221,19 @@ describe("the main screen cannot act on a run", () => {
 		].map((m) => Number(m[1]));
 		expect(sizes.length).toBeGreaterThan(5);
 		expect(Math.min(...sizes)).toBeGreaterThanOrEqual(10.5);
-		expect(Math.max(...sizes)).toBe(28); // the status sentence
+		expect(Math.max(...sizes)).toBe(28); // the status sentence and the clock (17 §2)
 	});
 
-	test("decision D10 (15 §1): panel text 10.5–14px × --ui, the sentence 28px unscaled, two weights", () => {
+	test("decision D10 (15 §1): panel text 10.5–14px × --ui, unscaled sizes are 28px only (sentence, clock), two weights", () => {
 		const css = readFileSync(join(ROOT, "apps/web/src/style.css"), "utf8");
 		const board = css.slice(css.indexOf("/* ── board"));
 		const decls = [...board.matchAll(/font-size:\s*([^;]+);/g)].map((m) =>
 			(m[1] as string).trim(),
 		);
 		const fixed = decls.filter((d) => !d.startsWith("calc("));
-		expect(fixed).toEqual(["28px"]);
+		// 17 §2: the clock is a second 28px declaration; any number of them, but 28px is the only fixed size
+		expect(fixed.length).toBeGreaterThanOrEqual(2);
+		expect([...new Set(fixed)]).toEqual(["28px"]);
 		for (const d of decls.filter((x) => x.startsWith("calc("))) {
 			const m = /^calc\(([\d.]+)px \* var\(--ui\)\)$/.exec(d);
 			const px = m ? Number(m[1]) : Number.NaN;

@@ -23,6 +23,7 @@ export default function DemoBoard() {
 			demo={true}
 			sessions={data.sessions}
 			events={data.events}
+			runs={data.runs}
 		/>
 	);
 }

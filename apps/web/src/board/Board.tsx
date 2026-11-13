@@ -3,10 +3,12 @@
 // `?demo=1` draws the same screen from made-up data instead (DemoBoard.tsx, a lazy chunk): no request,
 // no sound, and the screen says "예시 데이터".
 
-import type { Session } from "@agent-city/schema";
+import type { RunView, Session } from "@agent-city/schema";
 import {
 	type CSSProperties,
+	memo,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -32,6 +34,17 @@ import {
 	type SoundMemory,
 } from "./sound.ts";
 import type { MemEvent } from "./tail-memory.ts";
+import {
+	clockText,
+	dateText,
+	hiddenAt,
+	minuteKey,
+	msToNextMinute,
+	sessionsToday,
+	TOP_FOLD,
+	tokensText,
+	tokensToday,
+} from "./today.ts";
 import { currentRuns } from "./types.ts";
 import { emptyWatch, stepWatch } from "./visits.ts";
 
@@ -158,9 +171,49 @@ export function Board({ hub }: { hub: HubData }) {
 			demo={false}
 			sessions={hub.sessions}
 			events={hub.events}
+			runs={hub.runs}
 		/>
 	);
 }
+
+/**
+ * This device's local minute: changes only when the minute does (one timer, aligned to :00). Re-armed
+ * when the page shows again (timers do not run while the device sleeps).
+ */
+function useMinute(): number {
+	const [t, setT] = useState(() => Date.now());
+	useEffect(() => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const tick = () => {
+			const n = Date.now();
+			setT((cur) => (minuteKey(cur) === minuteKey(n) ? cur : n));
+			clearTimeout(timer);
+			timer = setTimeout(tick, msToNextMinute(Date.now()) + 20);
+		};
+		tick();
+		document.addEventListener("visibilitychange", tick);
+		return () => {
+			clearTimeout(timer);
+			document.removeEventListener("visibilitychange", tick);
+		};
+	}, []);
+	return t;
+}
+
+/**
+ * The top band's clock (17 §2): `10:47`, the sentence's size but weight 400 and the muted colour, then the
+ * date at panel size. It is this device's fact: it keeps going while reports are cut. Redrawn only when
+ * the minute changes (its own timer; the board's 1 s tick does not reach it).
+ */
+const TopClock = memo(function TopClock({ hideDate }: { hideDate: boolean }) {
+	const t = useMinute();
+	return (
+		<div className="board-clock">
+			<time className="board-time">{clockText(t)}</time>
+			{!hideDate && <span className="board-date">{dateText(t)}</span>}
+		</div>
+	);
+});
 
 /**
  * The right panel's list height (px): the column under the top band less its padding (8 + 8), the panel
@@ -186,6 +239,7 @@ export function BoardView({
 	demo,
 	sessions,
 	events,
+	runs,
 }: {
 	model: VillageModel;
 	now: number;
@@ -195,6 +249,8 @@ export function BoardView({
 	/** The right panel's sessions and their events (what useHub holds; nothing more is fetched). */
 	sessions: readonly Session[];
 	events: readonly MemEvent[];
+	/** The runs useHub holds: only their `tokens_today` is summed for the top band (17 §2). */
+	runs: readonly RunView[];
 }) {
 	// The ring town in the middle column (design doc 12, the default); `?scene=campus`: the 3D campus.
 	const [scene] = useState(() => sceneOf(window.location.search));
@@ -208,12 +264,38 @@ export function BoardView({
 		"--top-h": `${cols.top}px`,
 		"--ui": String(ui),
 	} as CSSProperties;
+	const sessionCount = sessionsToday(sessions, now);
+	const tokens = tokensToday(runs, now);
+	// 17 §2: a band too narrow for one line hides the date, then the tokens, then the sessions. Measured
+	// before paint; starts over when the window or the band's words change.
+	const topRef = useRef<HTMLElement>(null);
+	const [fold, setFold] = useState(0);
+	const tokenWord = tokens ? tokensText(tokens) : null;
+	const sentence = model.status.sentence;
+	const { completed, running } = model.today;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: these are the band's words; a change re-measures from 0
+	useLayoutEffect(() => {
+		setFold(0);
+	}, [sentence, tokenWord, sessionCount, completed, running, demo]);
+	// a wider (or narrower) window: measure again from nothing hidden
+	useEffect(() => {
+		const again = () => setFold(0);
+		window.addEventListener("resize", again);
+		return () => window.removeEventListener("resize", again);
+	}, []);
+	useLayoutEffect(() => {
+		const el = topRef.current;
+		if (!el || fold >= TOP_FOLD.length) return;
+		if (el.scrollWidth > el.clientWidth + 1) setFold(fold + 1);
+	});
+	const hidden = hiddenAt(fold);
 	return (
 		<div
 			className={`board border-${model.status.border}${town ? " scene-town" : ""}`}
 			style={frame}
 		>
 			<header
+				ref={topRef}
 				className="board-top"
 				style={{
 					transform: `translate(${burnInShift(now).x}px, ${burnInShift(now).y}px)`,
@@ -228,9 +310,22 @@ export function BoardView({
 						</li>
 					))}
 				</ul>
-				<div className="board-counts">
+				<TopClock hideDate={hidden.has("date")} />
+				<div
+					className={`board-counts${model.status.dim ? " counts-still" : ""}`}
+				>
 					오늘 완료 <b>{model.today.completed}</b> · 진행{" "}
 					<b>{model.today.running}</b>
+					{!hidden.has("sessions") && (
+						<span className="count-sessions">
+							· 세션 <b>{sessionCount}</b>
+						</span>
+					)}
+					{tokenWord && !hidden.has("tokens") && (
+						<span className="count-tokens">
+							· 토큰 <b>{tokenWord}</b>
+						</span>
+					)}
 				</div>
 				{demo ? (
 					<span className="demo-band">{DEMO_LABEL}</span>

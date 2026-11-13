@@ -87,6 +87,13 @@ re-running anything happens in Agent Office on the Mac; `scripts/no-run-actions.
 `apps/web/src/board/**`, `apps/web/src/campus/**` and `apps/web/src/town/**` (including the ported
 engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or action.
 
+- **Top band (doc 17 §2).** Right of the machine chips: this device's clock (`10:47`, local, 24 h, no seconds;
+  the sentence's 28 px but weight 400 and muted, redrawn only when the minute changes; it keeps going while
+  reports are cut) and the date (`11월 13일 금`), then `오늘 완료 N · 진행 N · 세션 N · 토큰 203k`. `세션` counts
+  the sessions whose last activity is after local midnight. `토큰` is the sum of `tokens_today` over the runs
+  reported today — only the figures Office signs in its run reports, **not the whole usage** of any account;
+  `+` when one of those runs says its usage is unknown, and no cell when none has a figure. A band too narrow
+  for one line hides the date, then the tokens, then the sessions. While reports are cut the summary dims.
 - **Current run.** Of several runs with the same `(project, workflow_id)` only the one with the latest
   `last_progress_at` counts (ties: higher `last_event_sequence`, then higher run id). The others show only
   in `#/detail`.
@@ -101,7 +108,8 @@ engine's listeners) for it, and `apps/web/src/Detail.tsx` for any request or act
 - **Screen rules (design doc 07 §13, panels per decision D10 / doc 15).** One fact, one place: a 결재 sentence
   only on its HQ 대기 row, the newest report only in the one bubble at the HQ door. The panels are the original
   town's panels (`apps/web/src/style.css`; titles `MAP` `HQ` `PAUSED` `LOG` `SESSIONS` in the town's pixel
-  font while the town runs). Text: the status sentence is the one big line (28 px); everything else is the
+  font while the town runs). Text: the status sentence is the one big line (28 px; the clock shares the size
+at weight 400); everything else is the
   panel scale, 10.5–14 px, times `?ui=1.15` or `?ui=1.3` (any other value is 1; for a monitor read from
   further away). Columns (`apps/web/src/board/layout.ts`): the stage picks its integer scale first (384×288 ·
   s under a 56 px top band), then the two panels share the rest, each 240–420 px — 384 / 1152 / 384 at
