@@ -267,14 +267,15 @@ function projectResolver(deps: ScanDeps): Resolve {
  * Add to a file's (day, model) totals. Past MODELS_PER_DAY_MAX models on one day a new model counts as
  * `unknown` (a transcript naming endless models can't grow the state), so a file holds at most
  * MODELS_PER_DAY_MAX + 1 keys a day; `keyCap` (FILE_KEYS_MAX + the days a line may be dated) is the hard
- * stop, a bound that never drops a real day.
+ * stop on the keys dated from `minDay` on, a bound that never drops a real day. Older keys (a backfill's
+ * days still waiting for the hub's ack) don't count against it: they only ever shrink.
  */
 function add(
 	file: UsageFile,
 	day: string,
 	model: string,
 	t: Totals,
-	keyCap: number,
+	{ minDay, keyCap }: DayRange,
 ): void {
 	let key = `${day}|${model}`;
 	if (file.totals[key] === undefined) {
@@ -282,7 +283,11 @@ function add(
 		const today = `${day}|`;
 		if (keys.filter((k) => k.startsWith(today)).length >= MODELS_PER_DAY_MAX)
 			key = `${day}|unknown`;
-		if (file.totals[key] === undefined && keys.length >= keyCap) return;
+		if (
+			file.totals[key] === undefined &&
+			keys.filter((k) => k.slice(0, 10) >= minDay).length >= keyCap
+		)
+			return;
 	}
 	const cur = file.totals[key] ?? [0, 0, 0, 0, 0];
 	for (let i = 0; i < 5; i++) cur[i] = (cur[i] as number) + (t[i] as number);
@@ -304,7 +309,7 @@ function claudeLine(
 	project: Resolve,
 	seen: Record<string, string>,
 	pathKey: string,
-	{ minDay, keyCap }: DayRange,
+	range: DayRange,
 ): boolean {
 	if (!line.includes('"usage"') || !line.includes('"assistant"')) return false;
 	let r: Obj;
@@ -325,7 +330,7 @@ function claudeLine(
 	const day = usageDay(str(r.timestamp) ?? "");
 	if (!day) return false;
 	if (id !== null) file.last_id = id;
-	if (day < minDay) return false; // after the backfill: an old day the hub already holds (or a replay)
+	if (day < range.minDay) return false; // after the backfill: an old day the hub already holds (or a replay)
 	if (id !== null) {
 		const first = seen[id];
 		if (first !== undefined && !first.startsWith(`${pathKey}|`)) return false; // replayed
@@ -346,7 +351,7 @@ function claudeLine(
 		1,
 	];
 	if (own[0] + own[1] + own[2] + own[3] > 0) {
-		add(file, day, modelOf(m.model), own, keyCap);
+		add(file, day, modelOf(m.model), own, range);
 		added = true;
 	}
 	if (Array.isArray(u.iterations)) {
@@ -363,7 +368,7 @@ function claudeLine(
 					tokenCount(it.cache_creation_input_tokens),
 					1,
 				],
-				keyCap,
+				range,
 			);
 			added = true;
 		}
@@ -421,7 +426,7 @@ function codexLine(
 	file: UsageFile,
 	project: Resolve,
 	onLimit: (l: UsageLimit) => void,
-	{ minDay, keyCap }: DayRange,
+	range: DayRange,
 ): boolean {
 	if (!CODEX_KEYS.some((k) => line.includes(k))) return false;
 	let r: Obj;
@@ -455,7 +460,7 @@ function codexLine(
 	if (r.type === "token_usage_record") {
 		if (!file.session || !isObj(p.usage)) return false;
 		const day = usageDay(ts ?? "");
-		if (!day || day < minDay) return false;
+		if (!day || day < range.minDay) return false;
 		const u = p.usage;
 		const input = tokenCount(u.input_tokens);
 		const cached = Math.min(tokenCount(u.cached_input_tokens), input);
@@ -470,7 +475,7 @@ function codexLine(
 				tokenCount(u.cache_write_input_tokens),
 				1,
 			],
-			keyCap,
+			range,
 		);
 		return true;
 	}

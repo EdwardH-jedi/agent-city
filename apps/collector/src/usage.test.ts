@@ -1244,3 +1244,27 @@ describe("U4 review fixes (break-it)", () => {
 		).toEqual(["claude:c2", "claude:c3", "claude:c4"]);
 	});
 });
+
+describe("U4 review fixes (break-it round 2)", () => {
+	for (const hubUp of [true, false])
+		test(`a busy file with ~200 days of history keeps counting new days after the backfill (hub ${hubUp ? "up" : "down"})`, async () => {
+			const root = tmp("bf-cap2");
+			mkdirSync(join(root, "p"), { recursive: true });
+			const f = join(root, "p", "busy.jsonl");
+			let body = "";
+			for (let d = 200; d >= 1; d--)
+				body += claudeMsg({ id: `h${d}`, session: "busy", ts: isoDaysAgo(d) });
+			writeFileSync(f, body);
+			const state = emptyUsageState();
+			expect(scan(root, null, state).backfilled).toBe(true);
+			const down = (async () =>
+				new Response("", { status: 503 })) as unknown as typeof fetch;
+			await sendUsage(sendCfg, state, hubUp ? maxHub().fetchImpl : down);
+			appendFileSync(f, claudeMsg({ id: "today", session: "busy" }));
+			scan(root, null, state);
+			const today = usageRows(state, ["claude:busy"]).filter(
+				(r) => r.day === "2026-11-13",
+			);
+			expect(today.map((r) => r.messages)).toEqual([1]);
+		});
+});
