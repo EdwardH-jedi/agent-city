@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	dayMinus,
+	USAGE_MAX_BODY_BYTES,
 	USAGE_MAX_ROWS,
 	type UsageRow,
 	type UsageSummary,
@@ -188,6 +189,15 @@ describe("POST /ingest/usage — auth, shape, size", () => {
 		const big = report([row()], [], { pad: "x".repeat(300 * 1024) });
 		expect((await post(ctx, big)).status).toBe(413);
 		expect(usageCount(ctx)).toBe(0);
+	});
+
+	test(`the size cap is exact: a body of ${USAGE_MAX_BODY_BYTES} bytes is read, one more → 413 (collectors cut chunks to it)`, async () => {
+		const json = JSON.stringify(report([row()]));
+		const exact =
+			json + " ".repeat(USAGE_MAX_BODY_BYTES - Buffer.byteLength(json));
+		expect(Buffer.byteLength(exact)).toBe(USAGE_MAX_BODY_BYTES);
+		expect((await post(ctx, exact)).status).toBe(200);
+		expect((await post(ctx, `${exact} `)).status).toBe(413);
 	});
 });
 

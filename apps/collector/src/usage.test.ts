@@ -14,7 +14,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UsageReport } from "@agent-city/schema";
-import { USAGE_MAX_ROWS, usageDay } from "@agent-city/schema/core";
+import {
+	USAGE_MAX_BODY_BYTES,
+	USAGE_MAX_ROWS,
+	usageDay,
+} from "@agent-city/schema/core";
 import type { CollectorConfig } from "./config.ts";
 import {
 	claudeSessionFromPath,
@@ -694,7 +698,7 @@ describe("review fixes (break-it round 1)", () => {
 		]);
 	});
 
-	test("a 400 drops that chunk instead of blocking every later one", async () => {
+	test("rows the hub always refuses (400) are split down and dropped one by one instead of blocking every later chunk", async () => {
 		const s = emptyUsageState();
 		for (let i = 0; i < 2; i++)
 			s.files[`/f${i}`] = {
@@ -1721,5 +1725,147 @@ describe("U5 · P2-1: the key cap pauses before a line instead of dropping it", 
 			log: () => {},
 		});
 		expect(await poll()).toBe(60_000);
+	});
+});
+
+/**
+ * A hub with the route's own gates in front of the MAX store: a body over `maxBytes` (UTF-8) → 413, a
+ * body the schema refuses (or `refuse` flags) → 400. Records every request's size and status.
+ */
+function strictHub(
+	maxBytes = USAGE_MAX_BODY_BYTES,
+	refuse: (body: {
+		rows: { model: string }[];
+		limits: unknown[];
+	}) => boolean = () => false,
+) {
+	const inner = maxHub();
+	const requests: { bytes: number; rows: number; status: number }[] = [];
+	const fetchImpl = (async (u: string, init: RequestInit) => {
+		const raw = String(init.body);
+		const bytes = Buffer.byteLength(raw);
+		const parsed = UsageReport.safeParse(JSON.parse(raw));
+		const rows = parsed.success ? parsed.data.rows.length : -1;
+		let status = 200;
+		if (bytes > maxBytes) status = 413;
+		else if (!parsed.success || refuse(parsed.data)) status = 400;
+		requests.push({ bytes, rows, status });
+		if (status !== 200) return new Response("{}", { status });
+		return inner.fetchImpl(u, init);
+	}) as unknown as typeof fetch;
+	return { ...inner, fetchImpl, requests };
+}
+
+/** One session whose totals become `n` rows with the longest fields the schema allows. */
+function wideState(n: number, sessionChar = "a"): UsageState {
+	const s = emptyUsageState();
+	const totals: Record<string, [number, number, number, number, number]> = {};
+	for (let i = 0; i < n; i++) {
+		const day = new Date(Date.parse("2025-01-01T01:00:00Z") + i * DAY_S * 1000)
+			.toISOString()
+			.slice(0, 10);
+		totals[`${day}|${"m".repeat(64)}`] = [1, 1, 1, 1, 1];
+	}
+	s.files.fixture = {
+		tool: "claude",
+		ino: 1,
+		offset: 0,
+		session: `claude:${sessionChar.repeat(128)}`,
+		project: `local/${"p".repeat(150)}`,
+		model: null,
+		last_id: null,
+		totals,
+		mtime: NOW,
+	};
+	markAll(s);
+	return s;
+}
+
+describe("U5 · P2-2: chunks are cut by bytes; a refused chunk is split, never dropped whole", () => {
+	test("Codex byteChunk: 500 valid wide rows (> 256 KiB as one body) all reach the hub", async () => {
+		const s = wideState(500);
+		const hub = strictHub();
+		const out = await sendUsage(sendCfg, s, hub.fetchImpl);
+		expect(out).toMatchObject({ failed: null, rows: 500 });
+		expect(s.dirty).toEqual([]);
+		expect(hub.rows.size).toBe(500);
+		for (const r of hub.requests) {
+			expect(r.status).toBe(200);
+			expect(r.bytes).toBeLessThanOrEqual(USAGE_MAX_BODY_BYTES);
+		}
+	});
+
+	test("chunks fill up to the byte cap with the limits on board, never past it", async () => {
+		const s = wideState(1200, "b");
+		for (let i = 0; i < 16; i++)
+			s.limits[`codex|l${i}|${i + 1}`] = {
+				tool: "codex",
+				limit_id: `l${i}`.padEnd(64, "x"),
+				window_minutes: i + 1,
+				used_percent: 50,
+				resets_at: "2026-11-18T06:53:39.000Z",
+				plan_type: "p".repeat(64),
+				observed_at: new Date(NOW - i * 1000).toISOString(),
+			};
+		s.limits_dirty = true;
+		const hub = strictHub();
+		const out = await sendUsage(sendCfg, s, hub.fetchImpl);
+		expect(out).toMatchObject({ failed: null, rows: 1200 });
+		expect(hub.requests.every((r) => r.status === 200)).toBe(true);
+		const biggest = Math.max(...hub.requests.map((r) => r.bytes));
+		expect(biggest).toBeLessThanOrEqual(USAGE_MAX_BODY_BYTES);
+		expect(biggest).toBeGreaterThan(USAGE_MAX_BODY_BYTES - 1000); // filled, not halved
+		expect(s.limits_dirty).toBe(false);
+	});
+
+	test("a 413 (a hub with a smaller cap) splits the chunk until every row is taken", async () => {
+		const s = wideState(300);
+		const hub = strictHub(20_000);
+		const out = await sendUsage(sendCfg, s, hub.fetchImpl);
+		expect(out.failed).toBeNull();
+		expect(hub.rows.size).toBe(300);
+		expect(s.dirty).toEqual([]);
+	});
+
+	test("a 400 splits the chunk: only the one refused row is dropped, every other row arrives", async () => {
+		const s = wideState(40);
+		const bad = Object.keys(s.files.fixture?.totals ?? {})[17] as string;
+		const f = s.files.fixture;
+		if (!f) throw new Error("fixture");
+		f.totals[`${bad.slice(0, 10)}|bad`] = [1, 1, 1, 1, 1];
+		const hub = strictHub(USAGE_MAX_BODY_BYTES, (b) =>
+			b.rows.some((r) => r.model === "bad"),
+		);
+		const out = await sendUsage(sendCfg, s, hub.fetchImpl);
+		expect(out.failed).toBe(400);
+		expect(hub.rows.size).toBe(40);
+		expect([...hub.rows.keys()].some((k) => k.endsWith("|bad"))).toBe(false);
+		expect(s.dirty).toEqual([]);
+	});
+
+	test("when the limits are what the hub refuses, the rows still go (the limits are dropped)", async () => {
+		const s = wideState(3);
+		s.limits["codex|x|1"] = {
+			tool: "codex",
+			limit_id: "x",
+			window_minutes: 1,
+			used_percent: 1,
+			resets_at: null,
+			plan_type: null,
+			observed_at: new Date(NOW).toISOString(),
+		};
+		s.limits_dirty = true;
+		const hub = strictHub(USAGE_MAX_BODY_BYTES, (b) => b.limits.length > 0);
+		await sendUsage(sendCfg, s, hub.fetchImpl);
+		expect(hub.rows.size).toBe(3);
+		expect(s.limits_dirty).toBe(false);
+		expect(s.dirty).toEqual([]);
+	});
+
+	test("a hub that is down keeps everything marked (no split, no drop)", async () => {
+		const s = wideState(500);
+		const out = await sendUsage(sendCfg, s, hubDown);
+		expect(out.failed).toBe(503);
+		expect(s.dirty).toHaveLength(1);
 	});
 });

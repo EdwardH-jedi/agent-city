@@ -477,8 +477,10 @@ resumed transcript that replays earlier messages counts them once — in the old
 Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
 a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
 spaces allowed, nothing secret-shaped), else it is null. A limit stamped more than a day ahead is dropped.
-If the hub answers 400/413 the collector drops that chunk (up to 500 rows) rather than retrying it forever;
-those sessions go again when they change or the collector restarts.
+Chunks are cut by row count (≤ 500) **and** by the body's UTF-8 bytes, envelope and limits included (≤ 256 KiB).
+If the hub still answers 400/413 the chunk is split in half and sent again, down to one row; only a single row
+it still refuses is dropped (limits riding along are tried apart first) rather than retried forever; that
+session goes again when it changes or the collector restarts.
 
 `POST /ingest/usage` uses the `INGEST_TOKEN` bearer, takes a strict body of at most 256 KiB
 (`schema`, `machine_id`, `rows` ≤ 500, `limits` ≤ 16; any other key → 400) and answers

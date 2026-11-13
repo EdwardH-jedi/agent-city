@@ -4,7 +4,8 @@
 // - every USAGE_POLL_MS (USAGE_BACKLOG_MS while a first read is still catching up) it scans the
 //   Claude transcripts and Codex rollouts (usage-scan.ts, bounded) and saves the offsets/totals to
 //   ~/.agentcity/usage-offsets.json
-// - then it POSTs the cumulative rows of every session that changed to /ingest/usage. A failed send
+// - then it POSTs the cumulative rows of every session that changed to /ingest/usage, in chunks that fit
+//   the hub's row and byte caps (a refused chunk is split; only a single refused row is dropped). A failed send
 //   is not spooled: the rows stay marked and are sent again next time (they are totals, so nothing
 //   is lost and a repeat changes nothing at the hub)
 // - on start every known session is marked, so a restart re-sends what the hub may have missed
@@ -12,6 +13,7 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	USAGE_MAX_BODY_BYTES,
 	USAGE_MAX_LIMITS,
 	USAGE_MAX_ROWS,
 	type UsageLimit,
@@ -136,23 +138,43 @@ interface Chunk {
 	rows: UsageRow[];
 }
 
-/** Sessions packed whole into chunks of ≤ USAGE_MAX_ROWS rows (a giant session is split). */
+/**
+ * Sessions packed whole into chunks of ≤ USAGE_MAX_ROWS rows and ≤ `rowBytes` bytes of rows (the JSON
+ * array's UTF-8 bytes; the caller leaves room for the envelope). A session too big for one chunk is split.
+ */
 export function chunkRows(
 	state: UsageState,
 	sessions: readonly string[],
+	rowBytes = USAGE_MAX_BODY_BYTES - 4096,
 ): Chunk[] {
 	const out: Chunk[] = [];
 	let cur: Chunk = { sessions: [], rows: [] };
+	let bytes = 0;
+	const next = () => {
+		out.push(cur);
+		cur = { sessions: [], rows: [] };
+		bytes = 0;
+	};
 	for (const s of [...sessions].sort()) {
 		const rows = usageRows(state, [s]);
-		for (let i = 0; i < rows.length; i += USAGE_MAX_ROWS) {
-			const part = rows.slice(i, i + USAGE_MAX_ROWS);
-			if (cur.rows.length + part.length > USAGE_MAX_ROWS) {
-				out.push(cur);
-				cur = { sessions: [], rows: [] };
-			}
-			cur.rows.push(...part);
-		}
+		// each row costs its JSON plus a comma
+		const sizes = rows.map((r) => Buffer.byteLength(JSON.stringify(r)) + 1);
+		const all = sizes.reduce((n, b) => n + b, 0);
+		if (
+			cur.rows.length > 0 &&
+			(cur.rows.length + rows.length > USAGE_MAX_ROWS || bytes + all > rowBytes)
+		)
+			next();
+		rows.forEach((r, i) => {
+			const b = sizes[i] as number;
+			if (
+				cur.rows.length > 0 &&
+				(cur.rows.length >= USAGE_MAX_ROWS || bytes + b > rowBytes)
+			)
+				next();
+			cur.rows.push(r);
+			bytes += b;
+		});
 		cur.sessions.push(s); // cleared only once the chunk holding its last rows is accepted
 	}
 	if (cur.rows.length > 0 || cur.sessions.length > 0) out.push(cur);
@@ -167,8 +189,10 @@ export interface SendOutcome {
 }
 
 /**
- * POST the dirty sessions' rows (and the limits when they changed). Clears what the hub accepted.
- * Never throws.
+ * POST the dirty sessions' rows (and the limits when they changed), in chunks cut by row count and by
+ * the body's UTF-8 bytes (envelope and limits included) to fit USAGE_MAX_BODY_BYTES. A chunk the hub
+ * refuses (400/413) is split in half and sent again; only a single row the hub still refuses is dropped
+ * (limits riding along are tried apart first). Clears what the hub accepted. Never throws.
  */
 export async function sendUsage(
 	cfg: Pick<CollectorConfig, "hubUrl" | "ingestToken" | "machine">,
@@ -177,22 +201,20 @@ export async function sendUsage(
 ): Promise<SendOutcome> {
 	const result: SendOutcome = { posted: 0, rows: 0, failed: null };
 	if (!MACHINES.has(cfg.machine)) return { ...result, failed: -1 };
-	const chunks = chunkRows(state, state.dirty);
 	let limits: UsageLimit[] = state.limits_dirty
 		? Object.values(state.limits)
 				.sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))
 				.slice(0, USAGE_MAX_LIMITS)
 		: [];
+	const body = (rows: UsageRow[], lims: UsageLimit[]) =>
+		JSON.stringify({ schema: 1, machine_id: cfg.machine, rows, limits: lims });
+	// every chunk leaves room for the limits, which ride on the first one sent
+	const envelope = Buffer.byteLength(body([], limits));
+	const chunks = chunkRows(state, state.dirty, USAGE_MAX_BODY_BYTES - envelope);
 	if (chunks.length === 0 && limits.length > 0)
 		chunks.push({ sessions: [], rows: [] });
-	for (const chunk of chunks) {
-		if (chunk.rows.length === 0 && limits.length === 0) {
-			// sessions with nothing left to say (all their days aged out)
-			const done = new Set(chunk.sessions);
-			state.dirty = state.dirty.filter((s) => !done.has(s));
-			continue;
-		}
-		let status = 0;
+
+	const post = async (rows: UsageRow[], lims: UsageLimit[]) => {
 		try {
 			const res = await fetchImpl(`${cfg.hubUrl}/ingest/usage`, {
 				method: "POST",
@@ -200,43 +222,72 @@ export async function sendUsage(
 					"content-type": "application/json",
 					authorization: `Bearer ${cfg.ingestToken ?? ""}`,
 				},
-				body: JSON.stringify({
-					schema: 1,
-					machine_id: cfg.machine,
-					rows: chunk.rows,
-					limits,
-				}),
+				body: body(rows, lims),
 				signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
 			});
-			status = res.status;
 			await res.body?.cancel().catch(() => {});
+			return res.status;
 		} catch {
-			status = 0;
+			return 0;
 		}
-		if (status === 400 || status === 413) {
-			// the hub will never take this chunk as it is: drop it (it goes again only when it changes)
-			// instead of blocking every later chunk forever
+	};
+	const ok = (status: number) => status >= 200 && status < 300;
+	const refused = (status: number) => status === 400 || status === 413;
+	const dropLimits = () => {
+		limits = [];
+		state.limits_dirty = false;
+	};
+	/** True when every row was taken (or, alone and still refused, dropped); false = try again later. */
+	const deliver = async (rows: UsageRow[]): Promise<boolean> => {
+		const lims = limits;
+		const status = await post(rows, lims);
+		if (ok(status)) {
+			result.posted++;
+			result.rows += rows.length;
+			if (lims.length > 0) dropLimits();
+			return true;
+		}
+		if (!refused(status)) {
 			result.failed = status;
-			const done = new Set(chunk.sessions);
-			state.dirty = state.dirty.filter((s) => !done.has(s));
-			if (limits.length > 0) {
-				state.limits_dirty = false;
-				limits = [];
+			return false;
+		}
+		if (rows.length > 1) {
+			const half = Math.ceil(rows.length / 2);
+			return (
+				(await deliver(rows.slice(0, half))) &&
+				(await deliver(rows.slice(half)))
+			);
+		}
+		if (lims.length > 0) {
+			// the limits ride along: the rows alone, then the limits alone
+			limits = [];
+			if (rows.length > 0 && !(await deliver(rows))) {
+				limits = lims;
+				return false;
 			}
-			continue;
+			const alone = await post([], lims);
+			if (ok(alone)) result.posted++;
+			else if (!refused(alone)) {
+				limits = lims;
+				result.failed = alone;
+				return false;
+			} else result.failed ??= alone;
+			dropLimits();
+			return true;
 		}
-		if (status < 200 || status >= 300) {
-			result.failed = status;
-			return result; // the rest stays marked; try again next poll
+		// one row the hub will never take as it is: drop it (it goes again only when it changes) instead
+		// of blocking every later chunk forever
+		result.failed ??= status;
+		return true;
+	};
+
+	for (const chunk of chunks) {
+		if (chunk.rows.length > 0 || limits.length > 0) {
+			if (!(await deliver(chunk.rows))) return result; // the rest stays marked; next poll
 		}
-		result.posted++;
-		result.rows += chunk.rows.length;
+		// sessions with nothing left to say (all their days aged out) are cleared too
 		const done = new Set(chunk.sessions);
 		state.dirty = state.dirty.filter((s) => !done.has(s));
-		if (limits.length > 0) {
-			state.limits_dirty = false;
-			limits = [];
-		}
 	}
 	return result;
 }
