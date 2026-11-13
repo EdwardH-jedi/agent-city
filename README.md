@@ -455,7 +455,9 @@ its limits and starts it). Afterwards only files modified in the last 7 days are
 old day leaves the state only once the hub accepted it. A second backfill (a lost offsets file, or a new
 `USAGE_BACKFILL_VERSION`) can over-count a replay whose original file was deleted in between (the hub keeps
 both sessions' rows); one after a collector outage of more than 7 days does not fill that gap. Codex rollouts written before
-`token_usage_record` existed (only `token_count` events) count nothing. It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
+`token_usage_record` existed (2026-03 ~ 08: only `event_msg/token_count`) count each event's `last_token_usage`
+once, when its running `total_token_usage` differs from the file's previous one (a repeated event counts
+nothing); a rollout that has `token_usage_record` lines counts those only. It reads Claude Code transcripts (`~/.claude/projects`, subagent files included) and
 Codex rollouts by per-file offset, at most 16 MiB per scan (read 4 MiB at a time), **oldest-born file first,
 each read to its end before the next** (when the 16 MiB run out inside a file the scan stops there and the
 next one resumes it): lines are met in the same order wherever a cap falls, so a resumed or forked

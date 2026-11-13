@@ -8,6 +8,12 @@
 //                adjacent lines with the same message.id and the same usage → counted once.
 //   Codex        <sessions>/YYYY/MM/DD/rollout-*.jsonl: session_meta (session, cwd), turn_context
 //                (model), token_usage_record (one response's usage), event_msg/token_count rate_limits.
+//                Rollouts written before token_usage_record existed (2026-03 ~ 08) state usage only in
+//                event_msg/token_count: info.total_token_usage (the thread's running total, repeated
+//                verbatim at times) and info.last_token_usage (that response's usage, the same fields as a
+//                token_usage_record). Such an event counts last_token_usage once, when the running total
+//                differs from the file's previous one (kept in the state). A file holding any
+//                token_usage_record never counts its token_count events (they repeat the records).
 //
 // What leaves this module: per (session, Sydney day, model) cumulative counts, the session's repo id,
 // and Codex's own limit snapshots. Never a line's text, a cwd, a path or a parse error message.
@@ -99,6 +105,10 @@ export interface UsageFile {
 	model: string | null;
 	/** Claude: fnv1a64 of the last counted message id (its repeats are adjacent). Never the raw id. */
 	last_id: string | null;
+	/** Codex: the running total_tokens of the file's last token_count event (old format). */
+	ctotal?: number;
+	/** Codex: the file has token_usage_record lines; its token_count events are not counted. */
+	rec?: boolean;
 	/** `${day}|${model}` → totals of this file. */
 	totals: Record<string, Totals>;
 	mtime: number;
@@ -429,7 +439,21 @@ const CODEX_KEYS = [
 	'"turn_context"',
 	'"token_usage_record"',
 	'"rate_limits"',
+	'"token_count"',
 ];
+
+/** A Codex usage object (token_usage_record.usage or token_count's last_token_usage) as totals. */
+function codexTotals(u: Obj): Totals {
+	const input = tokenCount(u.input_tokens);
+	const cached = Math.min(tokenCount(u.cached_input_tokens), input);
+	return [
+		input - cached,
+		tokenCount(u.output_tokens),
+		cached,
+		tokenCount(u.cache_write_input_tokens),
+		1,
+	];
+}
 
 /** Codex `rate_limits` → the snapshots it states (primary / secondary windows). */
 function codexLimits(rl: Obj, observed: string): UsageLimit[] {
@@ -506,34 +530,50 @@ function codexLine(
 	}
 	const ts = str(r.timestamp);
 	if (r.type === "token_usage_record") {
+		file.rec = true;
 		if (!file.session || !isObj(p.usage)) return false;
 		const day = usageDay(ts ?? "");
 		if (!day || day < range.minDay) return false;
-		const u = p.usage;
-		const input = tokenCount(u.input_tokens);
-		const cached = Math.min(tokenCount(u.cached_input_tokens), input);
 		const keys = placeKeys(file, day, [file.model ?? "unknown"], range);
 		if (keys === null) return { full: day };
-		addAt(file, keys[0] as string, [
-			input - cached,
-			tokenCount(u.output_tokens),
-			cached,
-			tokenCount(u.cache_write_input_tokens),
-			1,
-		]);
+		addAt(file, keys[0] as string, codexTotals(p.usage));
 		return true;
 	}
+	if (r.type !== "event_msg" || p.type !== "token_count") return false;
+	let added = false;
+	const info = isObj(p.info) ? p.info : null;
+	const total =
+		info && isObj(info.total_token_usage)
+			? info.total_token_usage.total_tokens
+			: null;
 	if (
-		r.type === "event_msg" &&
-		p.type === "token_count" &&
-		isObj(p.rate_limits)
+		!file.rec &&
+		file.session &&
+		info &&
+		isObj(info.last_token_usage) &&
+		typeof total === "number" &&
+		Number.isFinite(total) &&
+		total >= 0 &&
+		total !== file.ctotal
 	) {
-		const ms = ts ? Date.parse(ts) : Number.NaN;
-		if (!Number.isFinite(ms)) return false;
-		for (const l of codexLimits(p.rate_limits, new Date(ms).toISOString()))
-			onLimit(l);
+		// old format: a new running total = one more response (a repeat of the same total is not)
+		const t = codexTotals(info.last_token_usage);
+		const day = usageDay(ts ?? "");
+		if (day && day >= range.minDay && t[0] + t[1] + t[2] + t[3] > 0) {
+			const keys = placeKeys(file, day, [file.model ?? "unknown"], range);
+			if (keys === null) return { full: day };
+			addAt(file, keys[0] as string, t);
+			added = true;
+		}
+		file.ctotal = total;
 	}
-	return false;
+	if (isObj(p.rate_limits)) {
+		const ms = ts ? Date.parse(ts) : Number.NaN;
+		if (Number.isFinite(ms))
+			for (const l of codexLimits(p.rate_limits, new Date(ms).toISOString()))
+				onLimit(l);
+	}
+	return added;
 }
 
 /**

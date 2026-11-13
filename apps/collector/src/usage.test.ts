@@ -1986,3 +1986,129 @@ describe("U5 · P2-3: the state file holds no source path", () => {
 		expect(usageRows(s, ["claude:m"])[0]?.project).toBe("acme/widget");
 	});
 });
+
+/** An old-format (2026-03 ~ 08) Codex token_count event: cumulative total + this response's usage. */
+const codexCount = (
+	ts: string,
+	total: number,
+	last: { input: number; cached: number; output: number },
+) =>
+	jl({
+		timestamp: ts,
+		type: "event_msg",
+		payload: {
+			type: "token_count",
+			info: {
+				total_token_usage: {
+					input_tokens: 0,
+					cached_input_tokens: 0,
+					cache_write_input_tokens: 0,
+					output_tokens: 0,
+					reasoning_output_tokens: 0,
+					total_tokens: total,
+				},
+				last_token_usage: {
+					input_tokens: last.input,
+					cached_input_tokens: last.cached,
+					cache_write_input_tokens: 0,
+					output_tokens: last.output,
+					reasoning_output_tokens: 0,
+					total_tokens: last.input + last.output,
+				},
+				model_context_window: 258400,
+			},
+			rate_limits: null,
+		},
+	});
+
+describe("U5 · Codex rollouts of the old format (token_count only)", () => {
+	const T = "2026-07-10T03:00:0";
+	const oldRollout = () =>
+		codexHead("rollout-old") +
+		codexCount(`${T}1Z`, 150, { input: 100, cached: 40, output: 50 }) +
+		codexCount(`${T}2Z`, 150, { input: 100, cached: 40, output: 50 }) + // repeated: same total
+		codexCount(`${T}3Z`, 400, { input: 200, cached: 0, output: 50 }) +
+		codexCount(`${T}4Z`, 400, { input: 200, cached: 0, output: 50 }) +
+		codexCount(`${T}5Z`, 70, { input: 60, cached: 10, output: 10 }) + // a restart: total drops
+		codexCount(`${T}6Z`, 50, { input: 0, cached: 0, output: 0 }); // a drop with no usage
+	const expected = [100 - 40 + 200 + 50, 50 + 50 + 10, 40 + 10, 0, 3];
+
+	test("each change of the cumulative total counts that response's usage once (repeats and empty drops count nothing)", () => {
+		const root = tmp("u5-codex-old");
+		mkdirSync(join(root, "2026", "07", "10"), { recursive: true });
+		writeFileSync(
+			join(root, "2026", "07", "10", "rollout-old.jsonl"),
+			oldRollout(),
+		);
+		const state = emptyUsageState();
+		scan(null, root, state);
+		const rows = usageRows(state, ["codex:rollout-old"]);
+		expect(rows.map((r) => [r.day, r.model])).toEqual([
+			["2026-07-10", "gpt-6-astra"],
+		]);
+		const r = rows[0];
+		expect([
+			r?.input_tokens,
+			r?.output_tokens,
+			r?.cache_read_tokens,
+			r?.cache_write_tokens,
+			r?.messages,
+		]).toEqual(expected);
+	});
+
+	test("the same totals under any read caps and across a reload (the last total is kept in the state)", () => {
+		const root = tmp("u5-codex-old-caps");
+		mkdirSync(join(root, "2026", "07", "10"), { recursive: true });
+		writeFileSync(
+			join(root, "2026", "07", "10", "rollout-old.jsonl"),
+			oldRollout(),
+		);
+		const home = tmp("u5-codex-old-home");
+		const save = join(home, "s.json");
+		let state = emptyUsageState();
+		for (let i = 0; i < 100; i++) {
+			const r = scan(null, root, state, { perFileMax: 600, totalMax: 600 });
+			saveUsageState(save, state);
+			state = loadUsageState(save);
+			if (r.backfilled) break;
+		}
+		const r = usageRows(state, ["codex:rollout-old"])[0];
+		expect([
+			r?.input_tokens,
+			r?.output_tokens,
+			r?.cache_read_tokens,
+			r?.cache_write_tokens,
+			r?.messages,
+		]).toEqual(expected);
+	});
+
+	test("a rollout with token_usage_record lines counts those only (its token_count events are not counted again)", () => {
+		const root = tmp("u5-codex-dual");
+		mkdirSync(join(root, "2026", "11", "13"), { recursive: true });
+		writeFileSync(
+			join(root, "2026", "11", "13", "rollout-new.jsonl"),
+			codexHead("rollout-new") +
+				codexUsage("2026-11-13T07:01:00.000Z", 100, 40, 50) +
+				codexCount("2026-11-13T07:01:01.000Z", 150, {
+					input: 100,
+					cached: 40,
+					output: 50,
+				}) +
+				codexUsage("2026-11-13T07:02:00.000Z", 10, 0, 5) +
+				codexCount("2026-11-13T07:02:01.000Z", 165, {
+					input: 10,
+					cached: 0,
+					output: 5,
+				}),
+		);
+		const state = emptyUsageState();
+		scan(null, root, state);
+		const r = usageRows(state, ["codex:rollout-new"])[0];
+		expect([
+			r?.input_tokens,
+			r?.output_tokens,
+			r?.cache_read_tokens,
+			r?.messages,
+		]).toEqual([70, 55, 40, 2]);
+	});
+});

@@ -55,6 +55,9 @@ function validFile(f: unknown): f is UsageFile {
 		strOrNull(f.project) &&
 		strOrNull(f.model) &&
 		strOrNull(f.last_id) &&
+		(f.ctotal === undefined ||
+			(typeof f.ctotal === "number" && Number.isFinite(f.ctotal))) &&
+		(f.rec === undefined || typeof f.rec === "boolean") &&
 		isRecord(f.totals) &&
 		Object.values(f.totals).every(
 			(t) =>
