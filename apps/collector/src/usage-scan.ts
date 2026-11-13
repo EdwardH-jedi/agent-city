@@ -652,6 +652,14 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	const remember = (id: string, value: string) => {
 		seenIds[id] = value;
 		if (++seenCount <= seenMax) return;
+		if (!backfilling) {
+			// ids dated before the cutoff no longer matter (their lines are not counted) and a scan's end
+			// drops them anyway: drop them first, so a long scan does not forget more than a short one
+			for (const [k, v] of Object.entries(seenIds))
+				if (v.slice(-10) < cutoff) delete seenIds[k];
+			seenCount = Object.keys(seenIds).length;
+			if (seenCount <= seenMax) return;
+		}
 		const ids = Object.keys(seenIds);
 		const order = ids.map((id, i) => ({
 			id,

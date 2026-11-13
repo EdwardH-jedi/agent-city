@@ -2193,6 +2193,64 @@ describe("U5 · reviewer break-it (read-cap invariance)", () => {
 		}
 	});
 
+	test("after the backfill, forgetting ids past the cap does not depend on how long a scan ran (round 2: seenpost)", async () => {
+		const forkMessages = async (perFileMax: number, totalMax: number) => {
+			const root = tmp("u5-seenpost");
+			mkdirSync(join(root, "p"), { recursive: true });
+			const L = (sid: string, id: string, ts: string) =>
+				claudeMsg({ id, session: sid, ts, usage: { input_tokens: 10 } }, 1);
+			let old = "";
+			for (let i = 0; i < 5; i++)
+				old += L("old", `o${i}`, "2025-03-01T02:00:00Z");
+			const oldPath = join(root, "p", "old.jsonl");
+			writeFileSync(oldPath, old);
+			age(oldPath, 4);
+			let rec = "";
+			for (let i = 0; i < 93; i++) rec += L("rec", `r${i}`, isoDaysAgo(3));
+			const recPath = join(root, "p", "rec.jsonl");
+			writeFileSync(recPath, rec);
+			age(recPath, 3);
+			const hub = maxHub();
+			const state = emptyUsageState();
+			const poll = async () => {
+				const r = scanUsage({
+					claudeRoot: root,
+					codexRoot: null,
+					state,
+					now: NOW,
+					deps,
+					perFileMax,
+					totalMax,
+					seenMax: 100,
+				});
+				await sendUsage(sendCfg, state, hub.fetchImpl);
+				return r;
+			};
+			for (let i = 0; i < 200 && !(await poll()).backfilled; i++);
+			let n = "";
+			for (let i = 0; i < 30; i++) n += L("new", `n${i}`, isoDaysAgo(0));
+			writeFileSync(join(root, "p", "new.jsonl"), n);
+			writeFileSync(
+				join(root, "p", "fork.jsonl"),
+				L("fork", "r24", isoDaysAgo(3)) + L("fork", "f1", isoDaysAgo(0)),
+			);
+			for (let i = 0; i < 200 && (await poll()).backlog; i++);
+			return hubBySession(hub)["claude:fork"]?.[4];
+		};
+		const whole = await forkMessages(1e12, 1e12);
+		expect(whole).toBe(1); // r24 is a replay of rec's message: the fork's own message only
+		for (const [pf, tm] of [
+			[250, 250],
+			[1e12, 2000],
+			[700, 1500],
+		] as const)
+			expect({ pf, tm, fork: await forkMessages(pf, tm) }).toEqual({
+				pf,
+				tm,
+				fork: whole,
+			});
+	});
+
 	test("an older file ending in an unchanged cut-off line costs no budget: later files are read and the backfill ends", () => {
 		const root = tmp("u5-tail");
 		mkdirSync(join(root, "p"), { recursive: true });

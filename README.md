@@ -483,8 +483,9 @@ is dropped; while the hub is away it waits on the 60 s poll (a collector restart
 it waiting, since a start marks every session to be sent again). A later line on a freed (day, model) — out of order in that file, or in a later file of the
 same session — is hidden by the hub's larger value, never counted twice), and Claude message ids only as hashes (at most 200k, across files, so a
 resumed transcript that replays earlier messages counts them once — in the oldest-born file holding them; past
-200k the oldest days are forgotten down to 190k the moment an id is added, so that happens at the same line
-wherever a scan ends). A line that does not fit in one read with its newline (4 MiB) is skipped. A
+200k the oldest days are forgotten down to 190k the moment an id is added — after the backfill, ids dated
+before the 8-day cutoff go first — so that happens at the same line wherever a scan ends; a replay of a
+forgotten id counts again). A line that does not fit in one read with its newline (4 MiB) is skipped. A
 Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
 a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
 spaces allowed, nothing secret-shaped), else it is null. A limit stamped more than a day ahead is dropped.
