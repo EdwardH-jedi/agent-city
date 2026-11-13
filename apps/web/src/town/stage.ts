@@ -101,7 +101,11 @@ import {
 	rooPhase,
 	worldToView,
 } from "./patrol.ts";
-import { createTownPipeline, type TownPipeline } from "./pipeline.ts";
+import {
+	createTownPipeline,
+	type StageLayout,
+	type TownPipeline,
+} from "./pipeline.ts";
 import type { CameraShot } from "./world.ts";
 
 const DEG = Math.PI / 180;
@@ -220,6 +224,11 @@ function buildStage(
 		width: host.clientWidth || 1,
 		height: host.clientHeight || 1,
 		spec: { time: initial.time, lots },
+		// 17 F3: a settled height rebuilt the world on its own: mark the new picture and draw it
+		onRelayout: (l) => {
+			markLayout(l);
+			schedule();
+		},
 	});
 	reg.track(pipe, "town pipeline");
 	reg.defer(() => townLive.set(null), "live mirror");
@@ -789,11 +798,19 @@ function buildStage(
 	}
 
 	// ── size ────────────────────────────────────────────────────────────────────
+	/** 17 F3: the picture the pipeline chose, for check:board (stage_fills_height); no text, no state. */
+	function markLayout(l: StageLayout | undefined) {
+		const d = (host as Partial<HTMLElement>).dataset;
+		if (!d || !l) return;
+		d.rtH = String(l.rtH);
+		d.scale = String(l.scale);
+		d.pictureH = String(l.height);
+	}
 	function resize() {
 		const w = host.clientWidth;
 		const h = host.clientHeight;
 		if (!w || !h) return;
-		pipe.resize(w, h);
+		markLayout(pipe.resize(w, h));
 		schedule();
 	}
 	const ro = new ResizeObserver(() => resize());

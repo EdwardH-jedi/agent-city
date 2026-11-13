@@ -5,9 +5,10 @@
 // dark stage). Owns no animation frame: the stage (stage.ts) drives it.
 //
 // Target size (doc 12 §12): the original's 384×288 at the largest integer scale that fits. When only 1×
-// would fit (a 1366×768 screen: the column is ~746×688), the target narrows instead — the height stays 288
-// (so the texel density, the camera's pixel size and every snap step are the original's) and the width
-// becomes floor(column / 2), down to 320 — so the column gets 2× (373×288) rather than a tiny 1×.
+// would fit, the target narrows instead — the width becomes floor(column / 2), down to 320 — so the column
+// gets 2× rather than a tiny 1×. Then (17 F3) the height grows to fill the column: clamp(floor(column height
+// / scale), 288, 360), and the world's fov widens with it (world.ts fovFor) so the texel density, the
+// camera's pixel size and every snap step stay the original's: more sky and street, nothing bigger.
 //
 // Two lifetimes: the WebGL renderer and the targets live for the mount; the world (scene, pylon, rig,
 // atlas, actors) is rebuilt by setWorld() when its spec changes (time of day, the lots' signs and facades).
@@ -30,11 +31,13 @@ import {
 	RT_H,
 	RT_W,
 	RT_W_MAX,
+	setRenderHeight,
 	setRenderWidth,
 } from "./engine/pipeline-core.mjs";
 import type { LampInput } from "./engine/scene-ring.mjs";
 import type { Actor } from "./engine/sprites.mjs";
 import {
+	BASE_RT_H,
 	buildTownWorld,
 	type CameraShot,
 	type TownWorld,
@@ -44,6 +47,9 @@ import {
 
 export { RT_H, RT_W };
 
+/** The tallest render target (17 F3 [제안] 360): how much more sky and street the stage may show. */
+export const RT_H_MAX = 360;
+
 /** The narrowest render target the town uses (the HQ shot is checked down to this aspect). */
 export const RT_W_MIN = 320;
 const MAX_SCALE = 4;
@@ -52,21 +58,32 @@ const MAX_SCALE = 4;
 export const LETTERBOX = 0x0f0c0b;
 
 export interface StageLayout extends IntegerLayout {
-	/** Render-target width (RT_H is fixed). */
+	/** Render-target width. */
 	rtW: number;
+	/** Render-target height (17 F3: fills the stage's height, 288..360). */
+	rtH: number;
 }
 
+/** 17 F3: the target's height for a stage `winH` tall at integer scale `s`: clamp(floor(winH / s), 288, 360). */
+export const rtHeightFor = (winH: number, scale: number): number => {
+	const rows = Math.floor(Math.max(0, winH || 0) / Math.max(1, scale || 1));
+	return Math.max(BASE_RT_H, Math.min(RT_H_MAX, rows));
+};
+
 /**
- * The render target and its integer scale for a stage of winW × winH CSS px: the original 384×288 at
- * the largest integer scale that fits; only when that is 1×, a narrower target (≥ RT_W_MIN wide,
- * floor(winW / 2)) at 2×; otherwise 384 at 1×. Centred, bottom-left origin (GL viewport).
+ * The render target and its integer scale for a stage of winW × winH CSS px: the scale is picked as the
+ * original's 384×288 (the largest integer that fits; only when that is 1×, a narrower target ≥ RT_W_MIN
+ * wide, floor(winW / 2), at 2×; otherwise 384 at 1×), then the target's height grows to fill the stage
+ * (17 F3: rtHeightFor, 288..360). Centred, bottom-left origin (GL viewport).
  */
 export function fitStage(winW: number, winH: number): StageLayout {
 	const mk = (rtW: number, scale: number): StageLayout => {
+		const rtH = rtHeightFor(winH, scale);
 		const width = rtW * scale;
-		const height = RT_H * scale;
+		const height = rtH * scale;
 		return {
 			rtW,
+			rtH,
 			scale,
 			width,
 			height,
@@ -77,13 +94,32 @@ export function fitStage(winW: number, winH: number): StageLayout {
 	};
 	// the original's full 384 width at the largest integer scale that fits
 	for (let scale = MAX_SCALE; scale >= 2; scale -= 1)
-		if (RT_W_MAX * scale <= winW && RT_H * scale <= winH)
+		if (RT_W_MAX * scale <= winW && BASE_RT_H * scale <= winH)
 			return mk(RT_W_MAX, scale);
 	// only 1× would fit: narrow the target (≥ 320) to reach 2× instead
 	const narrow = Math.floor(winW / 2);
-	if (narrow >= RT_W_MIN && RT_H * 2 <= winH) return mk(narrow, 2);
+	if (narrow >= RT_W_MIN && BASE_RT_H * 2 <= winH) return mk(narrow, 2);
 	return mk(RT_W_MAX, 1);
 }
+
+/** The same layout at another target height (kept while a new height settles: see the pipeline's resize). */
+export function withRows(
+	l: StageLayout,
+	rtH: number,
+	winH: number,
+): StageLayout {
+	const height = rtH * l.scale;
+	return {
+		...l,
+		rtH,
+		height,
+		y: Math.max(0, Math.floor((winH - height) / 2)),
+		fits: l.fits && height <= winH,
+	};
+}
+
+/** How long the stage's height must stay put before the world is rebuilt for a new target height (17 F3). */
+export const REBUILD_SETTLE_MS = 300;
 
 /**
  * The original turns three's colour management off so authored texel colours reach the screen
@@ -167,6 +203,8 @@ export function createTownPipeline(opts: {
 	width: number;
 	height: number;
 	spec: WorldSpec;
+	/** Called after the pipeline changed its layout on its own (a settled height rebuild): redraw. */
+	onRelayout?: (layout: StageLayout) => void;
 }): TownPipeline {
 	const restoreColors = paletteColors();
 	// A failed start releases what it made and hands the colour switch back (the 2D grid takes over).
@@ -182,11 +220,17 @@ export function createTownPipeline(opts: {
 		});
 		renderer.setPixelRatio(1);
 		renderer.outputColorSpace = LinearSRGBColorSpace;
+		// 17 F3: the target's size is set before anything reads it (the first world's camera, the target)
+		const first = fitStage(opts.width, opts.height);
+		setRenderWidth(first.rtW);
+		setRenderHeight(first.rtH);
 		targets = createPipelineTargets();
-		world = buildTownWorld(opts.spec);
+		world = buildTownWorld({ ...opts.spec, rtH: first.rtH });
 	} catch (e) {
 		targets?.dispose();
 		renderer?.dispose();
+		setRenderWidth(RT_W_MAX);
+		setRenderHeight(BASE_RT_H);
 		restoreColors();
 		throw e;
 	}
@@ -194,36 +238,68 @@ export function createTownPipeline(opts: {
 	const rt = targets;
 	let board: BoardView | null = null;
 	let lamps: LampInput | null = null;
+	const lit = new Map<string, number>();
 	// Outside the integer-scaled picture: the board's page colour (the original's picture sat in a dark
 	// stage), made here so it is not converted by colour management (off from paletteColors() on).
 	const letterbox = new Color(LETTERBOX);
-	let layout = fitStage(RT_W, RT_H);
+	let layout = fitStage(opts.width, opts.height);
 	let winW = 1;
 	let winH = 1;
 	let disposed = false;
 
-	/** The target's width and the camera's aspect follow the layout (new worlds read RT_W themselves). */
-	function applyWidth(rtW: number) {
-		setRenderWidth(rtW);
-		if (rt.target.width !== rtW) rt.target.setSize(rtW, RT_H);
+	/**
+	 * The target's size and the camera's aspect follow the layout (new worlds read RT_W / RT_H themselves). A
+	 * new height needs a new fov (world.ts fovFor): the world is rebuilt for it, the rig carried over.
+	 */
+	function applyLayout(l: StageLayout) {
+		setRenderWidth(l.rtW);
+		setRenderHeight(l.rtH);
+		if (rt.target.width !== l.rtW || rt.target.height !== l.rtH)
+			rt.target.setSize(l.rtW, l.rtH);
+		if ((world.spec.rtH ?? BASE_RT_H) !== l.rtH) {
+			rebuild({ ...world.spec, rtH: l.rtH }, true);
+			return;
+		}
 		const cam = world.rig.camera;
-		if (Math.abs(cam.aspect - rtW / RT_H) > 1e-9) {
-			cam.aspect = rtW / RT_H;
+		if (Math.abs(cam.aspect - l.rtW / l.rtH) > 1e-9) {
+			cam.aspect = l.rtW / l.rtH;
 			cam.updateProjectionMatrix();
 		}
 	}
 
+	/**
+	 * A new height rebuilds the world (a new fov), which takes a few hundred ms: while the size is still
+	 * moving (a window dragged, devtools docked) the old height is kept and the picture re-centred; once it
+	 * has stayed put for REBUILD_SETTLE_MS, one rebuild. Width and aspect follow at once, as before.
+	 */
+	let settle: ReturnType<typeof setTimeout> | null = null;
 	function resize(w: number, h: number): StageLayout {
 		winW = Math.max(1, Math.floor(w));
 		winH = Math.max(1, Math.floor(h));
 		gl.setSize(winW, winH, true); // canvas CSS size == backing store (pixel ratio 1)
-		layout = fitStage(winW, winH);
-		applyWidth(layout.rtW);
+		const want = fitStage(winW, winH);
+		const have = world.spec.rtH ?? BASE_RT_H;
+		if (settle) clearTimeout(settle);
+		settle = null;
+		if (want.rtH === have) {
+			layout = want;
+			applyLayout(layout);
+			return layout;
+		}
+		layout = withRows(want, have, winH);
+		applyLayout(layout);
+		settle = setTimeout(() => {
+			settle = null;
+			if (disposed) return;
+			layout = fitStage(winW, winH);
+			applyLayout(layout);
+			opts.onRelayout?.(layout);
+		}, REBUILD_SETTLE_MS);
 		return layout;
 	}
 
-	function setWorld(spec: WorldSpec): boolean {
-		if (disposed || worldKey(spec) === worldKey(world.spec)) return false;
+	/** `keepLit`: a rebuild for the height only (same lots) keeps the lit windows set since the lots were built. */
+	function rebuild(spec: WorldSpec, keepLit = false) {
 		const next = buildTownWorld(spec);
 		const prev = world.rig;
 		const [x, z] = prev.focus;
@@ -231,10 +307,25 @@ export function createTownPipeline(opts: {
 		const plaza = prev.mode === "plaza";
 		world.dispose();
 		world = next;
-		applyWidth(layout.rtW);
+		const cam = world.rig.camera;
+		if (Math.abs(cam.aspect - RT_W / RT_H) > 1e-9) {
+			cam.aspect = RT_W / RT_H;
+			cam.updateProjectionMatrix();
+		}
 		carryRig({ x, z, yaw, plaza }, world.rig);
 		if (board) world.setBoard(board);
 		if (lamps) world.setLamps(lamps);
+		// the lit windows set since the lots were last built (their counts are not in the world's key);
+		// a rebuild for new lots is followed by the stage's own setLitWindows
+		if (keepLit) for (const [lotId, n] of lit) world.setLitWindows(lotId, n);
+		else lit.clear();
+	}
+
+	/** The stage's spec (time, lots) with this pipeline's height: rebuilt only when the key changed. */
+	function setWorld(spec: WorldSpec): boolean {
+		const full = { ...spec, rtH: layout.rtH };
+		if (disposed || worldKey(full) === worldKey(world.spec)) return false;
+		rebuild(full);
 		return true;
 	}
 
@@ -261,6 +352,7 @@ export function createTownPipeline(opts: {
 		rt.dispose();
 		gl.dispose();
 		setRenderWidth(RT_W_MAX);
+		setRenderHeight(BASE_RT_H);
 		restoreColors();
 		throw e;
 	}
@@ -283,16 +375,19 @@ export function createTownPipeline(opts: {
 			world.setLamps(input);
 		},
 		setLitWindows(lotId, n) {
+			lit.set(lotId, n);
 			world.setLitWindows(lotId, n);
 		},
 		render,
 		dispose() {
 			if (disposed) return;
 			disposed = true;
+			if (settle) clearTimeout(settle);
 			world.dispose();
 			rt.dispose();
 			gl.dispose();
-			setRenderWidth(RT_W_MAX); // the width is module state: hand back the original's
+			setRenderWidth(RT_W_MAX); // the size is module state: hand back the original's
+			setRenderHeight(BASE_RT_H);
 			restoreColors();
 		},
 	};

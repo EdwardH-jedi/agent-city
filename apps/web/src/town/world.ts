@@ -42,14 +42,31 @@ import { TownRooArtM2 } from "./engine/town-roo-art-m2.mjs";
 import { createLeadFrames, type LeadFrames } from "./lead-sprites.ts";
 import { lotsKey, type TownLot } from "./lots.ts";
 
-/** What the world is built from: the time of day and the ten lots (lots.ts buildLots; null = the original). */
+/**
+ * What the world is built from: the time of day, the ten lots (lots.ts buildLots; null = the original) and
+ * the render target's height (17 F3; the pipeline sets it, the stage never does; absent = the original 288).
+ */
 export interface WorldSpec {
 	time: TimeOfDay;
 	lots: readonly TownLot[] | null;
+	rtH?: number;
 }
 
 export const worldKey = (s: WorldSpec): string =>
-	`${s.time}|${s.lots ? lotsKey(s.lots) : "original"}`;
+	`${s.time}|${s.rtH ?? BASE_RT_H}|${s.lots ? lotsKey(s.lots) : "original"}`;
+
+/** The original's render-target height: the fov in presets.mjs is made for it. */
+export const BASE_RT_H = 288;
+
+/**
+ * 17 F3: the vertical fov for a taller target that keeps tan(fov/2) / RT_H — the world size of one target
+ * pixel at a depth, so every texel, sprite, sign and snap step — as the original's, and with it the
+ * horizontal view (tan(hfov/2) = tan(fov/2) · RT_W / RT_H). Only more sky above and street below show.
+ */
+export function fovFor(baseFovDeg: number, rtH: number): number {
+	const half = (baseFovDeg * Math.PI) / 360;
+	return (360 / Math.PI) * Math.atan((Math.tan(half) * rtH) / BASE_RT_H);
+}
 
 export interface TownWorld {
 	readonly spec: WorldSpec;
@@ -93,7 +110,13 @@ export interface CameraShot {
 const SEED = 1;
 
 export function buildTownWorld(spec: WorldSpec): TownWorld {
-	const preset = resolvePreset("ring", null, spec.time);
+	const rtH = spec.rtH ?? BASE_RT_H;
+	const base = resolvePreset("ring", null, spec.time);
+	// a copy of the preset with the wider fov (presets.mjs is not edited); 288 rows: the original itself
+	const preset =
+		rtH === BASE_RT_H
+			? base
+			: resolvePreset("ring", { fov: fovFor(base.fov, rtH) }, spec.time);
 	let board: Leaderboard | null = null;
 	const ring = buildRingScene(preset, SEED, horizonNdcY(preset), {
 		pylon: (o) => {

@@ -95,8 +95,9 @@ bun run check:secrets    # scan tracked/untracked files for token patterns
   equal keeps). Bulk rewrites (repo remap) publish `{kind:"invalidate", scope:[…]}` on `/ws`.
 - Every env var the code reads is in both `.env.example` and the README table (a test enforces it).
 - Board panels follow decision D10 (`~/Developer/AgentCity/15_PANELS_V2.md`): the original town's panel
-  look, one 28 px status sentence, every other text `calc(<10.5–14>px * var(--ui))` (`?ui=1.15|1.3`), column
-  widths from `apps/web/src/board/layout.ts` (stage scale first). The right panel's terminal tails come from
+  look, one 28 px status sentence (the clock beside it: 28 px, weight 400, doc 17 F1), every other text
+  `calc(<10.5–14>px * var(--ui))` (`?ui=1.15|1.3`), column widths from `apps/web/src/board/layout.ts` (stage
+  scale first; the town's target then fills the column's height, 288–360 rows, doc 17 F3). The right panel's terminal tails come from
   `apps/web/src/board/tail.ts` (events already in `useHub`, `summary` only, redacted again, no absolute
   path; `hideCredentials` masks what `redact()` misses), kept per session by `board/tail-memory.ts`
   (bounded: 64 sessions × 3 lines, one memory per page — it survives the D screen, not a reload);

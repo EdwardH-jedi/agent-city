@@ -20,6 +20,16 @@ describe("boardColumns (15 §1)", () => {
 		const c = boardColumns(1366, 768);
 		expect([c.left, c.middle, c.right, c.scale]).toEqual([299, 768, 299, 2]);
 	});
+	test("17 F3: the stage fills the body's height — 1920×1080: 341 rows (1152×1023), 1366×768: 356 (768×712)", () => {
+		const a = boardColumns(1920, 1080);
+		expect([a.rtH, a.rtH * a.scale, a.body]).toEqual([341, 1023, 1024]);
+		const b = boardColumns(1366, 768);
+		expect([b.rtH, b.rtH * b.scale, b.body]).toEqual([356, 712, 712]);
+		expect(boardColumns(1280, 720).rtH).toBe(332);
+		expect(boardColumns(2560, 1440).rtH).toBe(346);
+		expect(boardColumns(1920, 1200).rtH).toBe(360); // clamped: 64 px left
+		expect(boardColumns(Number.NaN, -5).rtH).toBe(288);
+	});
 	test("panels are equal, whole px, within PANEL_MIN..PANEL_MAX, and fill the width", () => {
 		for (let w = 900; w <= 3000; w += 37)
 			for (let h = 500; h <= 1700; h += 41) {
@@ -38,13 +48,15 @@ describe("boardColumns (15 §1)", () => {
 				const c = boardColumns(w, h);
 				if (c.scale < 2) continue;
 				const fit = fitStage(c.middle, c.body);
-				expect({ w, h, scale: fit.scale, rtW: fit.rtW }).toEqual({
+				expect({ w, h, scale: fit.scale, rtW: fit.rtW, rtH: fit.rtH }).toEqual({
 					w,
 					h,
 					scale: c.scale,
 					rtW: STAGE_W,
+					rtH: c.rtH,
 				});
-				expect(fit.height).toBe(STAGE_H * c.scale);
+				expect(fit.height).toBe(c.rtH * c.scale);
+				expect(c.rtH).toBeGreaterThanOrEqual(STAGE_H);
 			}
 	});
 	test("a window too narrow for two panels beside 2× drops the stage to 1×", () => {

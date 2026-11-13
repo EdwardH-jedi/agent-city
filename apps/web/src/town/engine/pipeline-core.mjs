@@ -1,10 +1,12 @@
 // Low-resolution pipeline constants + pure layout math (M2.7 §3.1, §2.6). No GL, no DOM.
-// agent-city: RT_W is a live binding the town may narrow to fit its column (setRenderWidth); RT_H, and with it the
-// texel density (pixelWorldSize, worldPerPixel, the skyline texel, the orbit rig's snap steps), never changes.
+// agent-city: RT_W is a live binding the town may narrow to fit its column (setRenderWidth); RT_H is a live binding the
+// town may raise to fill its column's height (setRenderHeight, 288..360). The town widens the camera's fov with it so the
+// texel density (pixelWorldSize, worldPerPixel, the skyline texel, the orbit rig's snap steps) stays the original's.
 export let RT_W = 384;
 export const RT_W_MAX = 384;
 export function setRenderWidth(w) { RT_W = Math.max(1, Math.min(RT_W_MAX, Math.floor(+w) || RT_W_MAX)); return RT_W; }
-export const RT_H = 288;
+export let RT_H = 288;
+export function setRenderHeight(h) { RT_H = Math.max(288, Math.min(360, Math.floor(+h) || 288)); return RT_H; }
 export const MIN_SCALE = 1; // fallback only when the window is smaller than 2x
 export const MAX_SCALE = 4; // largest integer that fits, up to 4x (M2.7.1; the prompt's design scales were 2 and 3)
 

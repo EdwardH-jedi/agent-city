@@ -122,7 +122,11 @@ at weight 400); everything else is the
   panel scale, 10.5–14 px, times `?ui=1.15` or `?ui=1.3` (any other value is 1; for a monitor read from
   further away). Columns (`apps/web/src/board/layout.ts`): the stage picks its integer scale first (384×288 ·
   s under a 56 px top band), then the two panels share the rest, each 240–420 px — 384 / 1152 / 384 at
-  1920×1080, 299 / 768 / 299 at 1366×768; the campus and the 2D grid use the same widths.
+  1920×1080, 299 / 768 / 299 at 1366×768; the campus and the 2D grid use the same widths. The town's render
+  target then grows to fill the column's height (doc 17 F3): clamp(floor(body / s), 288, 360) rows — 1152×1023
+  at 1920×1080, 768×712 at 1366×768 — with the camera's fov widened to match, so buildings, people and signs keep
+  their pixel size and the view left to right is the same; only more sky and street show. The bubble and
+  `조용함 N곳` sit on the picture with a dark backing.
 - **Left panel.** HQ 대기 rows are two lines: project, a short tag (`통합 대기`, `계획 승인`, `입력 대기`, …; Office's
   code stays in `#/detail`) and how long, then the sentence on one dim line; a 2 px yellow (결재 · 입력 대기) or
   red (멈춤) bar. At most 3 rows, then `외 N건`; they are never cut. 쉬는 중 rows have the same shape and no bar.

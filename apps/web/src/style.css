@@ -1243,6 +1243,14 @@ tr.st-waiting td {
 	right: 20px;
 	bottom: 16px;
 }
+/* 17 F3: the town's stage fills the column, so 조용함 N곳 sits on the picture: a backing like the bubble's */
+.town .campus-folded {
+	margin: 0;
+	padding: 3px 10px;
+	border-radius: 3px;
+	background: #0e1013e6;
+	pointer-events: none;
+}
 /* reports stopped: every figure stands where it is */
 .village-dim .fig {
 	animation: none;
