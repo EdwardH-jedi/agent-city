@@ -133,11 +133,13 @@ describe("what reaches the screen", () => {
 	test("project names: repo-id shaped only, the repo's own name, never a secret or a path", () => {
 		expect(usageProjectLabel("demo/harbor")).toBe("harbor");
 		expect(usageProjectLabel("local/my-folder")).toBe("my-folder");
+		expect(usageProjectLabel("local/My Project")).toBe("My Project");
 		for (const bad of [
 			null,
 			`demo/${FAKE_GH}`,
 			"cat /Users/me/.ssh/id_ed25519",
-			"local/a b",
+			"local/ a",
+			"local/a\tb",
 			"/Users/me/x",
 			"demo/password=hunter2",
 		])
