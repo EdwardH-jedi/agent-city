@@ -17,6 +17,7 @@ import type { CollectorConfig } from "./config.ts";
 import {
 	claudeSessionFromPath,
 	emptyUsageState,
+	FILE_KEYS_MAX,
 	type ScanDeps,
 	scanUsage,
 	type UsageState,
@@ -779,5 +780,27 @@ describe("review fixes (break-it round 1)", () => {
 		expect(s.dirty).toEqual(["claude:z"]);
 		expect(s.limits).toEqual({});
 		expect(() => markAll(s)).not.toThrow();
+	});
+});
+
+describe("state stays bounded", () => {
+	test("a transcript naming endless models keeps at most FILE_KEYS_MAX (+ per-day unknown) keys", () => {
+		const root = tmp("claude-models");
+		mkdirSync(join(root, "p"), { recursive: true });
+		let body = "";
+		for (let i = 0; i < 1000; i++)
+			body += claudeMsg(
+				{ id: `m${i}`, session: "many", model: `model-${i}` },
+				1,
+			);
+		writeFileSync(join(root, "p", "many.jsonl"), body);
+		const state = emptyUsageState();
+		scan(root, null, state);
+		const keys = Object.keys(
+			state.files[join(root, "p", "many.jsonl")]?.totals ?? {},
+		);
+		expect(keys.length).toBeLessThanOrEqual(FILE_KEYS_MAX + 1);
+		const rows = usageRows(state, ["claude:many"]);
+		expect(rows.reduce((n, r) => n + r.messages, 0)).toBe(1000); // nothing dropped, folded
 	});
 });
