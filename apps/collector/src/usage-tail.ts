@@ -22,6 +22,7 @@ import {
 import type { CollectorConfig } from "./config.ts";
 import { gitInfo } from "./git-info.ts";
 import {
+	capLimits,
 	emptyUsageState,
 	type ScanDeps,
 	scanUsage,
@@ -101,6 +102,7 @@ export function loadUsageState(path: string): UsageState {
 	if (isRecord(raw.limits))
 		for (const [k, l] of Object.entries(raw.limits))
 			if (UsageLimitShape(l)) state.limits[k] = l;
+	capLimits(state.limits); // a state written before the cap (M1 re-review P2) shrinks here
 	if (raw.v !== 2 || !validBackfill(raw.backfill)) return state;
 	state.backfill = raw.backfill;
 	if (isRecord(raw.files))

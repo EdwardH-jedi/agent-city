@@ -88,6 +88,11 @@ export const MODELS_PER_DAY_MAX = 16;
 export const FILE_KEYS_MAX = 128;
 /** Message ids remembered across files; past it the oldest days are forgotten first. */
 export const SEEN_MAX = 200_000;
+/**
+ * Rate-limit snapshots the state keeps: the newest by observed_at (then key). Only the newest
+ * USAGE_MAX_LIMITS are ever sent, so a flood of new limit ids can't grow the state file (M1 re-review P2).
+ */
+export const LIMITS_STATE_MAX = 64;
 
 /** [input (not cached), output, cache read, cache write, messages] */
 export type Totals = [number, number, number, number, number];
@@ -170,6 +175,32 @@ export const emptyUsageState = (): UsageState => ({
 	seen: {},
 	backfill: freshBackfill(),
 });
+
+/**
+ * Keep the `max` newest limit snapshots — observed_at descending, then key — and drop the rest. The kept
+ * set is a function of the snapshots alone, never of the order they came in or where a scan ended. A
+ * snapshot whose time does not parse goes first. Returns how many are left.
+ */
+export function capLimits(
+	limits: Record<string, UsageLimit>,
+	max = LIMITS_STATE_MAX,
+): number {
+	const keys = Object.keys(limits);
+	if (keys.length <= max) return keys.length;
+	const at = new Map<string, number>();
+	for (const k of keys) {
+		const t = Date.parse(limits[k]?.observed_at ?? "");
+		at.set(k, Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY);
+	}
+	keys.sort((a, b) => {
+		const d = (at.get(b) as number) - (at.get(a) as number);
+		if (d > 0) return 1;
+		if (d < 0) return -1;
+		return a < b ? -1 : a > b ? 1 : 0;
+	});
+	for (const k of keys.slice(max)) delete limits[k];
+	return max;
+}
 
 export interface ScanDeps {
 	git: (cwd: string) => GitInfo | null;
@@ -673,6 +704,15 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	};
 	/** Sessions the hub had taken whole when this scan began (see the full-file case below). */
 	const ackedAtStart = (session: string) => !state.dirty.includes(session);
+	// Limit snapshots: at most LIMITS_STATE_MAX kept (the newest), cut back whenever twice that many pile up
+	// in a scan and again at its end. Only a changed snapshot that is still kept marks the limits to send.
+	let limitCount = capLimits(state.limits);
+	const limitsChanged = new Set<string>();
+	const trimLimits = () => {
+		limitCount = capLimits(state.limits);
+		for (const k of limitsChanged)
+			if (!(k in state.limits)) limitsChanged.delete(k);
+	};
 	const onLimit = (l: UsageLimit) => {
 		const observed = usageObservedAt(l.observed_at, opts.now);
 		if (observed === null || Date.parse(observed) < minObserved) return;
@@ -680,8 +720,10 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		const key = `${l.tool}|${l.limit_id}|${l.window_minutes}`;
 		const cur = state.limits[key];
 		if (cur && Date.parse(cur.observed_at) >= Date.parse(l.observed_at)) return;
+		if (!cur) limitCount++;
 		state.limits[key] = l;
-		state.limits_dirty = true;
+		limitsChanged.add(key);
+		if (limitCount > 2 * LIMITS_STATE_MAX) trimLimits();
 	};
 
 	// After the backfill: files modified in the window (the newest MAX_FILES). The backfill: every file
@@ -852,6 +894,8 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	}
 	for (const [key, l] of Object.entries(state.limits))
 		if (Date.parse(l.observed_at) < minObserved) delete state.limits[key];
+	trimLimits();
+	if (limitsChanged.size > 0) state.limits_dirty = true;
 	// while the backfill runs every id stays (SEEN_MAX still bounds them, see remember): a replay read in a later scan
 	// than its original must still count once
 	if (!backfilling)

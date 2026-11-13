@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { UsageReport } from "@agent-city/schema";
 import {
 	USAGE_MAX_BODY_BYTES,
+	USAGE_MAX_LIMITS,
 	USAGE_MAX_ROWS,
 	usageDay,
 } from "@agent-city/schema/core";
@@ -26,6 +27,7 @@ import {
 	FILE_KEYS_MAX,
 	fileKey,
 	KEEP_DAYS,
+	LIMITS_STATE_MAX,
 	type ScanDeps,
 	scanUsage,
 	USAGE_BACKFILL_VERSION,
@@ -2302,5 +2304,162 @@ describe("U5 · reviewer break-it (read-cap invariance)", () => {
 			await sendUsage(sendCfg, state, hub.fetchImpl);
 		}
 		expect(done).toBe(true);
+	});
+});
+
+// ── M1 re-review P2: the rate-limit map has a count cap (Codex limits-state.ts) ────────────────────
+
+/** One Codex token_count line stating one limit window, as the re-review's limits-state.ts wrote them. */
+const limitLine = (id: string, ts: string, pct = 1) =>
+	`${JSON.stringify({
+		type: "event_msg",
+		timestamp: ts,
+		payload: {
+			type: "token_count",
+			rate_limits: {
+				limit_id: id,
+				primary: { used_percent: pct, window_minutes: 60 },
+			},
+		},
+	})}\n`;
+const limitKeys = (s: UsageState) => Object.keys(s.limits).sort();
+
+describe("M1 re-review P2: the rate-limit state holds at most LIMITS_STATE_MAX snapshots", () => {
+	test("Codex's reproduction: 3 rounds × 10,000 new limit ids, all acknowledged — the map stays capped", async () => {
+		const root = tmp("limits-flood");
+		const path = join(root, "rollout-limits.jsonl");
+		writeFileSync(path, "");
+		const ts = new Date(NOW - 60_000).toISOString();
+		const hub = maxHub();
+		const state = emptyUsageState();
+		const sizes: number[] = [];
+		for (let round = 0; round < 3; round++) {
+			let text = "";
+			for (let i = round * 10_000; i < (round + 1) * 10_000; i++)
+				text += limitLine(`fixture-limit-${i}`, ts);
+			appendFileSync(path, text);
+			scan(null, root, state);
+			await sendUsage(sendCfg, state, hub.fetchImpl);
+			expect(state.limits_dirty).toBe(false);
+			expect(Object.keys(state.limits).length).toBeLessThanOrEqual(
+				LIMITS_STATE_MAX,
+			);
+			sizes.push(Buffer.byteLength(JSON.stringify(state.limits)));
+		}
+		// not 10,000 → 20,000 → 30,000 (1.9 → 3.8 → 5.8 MB): the same count, a few KiB, every round
+		expect(Math.max(...sizes)).toBeLessThan(LIMITS_STATE_MAX * 256);
+		expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThan(
+			LIMITS_STATE_MAX * 8,
+		);
+		expect(LIMITS_STATE_MAX).toBeGreaterThanOrEqual(USAGE_MAX_LIMITS);
+	});
+
+	test("the newest snapshots stay: a flood of older ids does not push out the live limit", () => {
+		const root = tmp("limits-live");
+		let text = "";
+		for (let i = 0; i < 5_000; i++)
+			text += limitLine(
+				`old-${i}`,
+				new Date(NOW - 3_600_000 - i).toISOString(),
+			);
+		text += limitLine("codex", new Date(NOW - 60_000).toISOString(), 48);
+		for (let i = 0; i < 5_000; i++)
+			text += limitLine(
+				`older-${i}`,
+				new Date(NOW - 7_200_000 - i).toISOString(),
+			);
+		writeFileSync(join(root, "rollout-a.jsonl"), text);
+		const state = emptyUsageState();
+		scan(null, root, state);
+		expect(Object.keys(state.limits).length).toBe(LIMITS_STATE_MAX);
+		expect(state.limits["codex|codex|60"]?.used_percent).toBe(48);
+		// the kept set is the LIMITS_STATE_MAX newest: old-0 … old-(MAX-2) and codex
+		const want = ["codex|codex|60"];
+		for (let i = 0; i < LIMITS_STATE_MAX - 1; i++)
+			want.push(`codex|old-${i}|60`);
+		expect(limitKeys(state)).toEqual(want.sort());
+	});
+
+	test("the kept set does not depend on where scans end (one scan = many small scans)", () => {
+		const lines: string[] = [];
+		for (let i = 0; i < 3_000; i++)
+			lines.push(
+				// ties on purpose: 7 ids share each instant, so the order inside a tie is the key's
+				limitLine(
+					`id-${(i * 7919) % 3_000}`,
+					new Date(NOW - 3_600_000 + Math.floor(i / 7) * 1000).toISOString(),
+				),
+			);
+		// the same id again, older: must not replace or resurrect anything
+		for (let i = 0; i < 500; i++)
+			lines.push(limitLine(`id-${i}`, new Date(NOW - 7_200_000).toISOString()));
+		const once = tmp("limits-once");
+		writeFileSync(join(once, "rollout-a.jsonl"), lines.join(""));
+		const a = emptyUsageState();
+		scan(null, once, a);
+
+		const many = tmp("limits-many");
+		const p = join(many, "rollout-a.jsonl");
+		writeFileSync(p, "");
+		const b = emptyUsageState();
+		for (let i = 0; i < lines.length; i += 97) {
+			appendFileSync(p, lines.slice(i, i + 97).join(""));
+			scan(null, many, b);
+		}
+		expect(limitKeys(b)).toEqual(limitKeys(a));
+		expect(b.limits).toEqual(a.limits);
+	});
+
+	test("an id pushed out does not come back with an older snapshot", () => {
+		const root = tmp("limits-evicted");
+		const p = join(root, "rollout-a.jsonl");
+		let text = limitLine("gone", new Date(NOW - 7_200_000).toISOString());
+		for (let i = 0; i < LIMITS_STATE_MAX; i++)
+			text += limitLine(`new-${i}`, new Date(NOW - 60_000).toISOString());
+		writeFileSync(p, text);
+		const state = emptyUsageState();
+		scan(null, root, state);
+		expect(state.limits["codex|gone|60"]).toBeUndefined();
+		appendFileSync(
+			p,
+			limitLine("gone", new Date(NOW - 9_000_000).toISOString()),
+		);
+		state.limits_dirty = false;
+		scan(null, root, state);
+		expect(state.limits["codex|gone|60"]).toBeUndefined();
+		expect(Object.keys(state.limits).length).toBe(LIMITS_STATE_MAX);
+	});
+
+	test("a state file already holding 30,000 limits is cut back on load (v2 and v1 alike); save/load keeps it", () => {
+		const dir = tmp("limits-load");
+		const limits: Record<string, unknown> = {};
+		for (let i = 0; i < 30_000; i++)
+			limits[`codex|l${i}|60`] = {
+				tool: "codex",
+				limit_id: `l${i}`,
+				window_minutes: 60,
+				used_percent: 1,
+				resets_at: null,
+				plan_type: null,
+				observed_at: new Date(NOW - 60_000 - i * 1000).toISOString(),
+			};
+		for (const v of [1, 2]) {
+			const path = join(dir, `state-v${v}.json`);
+			writeFileSync(
+				path,
+				JSON.stringify({
+					...emptyUsageState(),
+					v,
+					limits,
+				}),
+			);
+			const s = loadUsageState(path);
+			expect(Object.keys(s.limits).length).toBe(LIMITS_STATE_MAX);
+			// the newest stay
+			expect(s.limits["codex|l0|60"]).toBeDefined();
+			expect(s.limits[`codex|l${LIMITS_STATE_MAX}|60`]).toBeUndefined();
+			saveUsageState(path, s);
+			expect(loadUsageState(path).limits).toEqual(s.limits);
+		}
 	});
 });

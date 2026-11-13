@@ -489,6 +489,8 @@ forgotten id counts again). A line that does not fit in one read with its newlin
 Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
 a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
 spaces allowed, nothing secret-shaped), else it is null. A limit stamped more than a day ahead is dropped.
+The state keeps at most 64 limit snapshots — the newest by observed time, then by key, whatever order they
+came in (a state file holding more is cut back on load); the newest 16 are sent.
 Chunks are cut by row count (≤ 500) **and** by the body's UTF-8 bytes, envelope and limits included (≤ 256 KiB).
 If the hub still answers 400/413 the chunk is split in half and sent again, down to one row; only a single row
 it still refuses is dropped (limits riding along are tried apart first) rather than retried forever; that
