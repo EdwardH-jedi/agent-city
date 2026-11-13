@@ -15,6 +15,7 @@ import { UsageReport } from "@agent-city/schema";
 import { USAGE_MAX_ROWS, usageDay } from "@agent-city/schema/core";
 import type { CollectorConfig } from "./config.ts";
 import {
+	claudeSessionFromPath,
 	emptyUsageState,
 	type ScanDeps,
 	scanUsage,
@@ -436,8 +437,8 @@ describe("nothing but numbers and identifiers leaves", () => {
 				claudeMsg({ id: "s3", session: sid, model: "claude opus <script>" }),
 		);
 		writeFileSync(
-			join(claudeRoot, "p", "y.jsonl"),
-			claudeMsg({ id: "s4", session: `a/${FAKE_GH}` }),
+			join(claudeRoot, "p", `${FAKE_GH}.jsonl`),
+			claudeMsg({ id: `cat ${SECRET_CWD}/notes.txt`, session: `a/${FAKE_GH}` }),
 		);
 		writeFileSync(
 			join(codexRoot, "d", "rollout-s.jsonl"),
@@ -489,7 +490,7 @@ describe("nothing but numbers and identifiers leaves", () => {
 		const home = tmp("home-secret");
 		saveUsageState(join(home, "s.json"), state);
 		const saved = readFileSync(join(home, "s.json"), "utf8");
-		for (const bad of [FAKE_GH, FAKE_ANT, "token ", "12.34"])
+		for (const bad of [FAKE_ANT, "token ", "12.34", "notes.txt", "cat "])
 			expect(saved).not.toContain(bad);
 	});
 });
@@ -626,5 +627,157 @@ describe("sending", () => {
 		expect(sent).toHaveLength(2);
 		expect(sent[1]?.rows).toEqual(sent[0]?.rows);
 		expect(logs.join("\n")).not.toContain(claudeRoot);
+	});
+});
+
+describe("review fixes (break-it round 1)", () => {
+	test("a resumed transcript replaying earlier messages into a new file counts them once", () => {
+		const root = tmp("claude-resume");
+		mkdirSync(join(root, "p"), { recursive: true });
+		writeFileSync(
+			join(root, "p", "old.jsonl"),
+			claudeMsg({ id: "msg_1", session: "old" }) +
+				claudeMsg({ id: "msg_2", session: "old" }),
+		);
+		writeFileSync(
+			join(root, "p", "new.jsonl"),
+			claudeMsg({ id: "msg_1", session: "old" }) +
+				claudeMsg({ id: "msg_2", session: "old" }) +
+				claudeMsg({ id: "msg_3", session: "old" }),
+		);
+		const state = emptyUsageState();
+		scan(root, null, state);
+		const rows = usageRows(state, ["claude:old", "claude:new"]);
+		expect(rows.reduce((n, r) => n + r.messages, 0)).toBe(3);
+		expect(
+			rows.find((r) => r.session_id === "claude:new")?.messages,
+		).toBeGreaterThanOrEqual(1);
+		// a later rescan of the same files adds nothing
+		state.dirty = [];
+		scan(root, null, state);
+		expect(state.dirty).toEqual([]);
+	});
+
+	test("sessions come from the path: <dir>/<id>.jsonl and <dir>/<id>/subagents/<agent>.jsonl", () => {
+		expect(claudeSessionFromPath(join("/r", "p", "abc-1.jsonl"))).toBe(
+			"claude:abc-1",
+		);
+		expect(
+			claudeSessionFromPath(
+				join("/r", "p", "abc-1", "subagents", "agent-9.jsonl"),
+			),
+		).toBe("claude:abc-1");
+		expect(claudeSessionFromPath(join("/r", "p", `${FAKE_GH}.jsonl`))).toMatch(
+			/^claude:redacted-[0-9a-f]{16}$/,
+		);
+	});
+
+	test("a limit stamped in the far future or out of ISO range is never kept or sent", () => {
+		const root = tmp("codex-future");
+		mkdirSync(join(root, "d"), { recursive: true });
+		writeFileSync(
+			join(root, "d", "rollout-f.jsonl"),
+			codexHead("f-1") +
+				codexLimits("+275000-01-01T00:00:00Z", 99) +
+				codexLimits("2099-01-01T00:00:00Z", 98) +
+				codexLimits("2026-11-13T07:00:00Z", 12),
+		);
+		const state = emptyUsageState();
+		scan(null, root, state);
+		expect(Object.values(state.limits).map((l) => l.used_percent)).toEqual([
+			12,
+		]);
+	});
+
+	test("a 400 drops that chunk instead of blocking every later one", async () => {
+		const s = emptyUsageState();
+		for (let i = 0; i < 2; i++)
+			s.files[`/f${i}`] = {
+				tool: "claude",
+				ino: i,
+				offset: 1,
+				session: `claude:s${i}`,
+				project: null,
+				model: null,
+				last_id: null,
+				totals: { "2026-11-13|m": [1, 1, 1, 1, 1] },
+				mtime: 0,
+			};
+		markAll(s);
+		const bad = (async () =>
+			new Response("{}", { status: 400 })) as unknown as typeof fetch;
+		const out = await sendUsage(
+			{ hubUrl: "http://hub.test", ingestToken: "t", machine: "cockpit" },
+			s,
+			bad,
+		);
+		expect(out.failed).toBe(400);
+		expect(s.dirty).toEqual([]);
+	});
+
+	test("row counts are clamped to the schema cap before sending", () => {
+		const s = emptyUsageState();
+		s.files["/f"] = {
+			tool: "claude",
+			ino: 1,
+			offset: 1,
+			session: "claude:big",
+			project: null,
+			model: null,
+			last_id: null,
+			totals: { "2026-11-13|m": [9e15, 1, 1, 1, 1] },
+			mtime: 0,
+		};
+		const [r] = usageRows(s, ["claude:big"]);
+		expect(
+			UsageReport.safeParse({
+				schema: 1,
+				machine_id: "cockpit",
+				rows: [r],
+				limits: [],
+			}).success,
+		).toBe(true);
+	});
+
+	test("a damaged offsets file loses only its bad entries", () => {
+		const home = tmp("home-bad");
+		const p = join(home, "s.json");
+		writeFileSync(
+			p,
+			JSON.stringify({
+				v: 1,
+				files: {
+					x: null,
+					y: {
+						tool: "claude",
+						ino: 1,
+						offset: 5,
+						session: null,
+						project: null,
+						model: null,
+						last_id: null,
+						mtime: 0,
+					},
+					z: {
+						tool: "claude",
+						ino: 1,
+						offset: 5,
+						session: "claude:z",
+						project: null,
+						model: null,
+						last_id: null,
+						totals: {},
+						mtime: 0,
+					},
+				},
+				dirty: [1, "claude:z"],
+				limits: { k: null },
+			}),
+		);
+		const s = loadUsageState(p);
+		expect(Object.keys(s.files)).toEqual(["z"]);
+		expect(s.dirty).toEqual(["claude:z"]);
+		expect(s.limits).toEqual({});
+		expect(() => markAll(s)).not.toThrow();
 	});
 });
