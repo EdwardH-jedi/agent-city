@@ -29,7 +29,6 @@ import {
 	dayMinus,
 	fnv1a64,
 	parseGithubRemote,
-	safeText,
 	sessionId,
 	tokenCount,
 	USAGE_ROW_MAX,
@@ -184,7 +183,7 @@ function projectResolver(deps: ScanDeps): Resolve {
 		if (hit !== undefined) return hit;
 		let id: string | null = null;
 		try {
-			id = usageProject(safeText(deps.git(cwd)?.repo_id ?? null, 256));
+			id = usageProject(deps.git(cwd)?.repo_id ?? null);
 		} catch {
 			id = null;
 		}
@@ -340,7 +339,7 @@ function codexLine(
 		const remote = isObj(p.git) ? str(p.git.repository_url) : null;
 		file.project =
 			project(str(p.cwd)) ??
-			usageProject(safeText(remote ? parseGithubRemote(remote) : null, 256)) ??
+			usageProject(remote ? parseGithubRemote(remote) : null) ??
 			file.project;
 		return false;
 	}
