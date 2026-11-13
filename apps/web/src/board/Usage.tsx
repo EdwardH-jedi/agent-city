@@ -14,14 +14,11 @@ export function Usage({
 	panel,
 	pixel,
 	trend,
-	total = true,
 }: {
 	panel: UsagePanel | null;
 	pixel: boolean;
 	/** The 7-day row; left out when the column is too short (18 §5.2 U3: 1366×768). */
 	trend: boolean;
-	/** The all-time line; left out only after the 7-day row when the column is shorter still. */
-	total?: boolean;
 }) {
 	if (!panel) return null;
 	const peak = Math.max(1, ...panel.trend.map((d) => d.tokens));
@@ -34,7 +31,8 @@ export function Usage({
 				pixel={pixel}
 			/>
 			<div className="usage-body">
-				{total && panel.cumulative && (
+				{/* 1366×768: +21 px, taken from the map; LOG keeps its rows (measured), so it never folds */}
+				{panel.cumulative && (
 					<p className="usage-total">
 						누적 <b>{tokenWord(panel.cumulative.tokens)}</b> ·{" "}
 						{sinceWord(panel.cumulative.since, panel.today)}
