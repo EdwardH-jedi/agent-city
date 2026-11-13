@@ -451,10 +451,21 @@ Australia/Sydney date. A Claude advisor call counts under its own model. Plan li
 log stated them (today Codex `rate_limits`; Claude transcripts carry none). The hook never reads a
 transcript. `AGENTCITY_USAGE=0` turns the poller off.
 
+What the poller keeps in `~/.agentcity/usage-offsets.json`: per log file its offset and per-(day, model)
+totals (at most 128 keys a file), and Claude message ids only as hashes (at most 200k, across files, so a
+resumed transcript that replays earlier messages counts them once — in whichever file was read first). A
+Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
+a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
+spaces allowed, nothing secret-shaped), else it is null. A limit stamped more than a day ahead is dropped.
+If the hub answers 400/413 the collector drops that chunk (up to 500 rows) rather than retrying it forever;
+those sessions go again when they change or the collector restarts.
+
 `POST /ingest/usage` uses the `INGEST_TOKEN` bearer, takes a strict body of at most 256 KiB
 (`schema`, `machine_id`, `rows` ≤ 500, `limits` ≤ 16; any other key → 400) and answers
 `{accepted, changed, ignored, limits}`. Every count keeps the larger value, so a repeated or older report
-changes nothing; rows more than 40 days old or for a future day are ignored. A failed send is not
+changes nothing; rows more than 40 days old or for a future day are ignored, and rows past 40 days are
+pruned on each report. A count above 1e13 or a project that is not repo-id shaped is refused / stored as
+null. A failed send is not
 queued: the collector sends the same totals again next poll. `GET /api/usage?days=7` (1–31) returns
 `{tz, today, days, rows, limits, updated_at}` — sums per `(day, project, tool, model)` with a `sessions`
 count, projects folded case-insensitively onto the repos row. The same body is sent on `/ws` as
