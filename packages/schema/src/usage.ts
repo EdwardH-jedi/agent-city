@@ -50,6 +50,19 @@ export function usageDay(when: string | number | Date): string | null {
 	return DAY.test(out) ? out : null;
 }
 
+/**
+ * The first day a usage row may have. Rows are kept for good (18 §5.6 U4), so one row dated `0001-01-01`
+ * would fix the cumulative start forever; both tools came out after this day.
+ */
+export const USAGE_FIRST_DAY = "2025-01-01";
+
+/** A real calendar day (`2026-02-30` is not) on or after USAGE_FIRST_DAY. */
+export function usageValidDay(day: string): boolean {
+	if (!DAY.test(day) || day < USAGE_FIRST_DAY) return false;
+	const t = Date.parse(`${day}T00:00:00Z`);
+	return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === day;
+}
+
 /** `day` minus `n` calendar days (both `YYYY-MM-DD`; pure date arithmetic, no zone). */
 export function dayMinus(day: string, n: number): string {
 	const t = Date.parse(`${day}T00:00:00Z`) - n * 86_400_000;

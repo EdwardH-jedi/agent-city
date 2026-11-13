@@ -35,3 +35,62 @@ CREATE TABLE usage_limits (
   received_at    TEXT NOT NULL,
   PRIMARY KEY (machine_id, tool, limit_id, window_minutes)
 );
+
+-- All-time sums per tool (18 §5.6 U4: usage rows are never deleted and the board shows a cumulative
+-- total). Kept by the triggers below inside the writing statement's own transaction, so reading the
+-- total costs one row per tool instead of a scan of every usage row (measured ~40 ms at 200k rows).
+-- REAL: exact far past any real total (2^53) and cannot overflow like an INTEGER sum.
+CREATE TABLE usage_total (
+  tool               TEXT PRIMARY KEY,           -- claude | codex
+  input_tokens       REAL NOT NULL DEFAULT 0,
+  output_tokens      REAL NOT NULL DEFAULT 0,
+  cache_read_tokens  REAL NOT NULL DEFAULT 0,
+  cache_write_tokens REAL NOT NULL DEFAULT 0,
+  messages           REAL NOT NULL DEFAULT 0
+);
+
+CREATE TRIGGER usage_total_insert AFTER INSERT ON usage BEGIN
+  INSERT INTO usage_total (tool, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+    messages)
+  VALUES (NEW.tool, NEW.input_tokens, NEW.output_tokens, NEW.cache_read_tokens,
+    NEW.cache_write_tokens, NEW.messages)
+  ON CONFLICT(tool) DO UPDATE SET
+    input_tokens = input_tokens + excluded.input_tokens,
+    output_tokens = output_tokens + excluded.output_tokens,
+    cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+    cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+    messages = messages + excluded.messages;
+END;
+
+-- An update may change the counts and (in principle) the tool: take the old row out, put the new one in.
+CREATE TRIGGER usage_total_update
+AFTER UPDATE OF tool, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, messages
+ON usage BEGIN
+  UPDATE usage_total SET
+    input_tokens = input_tokens - OLD.input_tokens,
+    output_tokens = output_tokens - OLD.output_tokens,
+    cache_read_tokens = cache_read_tokens - OLD.cache_read_tokens,
+    cache_write_tokens = cache_write_tokens - OLD.cache_write_tokens,
+    messages = messages - OLD.messages
+  WHERE tool = OLD.tool;
+  INSERT INTO usage_total (tool, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+    messages)
+  VALUES (NEW.tool, NEW.input_tokens, NEW.output_tokens, NEW.cache_read_tokens,
+    NEW.cache_write_tokens, NEW.messages)
+  ON CONFLICT(tool) DO UPDATE SET
+    input_tokens = input_tokens + excluded.input_tokens,
+    output_tokens = output_tokens + excluded.output_tokens,
+    cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+    cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+    messages = messages + excluded.messages;
+END;
+
+CREATE TRIGGER usage_total_delete AFTER DELETE ON usage BEGIN
+  UPDATE usage_total SET
+    input_tokens = input_tokens - OLD.input_tokens,
+    output_tokens = output_tokens - OLD.output_tokens,
+    cache_read_tokens = cache_read_tokens - OLD.cache_read_tokens,
+    cache_write_tokens = cache_write_tokens - OLD.cache_write_tokens,
+    messages = messages - OLD.messages
+  WHERE tool = OLD.tool;
+END;

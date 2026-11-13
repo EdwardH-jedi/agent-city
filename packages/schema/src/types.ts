@@ -467,6 +467,26 @@ export const UsageLimitView = UsageLimit.extend({
 });
 export type UsageLimitView = z.infer<typeof UsageLimitView>;
 
+/** All-time sums for one tool (every row the hub holds; rows are never deleted). */
+export const UsageTotalRow = z.object({
+	tool: UsageTool,
+	input_tokens: z.number().int().nonnegative(),
+	output_tokens: z.number().int().nonnegative(),
+	cache_read_tokens: z.number().int().nonnegative(),
+	cache_write_tokens: z.number().int().nonnegative(),
+	messages: z.number().int().nonnegative(),
+});
+export type UsageTotalRow = z.infer<typeof UsageTotalRow>;
+
+/** The cumulative block of the summary (18 §5.6 U4). */
+export const UsageTotal = z.object({
+	/** The oldest `day` held (Australia/Sydney); null when there is no row. */
+	since: UsageDay.nullable(),
+	/** One entry per tool that has rows, claude before codex. */
+	tools: z.array(UsageTotalRow).max(2),
+});
+export type UsageTotal = z.infer<typeof UsageTotal>;
+
 /**
  * GET /api/usage?days=N body (also pushed on /ws as `{kind:"usage"}` when a report changed it).
  * `today` is the hub's Australia/Sydney day; `days` lists the N days ending today, oldest first.
@@ -479,5 +499,10 @@ export const UsageSummary = z.object({
 	limits: z.array(UsageLimitView),
 	/** Hub receive time of the newest report that changed a row; null when there is none. */
 	updated_at: Ts.nullable(),
+	/**
+	 * All-time sums per tool and the oldest day (18 §5.6 U4). The hub always sends it; optional so a
+	 * summary from a hub without it still parses (the board then shows no cumulative line).
+	 */
+	total: UsageTotal.optional(),
 });
 export type UsageSummary = z.infer<typeof UsageSummary>;

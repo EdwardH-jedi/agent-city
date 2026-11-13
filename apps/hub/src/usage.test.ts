@@ -1,7 +1,11 @@
 // POST /ingest/usage and GET /api/usage (18 §5 U2). Fake secrets are assembled at runtime.
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+	dayMinus,
 	USAGE_MAX_ROWS,
 	type UsageRow,
 	type UsageSummary,
@@ -10,6 +14,7 @@ import {
 import { openDb } from "./db.ts";
 import { createApp, startHub } from "./index.ts";
 import { type BroadcastKind, createWebsocket } from "./routes/ws.ts";
+import { usageSummary } from "./store.ts";
 
 const TOKEN = "test-ingest-token";
 const FAKE_GH = `ghp_${"k".repeat(36)}`;
@@ -269,16 +274,18 @@ describe("idempotent cumulative upsert", () => {
 		]);
 	});
 
-	test("rows far outside the hub's day window are ignored; the Sydney day rolls at local midnight", async () => {
+	test("future and impossible days are ignored, old days are kept; the Sydney day rolls at local midnight", async () => {
 		const res = await post(
 			ctx,
 			report([
 				row({ session_id: "claude:old", day: "2026-09-01" }),
 				row({ session_id: "claude:future", day: "2026-11-20" }),
+				row({ session_id: "claude:feb30", day: "2026-02-30" }),
+				row({ session_id: "claude:ancient", day: "2024-12-31" }),
 				row({ session_id: "claude:ok", day: "2026-11-14" }),
 			]),
 		);
-		expect(await res.json()).toMatchObject({ accepted: 1, ignored: 2 });
+		expect(await res.json()).toMatchObject({ accepted: 2, ignored: 3 });
 		expect((await summary(ctx)).rows).toEqual([]); // 11-14 is tomorrow in Sydney
 		ctx.clock.now = Date.parse("2026-11-13T13:00:00Z"); // 00:00 AEDT 11-14
 		const s = await summary(ctx);
@@ -473,14 +480,148 @@ describe("review fixes (break-it round 1)", () => {
 		expect(performance.now() - t).toBeLessThan(1000);
 		expect(s.rows.reduce((n, r) => n + r.sessions, 0)).toBe(20_000);
 	});
+});
 
-	test("rows past the accepted window are pruned on the next report", async () => {
-		ctx.db.run(
-			`INSERT INTO usage (session_id, day, model, tool, project, machine_id, input_tokens,
-			   output_tokens, cache_read_tokens, cache_write_tokens, messages, updated_at)
-			 VALUES ('claude:old', '2026-09-01', 'm', 'claude', NULL, 'cockpit', 1, 1, 1, 1, 1, 'x')`,
+describe("cumulative total (18 §5.6 U4)", () => {
+	test("a row 41 days old is accepted, kept after later reports, and counted in the total", async () => {
+		const old = row({ session_id: "claude:old", day: "2026-10-03" }); // 41 days before 11-13
+		expect(await (await post(ctx, report([old]))).json()).toMatchObject({
+			accepted: 1,
+			ignored: 0,
+		});
+		ctx.clock.now += 30 * 86_400_000; // a month later the row is still there
+		await post(ctx, report([row({ day: "2026-12-13" })]));
+		expect(usageCount(ctx)).toBe(2);
+		const s = await summary(ctx);
+		expect(s.rows.map((r) => r.day)).toEqual(["2026-12-13"]); // the 7 days
+		expect(s.total).toEqual({
+			since: "2026-10-03",
+			tools: [
+				{
+					tool: "claude",
+					input_tokens: 20,
+					output_tokens: 40,
+					cache_read_tokens: 600,
+					cache_write_tokens: 80,
+					messages: 4,
+				},
+			],
+		});
+	});
+
+	test("per tool; re-sending the same or older totals leaves the total unchanged", async () => {
+		const rows = [
+			row({ day: "2026-10-01" }),
+			row({ day: "2026-11-13" }),
+			row({
+				session_id: "codex:c1",
+				tool: "codex",
+				model: "gpt-6-astra",
+				day: "2026-11-12",
+				input_tokens: 5,
+			}),
+		];
+		await post(ctx, report(rows));
+		const first = (await summary(ctx)).total;
+		expect(first?.since).toBe("2026-10-01");
+		expect(first?.tools.map((t) => [t.tool, t.input_tokens])).toEqual([
+			["claude", 20],
+			["codex", 5],
+		]);
+		ctx.published.length = 0;
+		await post(ctx, report(rows));
+		await post(ctx, report(rows.map((r) => ({ ...r, input_tokens: 1 }))));
+		expect((await summary(ctx)).total).toEqual(first);
+		expect(ctx.published).toHaveLength(0); // nothing changed → nothing pushed
+	});
+
+	test("GET /api/usage and the /ws push carry the same total; an empty hub has since null", async () => {
+		expect((await summary(ctx)).total).toEqual({ since: null, tools: [] });
+		await post(ctx, report([row({ day: "2026-10-20" })]));
+		const pushed = ctx.published.at(-1);
+		expect(pushed?.kind).toBe("usage");
+		expect((pushed?.data as UsageSummary | undefined)?.total).toEqual(
+			(await summary(ctx)).total,
 		);
-		await post(ctx, report([row()]));
-		expect(usageCount(ctx)).toBe(1);
+	});
+
+	test("usage_total equals a full scan after new, repeated, grown, older and deleted rows", async () => {
+		const scan = () =>
+			ctx.db
+				.query<Record<string, number | string>, []>(
+					`SELECT tool, total(input_tokens) AS input_tokens, total(output_tokens) AS output_tokens,
+					   total(cache_read_tokens) AS cache_read_tokens,
+					   total(cache_write_tokens) AS cache_write_tokens, total(messages) AS messages
+					 FROM usage GROUP BY tool ORDER BY tool`,
+				)
+				.all();
+		const codex = (over: Partial<UsageRow> = {}) =>
+			row({
+				session_id: "codex:c1",
+				tool: "codex",
+				model: "gpt-6-astra",
+				...over,
+			});
+		await post(ctx, report([row(), codex(), row({ day: "2026-10-01" })]));
+		await post(ctx, report([row(), codex()])); // repeat
+		await post(
+			ctx,
+			report([row({ output_tokens: 99 }), codex({ messages: 1 })]),
+		); // one grows, one older
+		await post(
+			ctx,
+			report([row({ session_id: "claude:s2", cache_read_tokens: 7 })]),
+		);
+		ctx.db.run("DELETE FROM usage WHERE day = '2026-10-01'"); // no code path deletes; the trigger still keeps step
+		const t = (await summary(ctx)).total;
+		expect(t?.tools).toEqual(scan() as never);
+		expect(t?.since).toBe("2026-11-13");
+		expect(t?.tools.map((x) => [x.tool, x.output_tokens])).toEqual([
+			["claude", 119],
+			["codex", 20],
+		]);
+	});
+
+	test("the summary (with the all-time total) over 200k rows stays fast", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "usage-200k-"));
+		const db = openDb(join(dir, "hub.db"));
+		try {
+			const ins = db.query(
+				`INSERT INTO usage (session_id, day, model, tool, project, machine_id, input_tokens,
+				   output_tokens, cache_read_tokens, cache_write_tokens, messages, updated_at)
+				 VALUES ($s, $d, $m, $t, $p, 'cockpit', 11, 22, 333, 44, 2, '2026-11-13T08:00:00.000Z')`,
+			);
+			db.transaction(() => {
+				for (let i = 0; i < 200_000; i++)
+					ins.run({
+						s: `${i % 4 ? "claude" : "codex"}:s${i}`,
+						d: dayMinus("2026-11-13", i % 400),
+						m: `m${i % 5}`,
+						t: i % 4 ? "claude" : "codex",
+						p: i % 3 ? `local/F${i % 50}` : null,
+					});
+			})();
+			const times: number[] = [];
+			let s: UsageSummary | null = null;
+			for (let k = 0; k < 5; k++) {
+				const t = performance.now();
+				s = usageSummary(db, new Date(NOW));
+				times.push(performance.now() - t);
+			}
+			times.sort((a, b) => a - b);
+			const median = times[2] ?? Number.NaN;
+			console.log(
+				`[usage] summary over 200k rows: median ${median.toFixed(1)} ms`,
+			);
+			expect(median).toBeLessThan(500); // loose under load; the measured median goes in the report
+			expect(s?.total?.since).toBe(dayMinus("2026-11-13", 399));
+			expect(s?.total?.tools.map((t) => [t.tool, t.messages])).toEqual([
+				["claude", 300_000],
+				["codex", 100_000],
+			]);
+		} finally {
+			db.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

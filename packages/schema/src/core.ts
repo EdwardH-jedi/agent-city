@@ -53,6 +53,7 @@ export type {
 export {
 	dayMinus,
 	tokenCount,
+	USAGE_FIRST_DAY,
 	USAGE_MAX_BODY_BYTES,
 	USAGE_MAX_DAYS,
 	USAGE_MAX_LIMITS,
@@ -64,4 +65,5 @@ export {
 	usageLabel,
 	usageObservedAt,
 	usageProject,
+	usageValidDay,
 } from "./usage.ts";

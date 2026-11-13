@@ -96,6 +96,7 @@ describe("basics", () => {
 			"sessions",
 			"usage",
 			"usage_limits",
+			"usage_total",
 		]);
 		expect(
 			ctx.db.query<{ user_version: number }, []>("PRAGMA user_version").get()

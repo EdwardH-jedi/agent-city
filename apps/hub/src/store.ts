@@ -33,10 +33,12 @@ import {
 	type UsageReport,
 	type UsageSummary,
 	type UsageSummaryRow,
+	type UsageTotalRow,
 	usageDay,
 	usageLabel,
 	usageObservedAt,
 	usageProject,
+	usageValidDay,
 } from "@agent-city/schema";
 
 export interface IngestResult {
@@ -792,15 +794,19 @@ export function listRunEvents(
 
 // ── token usage (M1, 18 §5.1) ──────────────────────────────────────────────────────────────────────
 
-/** Rows for days outside this window around the hub's today are ignored (a skewed or replayed report). */
-export const USAGE_ACCEPT_PAST_DAYS = 40;
+/**
+ * Plan-limit snapshots older than this are pruned. Usage rows are never deleted (18 §5.6 U4: the board
+ * shows an all-time total); a row is ignored only when its day is not a real date, is before
+ * USAGE_FIRST_DAY, or is more than a day past the hub's today (a skewed clock).
+ */
+export const USAGE_LIMITS_KEEP_DAYS = 40;
 
 export interface UsageResult {
 	/** Rows inside the accepted day window (stored or already equal). */
 	accepted: number;
 	/** Rows that grew (or were new). */
 	changed: number;
-	/** Rows outside the day window or naming a session of another tool. */
+	/** Rows with an impossible day (see USAGE_LIMITS_KEEP_DAYS) or naming a session of another tool. */
 	ignored: number;
 	limits: number;
 }
@@ -810,7 +816,7 @@ export interface UsageResult {
  * repeat or an older total changes nothing. Strings are re-checked here (collectors are not trusted):
  * the session id goes through ids.ts again, the model through usageLabel, the project through
  * normalizeRepoId + usageProject (a repo id shape, else null). Limits: the newest `observed_at` per
- * (machine, tool, limit, window) wins. Rows older than the accepted window are pruned here.
+ * (machine, tool, limit, window) wins. Usage rows are kept for good; old limit snapshots are pruned.
  */
 export function recordUsage(
 	db: Database,
@@ -824,7 +830,6 @@ export function recordUsage(
 		limits: 0,
 	};
 	const today = usageDay(now) ?? now.toISOString().slice(0, 10);
-	const oldest = dayMinus(today, USAGE_ACCEPT_PAST_DAYS);
 	const newest = dayMinus(today, -1);
 	const at = now.toISOString();
 	const upsert = db.query(
@@ -861,7 +866,7 @@ export function recordUsage(
 		for (const r of report.rows) {
 			const session = namespacedSessionId(r.tool, r.session_id);
 			if (
-				r.day < oldest ||
+				!usageValidDay(r.day) ||
 				r.day > newest ||
 				!r.session_id.startsWith(`${r.tool}:`)
 			) {
@@ -906,10 +911,9 @@ export function recordUsage(
 				at,
 			}).changes;
 		}
-		db.query("DELETE FROM usage WHERE day < $oldest").run({ oldest });
 		db.query("DELETE FROM usage_limits WHERE observed_at < $before").run({
 			before: new Date(
-				now.getTime() - USAGE_ACCEPT_PAST_DAYS * 86_400_000,
+				now.getTime() - USAGE_LIMITS_KEEP_DAYS * 86_400_000,
 			).toISOString(),
 		});
 	})();
@@ -1008,5 +1012,45 @@ export function usageSummary(db: Database, now: Date, days = 7): UsageSummary {
 				"SELECT max(updated_at) AS at FROM usage WHERE day >= $from",
 			)
 			.get({ from })?.at ?? null;
-	return { tz: USAGE_TZ, today, days: list, rows, limits, updated_at: updated };
+	return {
+		tz: USAGE_TZ,
+		today,
+		days: list,
+		rows,
+		limits,
+		updated_at: updated,
+		total: usageTotal(db),
+	};
+}
+
+/**
+ * All-time sums per tool and the oldest day held (18 §5.6 U4). It runs inside every ingest that changed
+ * a row, so it must not scan every usage row (~40 ms at 200k): the sums come from `usage_total`, which
+ * migration 8's triggers keep in step with `usage`, and min(day) from the day index.
+ */
+export function usageTotal(db: Database): NonNullable<UsageSummary["total"]> {
+	const tools = db
+		.query<UsageTotalRow, []>(
+			`SELECT tool, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, messages
+			 FROM usage_total WHERE tool IN ('claude', 'codex')
+			   AND input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + messages > 0
+			 ORDER BY tool`,
+		)
+		.all()
+		.map((t) => {
+			for (const c of [
+				"input_tokens",
+				"output_tokens",
+				"cache_read_tokens",
+				"cache_write_tokens",
+				"messages",
+			] as const)
+				t[c] = Math.min(Math.max(Math.round(t[c]), 0), Number.MAX_SAFE_INTEGER);
+			return t;
+		});
+	const since =
+		db
+			.query<{ day: string | null }, []>("SELECT min(day) AS day FROM usage")
+			.get()?.day ?? null;
+	return { since, tools };
 }
