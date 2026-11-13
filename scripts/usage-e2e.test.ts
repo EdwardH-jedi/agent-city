@@ -3,7 +3,13 @@
 // the contract promises: only numbers and ids arrive, re-sending never changes a sum, and a collector
 // that lost its offsets reaches the same sums. Fake secrets are assembled at runtime.
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CollectorConfig } from "../apps/collector/src/config.ts";
@@ -21,11 +27,11 @@ const tmp = (p: string) => mkdtempSync(join(tmpdir(), `agentcity-e2e-${p}-`));
 const jl = (...r: unknown[]) =>
 	`${r.map((x) => JSON.stringify(x)).join("\n")}\n`;
 
-const claude = (id: string, n: number) =>
+const claude = (id: string, n: number, ts = "2026-11-13T08:00:00Z") =>
 	jl(
 		...Array.from({ length: 3 }, () => ({
 			type: "assistant",
-			timestamp: "2026-11-13T08:00:00Z",
+			timestamp: ts,
 			sessionId: "44444444-aaaa-bbbb-cccc-000000000004",
 			cwd: `/Users/someone/${FAKE_GH}/widget`,
 			message: {
@@ -219,5 +225,93 @@ describe("collector → hub → /api/usage", () => {
 		]);
 		for (const bad of [FAKE_GH, FAKE_ANT, "/Users/", "someone"])
 			expect(stored).not.toContain(bad);
+	});
+});
+
+describe("backfill → all-time total (18 §5.6 U4)", () => {
+	test("old logs reach the total once; restarts and a lost offsets file leave it unchanged", async () => {
+		const db = openDb(":memory:");
+		const app = createApp({
+			db,
+			ingestToken: TOKEN,
+			publish: () => {},
+			now: () => new Date(NOW),
+		});
+		const bodies: string[] = [];
+		const fetchImpl = (async (url: string, init: RequestInit) => {
+			bodies.push(String(init.body));
+			return app.request(new URL(url).pathname, init);
+		}) as unknown as typeof fetch;
+		const claudeRoot = tmp("bf-claude");
+		const codexRoot = tmp("bf-codex");
+		mkdirSync(join(claudeRoot, "p"), { recursive: true });
+		mkdirSync(join(codexRoot, "2026", "09", "20"), { recursive: true });
+		const old = join(claudeRoot, "p", `${SID}.jsonl`);
+		writeFileSync(
+			old,
+			claude("o1", 1000, "2026-09-25T01:00:00Z") +
+				claude("o2", 100, "2026-10-02T01:00:00Z"),
+		);
+		const rollout = join(codexRoot, "2026", "09", "20", "rollout-old.jsonl");
+		writeFileSync(
+			rollout,
+			codexLog().replaceAll("2026-11-13T07:", "2026-09-20T07:"),
+		);
+		const t = Date.parse("2026-10-02T02:00:00Z") / 1000;
+		utimesSync(old, t, t);
+		utimesSync(rollout, t, t);
+		const cfg = (home: string) =>
+			({
+				hubUrl: "http://hub.test",
+				ingestToken: TOKEN,
+				machine: "cockpit",
+				home,
+				codex: { sessionsDir: codexRoot },
+				usage: { enabled: true, claudeProjectsDir: claudeRoot },
+			}) as unknown as CollectorConfig;
+		const poller = (home: string) =>
+			createUsagePoll({
+				cfg: cfg(home),
+				deps: { git: () => null },
+				fetchImpl,
+				now: () => NOW,
+				log: () => {},
+			});
+		const read = async () =>
+			UsageSummary.parse(await (await app.request("/api/usage")).json());
+
+		const home = tmp("bf-home");
+		const poll = poller(home);
+		await poll();
+		const s = await read();
+		expect(s.rows).toEqual([]); // nothing in the last 7 days
+		expect(s.total).toEqual({
+			since: "2026-09-20",
+			tools: [
+				{
+					tool: "claude",
+					input_tokens: 1100,
+					output_tokens: 1100,
+					cache_read_tokens: 1100,
+					cache_write_tokens: 1100,
+					messages: 2,
+				},
+				{
+					tool: "codex",
+					input_tokens: 400,
+					output_tokens: 7,
+					cache_read_tokens: 600,
+					cache_write_tokens: 0,
+					messages: 1,
+				},
+			],
+		});
+		await poll(); // done: the old files are forgotten and not read again
+		await poller(home)(); // restart
+		await poller(tmp("bf-home2"))(); // offsets lost → a second backfill
+		expect((await read()).total).toEqual(s.total);
+		const wire = bodies.join("\n");
+		for (const bad of [FAKE_GH, FAKE_ANT, "TOKEN=", "/Users/", "someone"])
+			expect(wire).not.toContain(bad);
 	});
 });

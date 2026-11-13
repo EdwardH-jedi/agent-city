@@ -23,6 +23,8 @@ import {
 	emptyUsageState,
 	type ScanDeps,
 	scanUsage,
+	USAGE_BACKFILL_VERSION,
+	type UsageBackfill,
 	type UsageFile,
 	type UsageState,
 	usageRows,
@@ -60,9 +62,24 @@ function validFile(f: unknown): f is UsageFile {
 	);
 }
 
+function validBackfill(b: unknown): b is UsageBackfill {
+	return (
+		isRecord(b) &&
+		b.v === USAGE_BACKFILL_VERSION &&
+		(b.done === null ||
+			(typeof b.done === "string" && Number.isFinite(Date.parse(b.done)))) &&
+		Number.isInteger(b.files) &&
+		Number.isInteger(b.cut)
+	);
+}
+
 /**
  * The saved state, checked entry by entry (a damaged entry is dropped and that file read again; the hub
  * keeps the larger values, so nothing is lost). Missing or unreadable → fresh.
+ *
+ * A state without this USAGE_BACKFILL_VERSION's backfill mark (written before U4, or by another version)
+ * keeps only its limits: its files had already forgotten their old days, so every file is read again
+ * from the start by the backfill. A backfill that was still running resumes where it stopped.
  */
 export function loadUsageState(path: string): UsageState {
 	const state = emptyUsageState();
@@ -73,14 +90,16 @@ export function loadUsageState(path: string): UsageState {
 		return state;
 	}
 	if (!isRecord(raw) || raw.v !== 1) return state;
+	if (isRecord(raw.limits))
+		for (const [k, l] of Object.entries(raw.limits))
+			if (UsageLimitShape(l)) state.limits[k] = l;
+	if (!validBackfill(raw.backfill)) return state;
+	state.backfill = raw.backfill;
 	if (isRecord(raw.files))
 		for (const [p, f] of Object.entries(raw.files))
 			if (validFile(f)) state.files[p] = f;
 	if (Array.isArray(raw.dirty))
 		state.dirty = raw.dirty.filter((d): d is string => typeof d === "string");
-	if (isRecord(raw.limits))
-		for (const [k, l] of Object.entries(raw.limits))
-			if (UsageLimitShape(l)) state.limits[k] = l;
 	if (isRecord(raw.seen))
 		for (const [k, v] of Object.entries(raw.seen))
 			if (typeof v === "string" && state.seen) state.seen[k] = v;
@@ -260,6 +279,13 @@ export function createUsagePoll(
 			});
 			backlog = r.backlog;
 			saveUsageState(statePath, state);
+			if (r.backfilled)
+				log(
+					`[usage] backfill done: ${state.backfill.files} files` +
+						(state.backfill.cut > 0
+							? `, ${state.backfill.cut} oldest left out`
+							: ""),
+				);
 		} catch (err) {
 			log(`[usage] scan failed (${code(err)})`);
 		}

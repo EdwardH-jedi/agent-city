@@ -7,6 +7,8 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,8 +20,10 @@ import {
 	claudeSessionFromPath,
 	emptyUsageState,
 	FILE_KEYS_MAX,
+	KEEP_DAYS,
 	type ScanDeps,
 	scanUsage,
+	USAGE_BACKFILL_VERSION,
 	type UsageState,
 	usageRows,
 } from "./usage-scan.ts";
@@ -773,6 +777,7 @@ describe("review fixes (break-it round 1)", () => {
 				},
 				dirty: [1, "claude:z"],
 				limits: { k: null },
+				backfill: { v: USAGE_BACKFILL_VERSION, done: null, files: 0, cut: 0 },
 			}),
 		);
 		const s = loadUsageState(p);
@@ -802,5 +807,321 @@ describe("state stays bounded", () => {
 		expect(keys.length).toBeLessThanOrEqual(FILE_KEYS_MAX + 1);
 		const rows = usageRows(state, ["claude:many"]);
 		expect(rows.reduce((n, r) => n + r.messages, 0)).toBe(1000); // nothing dropped, folded
+	});
+});
+
+// ── U4: backfill and the all-time total (18 §5.6) ──────────────────────────────────────────────────
+
+/** A stand-in hub: per (session, day, model) every column keeps the larger value, like recordUsage. */
+function maxHub() {
+	const rows = new Map<string, Record<string, number>>();
+	const COLS = [
+		"input_tokens",
+		"output_tokens",
+		"cache_read_tokens",
+		"cache_write_tokens",
+		"messages",
+	] as const;
+	const fetchImpl = (async (_u: string, init: RequestInit) => {
+		const body = UsageReport.parse(JSON.parse(String(init.body)));
+		for (const r of body.rows) {
+			const k = `${r.session_id}|${r.day}|${r.model}`;
+			const cur = rows.get(k) ?? {};
+			for (const c of COLS) cur[c] = Math.max(cur[c] ?? 0, r[c]);
+			rows.set(k, cur);
+		}
+		return new Response("{}");
+	}) as unknown as typeof fetch;
+	const total = () => {
+		const t = [0, 0, 0, 0, 0];
+		for (const r of rows.values())
+			COLS.forEach((c, i) => {
+				t[i] = (t[i] as number) + (r[c] ?? 0);
+			});
+		return t;
+	};
+	const days = () =>
+		[...new Set([...rows.keys()].map((k) => k.split("|")[1] ?? ""))].sort();
+	return { fetchImpl, rows, total, days };
+}
+const sendCfg = {
+	hubUrl: "http://hub.test",
+	ingestToken: "t",
+	machine: "cockpit",
+};
+const DAY_S = 86_400;
+/** Set a file's mtime `days` before NOW. */
+const age = (path: string, days: number) => {
+	const t = NOW / 1000 - days * DAY_S;
+	utimesSync(path, t, t);
+};
+const isoDaysAgo = (days: number) =>
+	new Date(NOW - days * DAY_S * 1000).toISOString();
+
+describe("backfill (18 §5.6 U4)", () => {
+	test("the first scans read files of any age; then it is marked done and old files cost nothing", async () => {
+		const root = tmp("bf-claude");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const old = join(root, "p", "old.jsonl");
+		writeFileSync(
+			old,
+			claudeMsg({ id: "o1", session: "old", ts: isoDaysAgo(60) }) +
+				claudeMsg({ id: "o2", session: "old", ts: isoDaysAgo(59) }),
+		);
+		age(old, 59);
+		const recent = join(root, "p", "new.jsonl");
+		writeFileSync(recent, claudeMsg({ id: "n1", session: "new" }));
+		const state = emptyUsageState();
+		expect(state.backfill.done).toBeNull();
+		const r = scan(root, null, state);
+		expect(r.backfilled).toBe(true);
+		expect(state.backfill).toMatchObject({
+			v: USAGE_BACKFILL_VERSION,
+			files: 2,
+			cut: 0,
+		});
+		expect(state.backfill.done).toBe(new Date(NOW).toISOString());
+		const hub = maxHub();
+		expect((await sendUsage(sendCfg, state, hub.fetchImpl)).failed).toBeNull();
+		expect(hub.days()).toEqual([
+			usageDay(NOW - 60 * DAY_S * 1000) ?? "",
+			usageDay(NOW - 59 * DAY_S * 1000) ?? "",
+			"2026-11-13",
+		]);
+		expect(hub.total()).toEqual([30, 60, 900, 120, 3]);
+		// sent → the next scan forgets the old file; it is not listed again, so it is never read again
+		const next = scan(root, null, state);
+		expect(next).toMatchObject({ bytes: 0, backfilled: false });
+		expect(state.files[old]).toBeUndefined();
+		expect(Object.keys(state.files)).toEqual([recent]);
+		appendFileSync(
+			old,
+			claudeMsg({ id: "o3", session: "old", ts: isoDaysAgo(58) }),
+		);
+		age(old, 58);
+		expect(scan(root, null, state).bytes).toBe(0); // done: no second backfill
+	});
+
+	test("an old day is kept until the hub accepted it (a failed send keeps it)", async () => {
+		const root = tmp("bf-keep");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const old = join(root, "p", "k.jsonl");
+		writeFileSync(
+			old,
+			claudeMsg({ id: "k1", session: "k", ts: isoDaysAgo(30) }),
+		);
+		age(old, 30);
+		const state = emptyUsageState();
+		scan(root, null, state);
+		const down = (async () =>
+			new Response("", { status: 503 })) as unknown as typeof fetch;
+		expect((await sendUsage(sendCfg, state, down)).failed).toBe(503);
+		scan(root, null, state); // not backfilling any more, but the session is still dirty
+		expect(Object.keys(state.files[old]?.totals ?? {})).toHaveLength(1);
+		const hub = maxHub();
+		await sendUsage(sendCfg, state, hub.fetchImpl);
+		expect(hub.total()[4]).toBe(1);
+		scan(root, null, state);
+		expect(state.files[old]).toBeUndefined();
+	});
+
+	test("restarted mid-backfill it resumes and reaches the same hub total as one read; repeats change nothing", async () => {
+		const root = tmp("bf-restart");
+		const home = tmp("bf-restart-home");
+		mkdirSync(join(root, "p", "big", "subagents"), { recursive: true });
+		let main = "";
+		let sub = "";
+		for (let i = 0; i < 40; i++) {
+			main += claudeMsg({
+				id: `m${i}`,
+				session: "big",
+				ts: isoDaysAgo(50 - i),
+			});
+			sub += claudeMsg({
+				id: `s${i}`,
+				session: "big",
+				ts: isoDaysAgo(45 - i),
+				model: "claude-haiku-5-5",
+			});
+		}
+		const mainPath = join(root, "p", "big.jsonl");
+		const subPath = join(root, "p", "big", "subagents", "agent-1.jsonl");
+		writeFileSync(mainPath, main);
+		writeFileSync(subPath, sub);
+		age(mainPath, 11);
+		age(subPath, 6);
+		// reference: one unbounded read
+		const ref = maxHub();
+		const one = emptyUsageState();
+		scan(root, null, one);
+		await sendUsage(sendCfg, one, ref.fetchImpl);
+		// bounded reads, a send after each, the state saved and reloaded (a restart) halfway
+		const hub = maxHub();
+		const statePath = join(home, "usage-offsets.json");
+		let state = emptyUsageState();
+		let scans = 0;
+		for (;;) {
+			const r = scan(root, null, state, { perFileMax: 700, totalMax: 900 });
+			await sendUsage(sendCfg, state, hub.fetchImpl);
+			saveUsageState(statePath, state);
+			scans++;
+			if (scans === 4) {
+				state = loadUsageState(statePath);
+				expect(state.backfill.done).toBeNull(); // still running → resumes, not restarted
+				markAll(state);
+			}
+			if (r.backfilled) break;
+			expect(scans).toBeLessThan(500);
+		}
+		expect(scans).toBeGreaterThan(4);
+		expect(hub.total()).toEqual(ref.total());
+		expect(hub.total()[4]).toBe(80);
+		// a restart after it is done re-sends what the state still holds: the hub's total does not move
+		const after = loadUsageState(statePath);
+		expect(after.backfill.done).not.toBeNull();
+		markAll(after);
+		scan(root, null, after);
+		await sendUsage(sendCfg, after, hub.fetchImpl);
+		await sendUsage(sendCfg, after, hub.fetchImpl);
+		expect(hub.total()).toEqual(ref.total());
+	});
+
+	test("a replay read in a later backfill scan than its original counts once", async () => {
+		const root = tmp("bf-replay");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const orig = join(root, "p", "orig.jsonl");
+		const fork = join(root, "p", "fork.jsonl");
+		let a = "";
+		for (let i = 0; i < 20; i++)
+			a += claudeMsg({ id: `r${i}`, session: "orig", ts: isoDaysAgo(40) });
+		writeFileSync(orig, a);
+		writeFileSync(
+			fork,
+			a + claudeMsg({ id: "f1", session: "fork", ts: isoDaysAgo(39) }),
+		);
+		age(orig, 40);
+		age(fork, 20);
+		const state = emptyUsageState();
+		const hub = maxHub();
+		let scans = 0;
+		for (;;) {
+			const r = scan(root, null, state, { perFileMax: 2000, totalMax: 2000 });
+			await sendUsage(sendCfg, state, hub.fetchImpl);
+			scans++;
+			if (r.backfilled) break;
+		}
+		expect(scans).toBeGreaterThan(2);
+		expect(hub.total()[4]).toBe(21);
+	});
+
+	test("after the backfill, lines dated before the cutoff are not counted (a late replay of an old message)", async () => {
+		const root = tmp("bf-late");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const state = emptyUsageState();
+		scan(root, null, state);
+		expect(state.backfill.done).not.toBeNull();
+		writeFileSync(
+			join(root, "p", "late.jsonl"),
+			claudeMsg({ id: "x1", session: "late", ts: isoDaysAgo(KEEP_DAYS + 3) }) +
+				claudeMsg({ id: "x2", session: "late" }),
+		);
+		scan(root, null, state);
+		expect(usageRows(state, ["claude:late"]).map((r) => r.day)).toEqual([
+			"2026-11-13",
+		]);
+	});
+
+	test("a state written before U4 (no backfill mark) keeps its limits and reads every file again", () => {
+		const home = tmp("bf-old-state");
+		const p = join(home, "s.json");
+		writeFileSync(
+			p,
+			JSON.stringify({
+				v: 1,
+				files: {
+					"/x.jsonl": {
+						tool: "claude",
+						ino: 1,
+						offset: 999,
+						session: "claude:x",
+						project: null,
+						model: null,
+						last_id: null,
+						totals: { "2026-11-13|m": [1, 1, 1, 1, 1] },
+						mtime: 0,
+					},
+				},
+				dirty: ["claude:x"],
+				limits: {
+					"codex|codex|10080": {
+						tool: "codex",
+						limit_id: "codex",
+						window_minutes: 10080,
+						used_percent: 4,
+						resets_at: null,
+						plan_type: null,
+						observed_at: "2026-11-13T08:00:00.000Z",
+					},
+				},
+				seen: { abc: "def|2026-11-13" },
+			}),
+		);
+		const s = loadUsageState(p);
+		expect(s.files).toEqual({});
+		expect(s.dirty).toEqual([]);
+		expect(s.seen).toEqual({});
+		expect(Object.keys(s.limits)).toEqual(["codex|codex|10080"]);
+		expect(s.backfill).toEqual({
+			v: USAGE_BACKFILL_VERSION,
+			done: null,
+			files: 0,
+			cut: 0,
+		});
+		const other = JSON.parse(readFileSync(p, "utf8"));
+		other.backfill = {
+			v: USAGE_BACKFILL_VERSION + 1,
+			done: "2026-11-13T08:00:00.000Z",
+			files: 1,
+			cut: 0,
+		};
+		writeFileSync(p, JSON.stringify(other));
+		expect(loadUsageState(p).backfill.done).toBeNull(); // another version → runs again
+	});
+
+	test("the poller logs the end of the backfill once, with counts only", async () => {
+		const root = tmp("bf-log");
+		const home = tmp("bf-log-home");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const f = join(root, "p", "q.jsonl");
+		writeFileSync(f, claudeMsg({ id: "1", session: "q", ts: isoDaysAgo(20) }));
+		age(f, 20);
+		const conf = {
+			hubUrl: "http://hub.test",
+			ingestToken: "t",
+			machine: "cockpit",
+			home,
+			codex: { sessionsDir: join(home, "none") },
+			usage: { enabled: true, claudeProjectsDir: root },
+		} as unknown as CollectorConfig;
+		const logs: string[] = [];
+		const poll = createUsagePoll({
+			cfg: conf,
+			deps,
+			fetchImpl: maxHub().fetchImpl,
+			now: () => NOW,
+			log: (l) => logs.push(l),
+		});
+		await poll();
+		await poll();
+		expect(logs.filter((l) => l.includes("backfill"))).toEqual([
+			"[usage] backfill done: 1 files",
+		]);
+		const saved = JSON.parse(
+			readFileSync(join(home, "usage-offsets.json"), "utf8"),
+		);
+		expect(saved.backfill.done).toBe(new Date(NOW).toISOString());
+		expect(statSync(join(home, "usage-offsets.json")).size).toBeLessThan(
+			10_000,
+		);
 	});
 });
