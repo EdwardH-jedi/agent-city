@@ -52,6 +52,10 @@ export const KEEP_DAYS = 8;
 const MAX_STATE_FILES = 4_000;
 const GIT_CACHE_MAX = 256;
 const ITERATIONS_MAX = 64;
+/** Distinct (day, model) keys one file may hold; past it new models count as `unknown`. */
+export const FILE_KEYS_MAX = 128;
+/** Message ids remembered across files; past it the oldest days are forgotten first. */
+export const SEEN_MAX = 200_000;
 
 /** [input (not cached), output, cache read, cache write, messages] */
 export type Totals = [number, number, number, number, number];
@@ -197,7 +201,17 @@ function projectResolver(deps: ScanDeps): Resolve {
 }
 
 function add(file: UsageFile, day: string, model: string, t: Totals): void {
-	const key = `${day}|${model}`;
+	let key = `${day}|${model}`;
+	if (
+		file.totals[key] === undefined &&
+		Object.keys(file.totals).length >= FILE_KEYS_MAX
+	)
+		key = `${day}|unknown`; // a transcript naming endless models can't grow the state
+	if (
+		file.totals[key] === undefined &&
+		Object.keys(file.totals).length >= FILE_KEYS_MAX + KEEP_DAYS + 1
+	)
+		return;
 	const cur = file.totals[key] ?? [0, 0, 0, 0, 0];
 	for (let i = 0; i < 5; i++) cur[i] = (cur[i] as number) + (t[i] as number);
 	file.totals[key] = cur;
@@ -539,6 +553,14 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		if (Date.parse(l.observed_at) < minObserved) delete state.limits[key];
 	for (const [id, v] of Object.entries(seenIds))
 		if (v.slice(-10) < cutoff) delete seenIds[id];
+	const ids = Object.keys(seenIds);
+	if (ids.length > SEEN_MAX) {
+		// forget the oldest days first (a replay of those can then count again — bounded beats exact)
+		const byDay = ids.sort((a, b) =>
+			(seenIds[a] ?? "").slice(-10) < (seenIds[b] ?? "").slice(-10) ? -1 : 1,
+		);
+		for (const id of byDay.slice(0, ids.length - SEEN_MAX)) delete seenIds[id];
+	}
 	const live = new Set<string>();
 	for (const f of Object.values(state.files))
 		if (f.session) live.add(f.session);
