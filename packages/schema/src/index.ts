@@ -77,8 +77,11 @@ export {
 	USAGE_MAX_DAYS,
 	USAGE_MAX_LIMITS,
 	USAGE_MAX_ROWS,
+	USAGE_ROW_MAX,
 	USAGE_TOKENS_MAX,
 	USAGE_TZ,
 	usageDay,
 	usageLabel,
+	usageObservedAt,
+	usageProject,
 } from "./usage.ts";

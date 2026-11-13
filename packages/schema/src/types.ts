@@ -16,7 +16,7 @@ import {
 	USAGE_LABEL_RE,
 	USAGE_MAX_LIMITS,
 	USAGE_MAX_ROWS,
-	USAGE_TOKENS_MAX,
+	USAGE_ROW_MAX,
 } from "./usage.ts";
 
 const Ts = z.iso.datetime({ offset: true });
@@ -399,12 +399,8 @@ const UsageSessionId = z
 	.regex(/^(claude|codex):[A-Za-z0-9._-]{1,128}$/);
 const UsageDay = z.string().regex(USAGE_DAY_RE);
 const UsageLabel = z.string().regex(USAGE_LABEL_RE);
-/** USAGE_TOKENS_MAX per message × many messages still sits well inside 2^53. */
-const TokenSum = z
-	.number()
-	.int()
-	.nonnegative()
-	.max(USAGE_TOKENS_MAX * 1000);
+/** One row's count; see USAGE_ROW_MAX. */
+const TokenSum = z.number().int().nonnegative().max(USAGE_ROW_MAX);
 
 /**
  * One cumulative row: a session's tokens for one Australia/Sydney day and one model. Strict, and

@@ -23,6 +23,7 @@ import {
 	emptyUsageState,
 	type ScanDeps,
 	scanUsage,
+	type UsageFile,
 	type UsageState,
 	usageRows,
 } from "./usage-scan.ts";
@@ -32,23 +33,69 @@ export const USAGE_BACKLOG_MS = 5_000;
 const SEND_TIMEOUT_MS = 10_000;
 const MACHINES = new Set(["cockpit", "forge", "spine"]);
 
-export function loadUsageState(path: string): UsageState {
-	try {
-		const s = JSON.parse(readFileSync(path, "utf8")) as UsageState;
-		if (
-			s &&
-			s.v === 1 &&
-			typeof s.files === "object" &&
-			s.files !== null &&
-			Array.isArray(s.dirty) &&
-			typeof s.limits === "object" &&
-			s.limits !== null
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+	typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A saved file entry is used only when every field has its type; otherwise that file is read again. */
+function validFile(f: unknown): f is UsageFile {
+	if (!isRecord(f)) return false;
+	const strOrNull = (v: unknown) => v === null || typeof v === "string";
+	return (
+		(f.tool === "claude" || f.tool === "codex") &&
+		Number.isFinite(f.ino) &&
+		Number.isInteger(f.offset) &&
+		(f.offset as number) >= 0 &&
+		Number.isFinite(f.mtime) &&
+		strOrNull(f.session) &&
+		strOrNull(f.project) &&
+		strOrNull(f.model) &&
+		strOrNull(f.last_id) &&
+		isRecord(f.totals) &&
+		Object.values(f.totals).every(
+			(t) =>
+				Array.isArray(t) &&
+				t.length === 5 &&
+				t.every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0),
 		)
-			return s;
+	);
+}
+
+/**
+ * The saved state, checked entry by entry (a damaged entry is dropped and that file read again; the hub
+ * keeps the larger values, so nothing is lost). Missing or unreadable → fresh.
+ */
+export function loadUsageState(path: string): UsageState {
+	const state = emptyUsageState();
+	let raw: unknown;
+	try {
+		raw = JSON.parse(readFileSync(path, "utf8"));
 	} catch {
-		// missing / corrupt → fresh (every file is read again; the hub keeps the larger values)
+		return state;
 	}
-	return emptyUsageState();
+	if (!isRecord(raw) || raw.v !== 1) return state;
+	if (isRecord(raw.files))
+		for (const [p, f] of Object.entries(raw.files))
+			if (validFile(f)) state.files[p] = f;
+	if (Array.isArray(raw.dirty))
+		state.dirty = raw.dirty.filter((d): d is string => typeof d === "string");
+	if (isRecord(raw.limits))
+		for (const [k, l] of Object.entries(raw.limits))
+			if (UsageLimitShape(l)) state.limits[k] = l;
+	if (isRecord(raw.seen))
+		for (const [k, v] of Object.entries(raw.seen))
+			if (typeof v === "string" && state.seen) state.seen[k] = v;
+	return state;
+}
+
+function UsageLimitShape(l: unknown): l is UsageLimit {
+	return (
+		isRecord(l) &&
+		(l.tool === "claude" || l.tool === "codex") &&
+		typeof l.limit_id === "string" &&
+		Number.isInteger(l.window_minutes) &&
+		typeof l.used_percent === "number" &&
+		typeof l.observed_at === "string"
+	);
 }
 
 export function saveUsageState(path: string, state: UsageState): void {
@@ -146,6 +193,18 @@ export async function sendUsage(
 			await res.body?.cancel().catch(() => {});
 		} catch {
 			status = 0;
+		}
+		if (status === 400 || status === 413) {
+			// the hub will never take this chunk as it is: drop it (it goes again only when it changes)
+			// instead of blocking every later chunk forever
+			result.failed = status;
+			const done = new Set(chunk.sessions);
+			state.dirty = state.dirty.filter((s) => !done.has(s));
+			if (limits.length > 0) {
+				state.limits_dirty = false;
+				limits = [];
+			}
+			continue;
 		}
 		if (status < 200 || status >= 300) {
 			result.failed = status;

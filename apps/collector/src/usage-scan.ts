@@ -24,18 +24,22 @@ import {
 	readSync,
 	statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join, sep } from "node:path";
 import {
 	dayMinus,
+	fnv1a64,
 	parseGithubRemote,
 	safeText,
 	sessionId,
 	tokenCount,
+	USAGE_ROW_MAX,
 	type UsageLimit,
 	type UsageRow,
 	type UsageTool,
 	usageDay,
 	usageLabel,
+	usageObservedAt,
+	usageProject,
 } from "@agent-city/schema/core";
 import type { GitInfo } from "./git-info.ts";
 
@@ -63,7 +67,7 @@ export interface UsageFile {
 	project: string | null;
 	/** Codex: the model of the current turn (turn_context sits behind the offset after a restart). */
 	model: string | null;
-	/** Claude: the last counted message id (its repeats are adjacent). */
+	/** Claude: fnv1a64 of the last counted message id (its repeats are adjacent). Never the raw id. */
 	last_id: string | null;
 	/** `${day}|${model}` → totals of this file. */
 	totals: Record<string, Totals>;
@@ -78,6 +82,12 @@ export interface UsageState {
 	/** `${tool}|${limit_id}|${window}` → newest snapshot. */
 	limits: Record<string, UsageLimit>;
 	limits_dirty: boolean;
+	/**
+	 * Claude message ids already counted, across files: fnv1a64(id) → `${fnv1a64(path)}|${day}`. A resumed
+	 * or forked transcript replays earlier messages into a new file; they count once, in the file read
+	 * first. Pruned with the days.
+	 */
+	seen?: Record<string, string>;
 }
 
 export const emptyUsageState = (): UsageState => ({
@@ -86,6 +96,7 @@ export const emptyUsageState = (): UsageState => ({
 	dirty: [],
 	limits: {},
 	limits_dirty: false,
+	seen: {},
 });
 
 export interface ScanDeps {
@@ -173,7 +184,7 @@ function projectResolver(deps: ScanDeps): Resolve {
 		if (hit !== undefined) return hit;
 		let id: string | null = null;
 		try {
-			id = safeText(deps.git(cwd)?.repo_id ?? null, 256);
+			id = usageProject(safeText(deps.git(cwd)?.repo_id ?? null, 256));
 		} catch {
 			id = null;
 		}
@@ -196,7 +207,13 @@ function add(file: UsageFile, day: string, model: string, t: Totals): void {
 const modelOf = (v: unknown): string => usageLabel(v) ?? "unknown";
 
 /** One Claude transcript line. Returns true when it added usage. */
-function claudeLine(line: string, file: UsageFile, project: Resolve): boolean {
+function claudeLine(
+	line: string,
+	file: UsageFile,
+	project: Resolve,
+	seen: Record<string, string>,
+	pathKey: string,
+): boolean {
 	if (!line.includes('"usage"') || !line.includes('"assistant"')) return false;
 	let r: Obj;
 	try {
@@ -210,11 +227,17 @@ function claudeLine(line: string, file: UsageFile, project: Resolve): boolean {
 	const m = r.message;
 	const u = m.usage;
 	if (!isObj(u)) return false;
-	const id = str(m.id) ?? str(r.requestId);
+	const raw = str(m.id) ?? str(r.requestId);
+	const id = raw === null ? null : fnv1a64(raw);
 	if (id !== null && id === file.last_id) return false; // same message, next content block
 	const day = usageDay(str(r.timestamp) ?? "");
 	if (!day) return false;
-	if (id !== null) file.last_id = id;
+	if (id !== null) {
+		file.last_id = id;
+		const first = seen[id];
+		if (first !== undefined && !first.startsWith(`${pathKey}|`)) return false; // replayed
+		if (first === undefined) seen[id] = `${pathKey}|${day}`;
+	}
 	if (!file.session) {
 		const raw = str(r.sessionId);
 		if (raw) file.session = sessionId("claude", raw);
@@ -317,7 +340,7 @@ function codexLine(
 		const remote = isObj(p.git) ? str(p.git.repository_url) : null;
 		file.project =
 			project(str(p.cwd)) ??
-			safeText(remote ? parseGithubRemote(remote) : null, 256) ??
+			usageProject(safeText(remote ? parseGithubRemote(remote) : null, 256)) ??
 			file.project;
 		return false;
 	}
@@ -358,11 +381,28 @@ function codexLine(
 	return false;
 }
 
-const freshFile = (tool: UsageTool, ino: number, mtime: number): UsageFile => ({
+/**
+ * A Claude transcript's session from its path: `<dir>/<session>.jsonl`, or
+ * `<dir>/<session>/subagents/<agent>.jsonl` (a subagent belongs to its parent). Null for other shapes
+ * (the first line's sessionId is used then).
+ */
+export function claudeSessionFromPath(path: string): string | null {
+	const parts = path.split(sep);
+	const name = basename(path, ".jsonl");
+	const raw = parts.at(-2) === "subagents" ? (parts.at(-3) ?? null) : name;
+	return raw ? sessionId("claude", raw) : null;
+}
+
+const freshFile = (
+	tool: UsageTool,
+	ino: number,
+	mtime: number,
+	path: string,
+): UsageFile => ({
 	tool,
 	ino,
 	offset: 0,
-	session: null,
+	session: tool === "claude" ? claudeSessionFromPath(path) : null,
 	project: null,
 	model: null,
 	last_id: null,
@@ -382,8 +422,12 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	const dirty = new Set(state.dirty);
 	const cutoff = dayMinus(usageDay(opts.now) ?? "1970-01-01", KEEP_DAYS);
 	const minObserved = opts.now - KEEP_DAYS * 86_400_000;
+	if (!state.seen) state.seen = {};
+	const seenIds = state.seen;
 	const onLimit = (l: UsageLimit) => {
-		if (Date.parse(l.observed_at) < minObserved) return;
+		const observed = usageObservedAt(l.observed_at, opts.now);
+		if (observed === null || Date.parse(observed) < minObserved) return;
+		l.observed_at = observed;
 		const key = `${l.tool}|${l.limit_id}|${l.window_minutes}`;
 		const cur = state.limits[key];
 		if (cur && Date.parse(cur.observed_at) >= Date.parse(l.observed_at)) return;
@@ -419,7 +463,7 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		if (!file || file.tool !== tool || file.ino !== ino || size < file.offset) {
 			// new, rotated or truncated → read it again from the start
 			if (file?.session) dirty.add(file.session);
-			file = freshFile(tool, ino, mtime);
+			file = freshFile(tool, ino, mtime, path);
 			state.files[path] = file;
 		}
 		file.mtime = mtime;
@@ -440,6 +484,7 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 		}
 		budget -= buf.length;
 		bytes += buf.length;
+		const pathKey = fnv1a64(path);
 		let pos = 0;
 		if (file.skip) {
 			const nl = buf.indexOf(0x0a);
@@ -459,7 +504,7 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 				const line = buf.subarray(pos, nl).toString("utf8");
 				const got =
 					tool === "claude"
-						? claudeLine(line, file, project)
+						? claudeLine(line, file, project, seenIds, pathKey)
 						: codexLine(line, file, project, onLimit);
 				if (got) added = true;
 			}
@@ -493,6 +538,8 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 	}
 	for (const [key, l] of Object.entries(state.limits))
 		if (Date.parse(l.observed_at) < minObserved) delete state.limits[key];
+	for (const [id, v] of Object.entries(seenIds))
+		if (v.slice(-10) < cutoff) delete seenIds[id];
 	const live = new Set<string>();
 	for (const f of Object.values(state.files))
 		if (f.session) live.add(f.session);
@@ -539,11 +586,11 @@ export function usageRows(
 				model: key.slice(bar + 1),
 				tool: s.tool,
 				project: s.project,
-				input_tokens: t[0],
-				output_tokens: t[1],
-				cache_read_tokens: t[2],
-				cache_write_tokens: t[3],
-				messages: t[4],
+				input_tokens: Math.min(t[0], USAGE_ROW_MAX),
+				output_tokens: Math.min(t[1], USAGE_ROW_MAX),
+				cache_read_tokens: Math.min(t[2], USAGE_ROW_MAX),
+				cache_write_tokens: Math.min(t[3], USAGE_ROW_MAX),
+				messages: Math.min(t[4], USAGE_ROW_MAX),
 			});
 		}
 	}

@@ -17,8 +17,13 @@ export const USAGE_MAX_ROWS = 500;
 export const USAGE_MAX_LIMITS = 16;
 /** `GET /api/usage?days=N`: N is 1..this (default 7). */
 export const USAGE_MAX_DAYS = 31;
-/** One message can't plausibly use more; anything above is clamped (keeps sums finite and exact). */
-export const USAGE_TOKENS_MAX = 1e12;
+/** One message can't plausibly use more (contexts are ~1e6); anything above is clamped. */
+export const USAGE_TOKENS_MAX = 1e9;
+/**
+ * Cap on one row's count (session × day × model). Collectors clamp to it before sending and the hub
+ * refuses more, so a sum over many rows stays exact (< 2^53 for ~900 maxed rows) and never overflows.
+ */
+export const USAGE_ROW_MAX = 1e13;
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 /** Model names, limit ids and plan types: a tight charset, else they are not sent as-is. */
@@ -57,6 +62,37 @@ export function dayMinus(day: string, n: number): string {
  */
 export function usageLabel(v: unknown): string | null {
 	return typeof v === "string" && LABEL.test(v) && redact(v) === v ? v : null;
+}
+
+const PROJECT = /^[A-Za-z0-9._-]{1,100}\/[^\s/\\]{1,150}$/;
+/** True when the string holds a C0 control character or DEL. */
+const hasControl = (v: string): boolean => {
+	for (let i = 0; i < v.length; i++) {
+		const c = v.charCodeAt(i);
+		if (c < 0x20 || c === 0x7f) return true;
+	}
+	return false;
+};
+
+/**
+ * A repo id that may be stored and shown: `owner/name` or `local/<folder>` with no whitespace, slash,
+ * backslash or control character in the second part, and nothing secret-shaped; else null.
+ */
+export function usageProject(v: unknown): string | null {
+	return typeof v === "string" &&
+		PROJECT.test(v) &&
+		!hasControl(v) &&
+		redact(v) === v
+		? v
+		: null;
+}
+
+/** An observation time a collector may send: valid, plain 4-digit-year ISO, not over a day ahead. */
+export function usageObservedAt(v: unknown, now: number): string | null {
+	const ms = typeof v === "string" ? Date.parse(v) : Number.NaN;
+	if (!Number.isFinite(ms) || ms > now + 86_400_000 || ms < 0) return null;
+	const iso = new Date(ms).toISOString();
+	return /^\d{4}-/.test(iso) ? iso : null;
 }
 
 /** A token count from a transcript: a finite non-negative integer, clamped; anything else → 0. */
