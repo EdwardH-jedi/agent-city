@@ -77,7 +77,7 @@ const GIT_CACHE_MAX = 256;
 const ITERATIONS_MAX = 64;
 /** Distinct models one file may name on one day; past it new models count as `unknown`. */
 export const MODELS_PER_DAY_MAX = 16;
-/** A file's (day, model) keys: this plus one per day a line may be dated (see add). */
+/** A file's (day, model) keys: this plus one per day a line may be dated (see placeKeys). */
 export const FILE_KEYS_MAX = 128;
 /** Message ids remembered across files; past it the oldest days are forgotten first. */
 export const SEEN_MAX = 200_000;
@@ -171,6 +171,11 @@ export interface ScanResult {
 	files: number;
 	/** This scan finished the backfill. */
 	backfilled: boolean;
+	/**
+	 * A file's (day, model) keys are full and its session waits for the hub's ack (sent, not yet
+	 * accepted): the scan stopped before that line. Backlog too, but only a successful send moves it on.
+	 */
+	paused: boolean;
 }
 
 type Obj = Record<string, unknown>;
@@ -266,35 +271,63 @@ function projectResolver(deps: ScanDeps): Resolve {
 }
 
 /**
- * Add to a file's (day, model) totals. Past MODELS_PER_DAY_MAX models on one day a new model counts as
- * `unknown` (a transcript naming endless models can't grow the state), so a file holds at most
- * MODELS_PER_DAY_MAX + 1 keys a day; `keyCap` (FILE_KEYS_MAX + the days a line may be dated) is the hard
- * stop on the keys dated from `minDay` on, a bound that never drops a real day. Older keys (a backfill's
- * days still waiting for the hub's ack) don't count against it: they only ever shrink.
+ * Where a line's usage lands in a file's (day, model) totals, or null when it does not fit. Past
+ * MODELS_PER_DAY_MAX models on one day a new model counts as `unknown` (a transcript naming endless models
+ * can't grow the state), so a file holds at most MODELS_PER_DAY_MAX + 1 keys a day; `keyCap` (FILE_KEYS_MAX
+ * + the days a line may be dated) bounds the keys dated from `minDay` on. Older keys (a backfill's days still
+ * waiting for the hub's ack) don't count against it: they only ever shrink. A line that does not fit is not
+ * read at all: the scan stops before it until the hub has the file's totals and they can be freed
+ * (18 §9.7 P2-1) — nothing valid is dropped.
  */
-function add(
+function placeKeys(
 	file: UsageFile,
 	day: string,
-	model: string,
-	t: Totals,
+	models: readonly string[],
 	{ minDay, keyCap }: DayRange,
-): void {
-	let key = `${day}|${model}`;
-	if (file.totals[key] === undefined) {
-		const keys = Object.keys(file.totals);
-		const today = `${day}|`;
-		if (keys.filter((k) => k.startsWith(today)).length >= MODELS_PER_DAY_MAX)
-			key = `${day}|unknown`;
-		if (
-			file.totals[key] === undefined &&
-			keys.filter((k) => k.slice(0, 10) >= minDay).length >= keyCap
-		)
-			return;
+): string[] | null {
+	let onDay = 0;
+	let counted = 0;
+	for (const k of Object.keys(file.totals)) {
+		if (k.startsWith(`${day}|`)) onDay++;
+		if (k.slice(0, 10) >= minDay) counted++;
 	}
+	const fresh = new Set<string>();
+	const out: string[] = [];
+	for (const model of models) {
+		let key = `${day}|${model}`;
+		if (file.totals[key] === undefined && !fresh.has(key)) {
+			if (onDay >= MODELS_PER_DAY_MAX) key = `${day}|unknown`;
+			if (file.totals[key] === undefined && !fresh.has(key)) {
+				fresh.add(key);
+				onDay++;
+				if (day >= minDay) counted++;
+			}
+		}
+		out.push(key);
+	}
+	// only a new key can overflow (after the backfill the cap shrinks below what a file may hold)
+	return fresh.size > 0 && counted > keyCap ? null : out;
+}
+
+function addAt(file: UsageFile, key: string, t: Totals): void {
 	const cur = file.totals[key] ?? [0, 0, 0, 0, 0];
 	for (let i = 0; i < 5; i++) cur[i] = (cur[i] as number) + (t[i] as number);
 	file.totals[key] = cur;
 }
+
+/**
+ * A full file whose session the hub has acknowledged: free every key except the blocked line's day (a
+ * chronological file never adds to an older day again; that day may still grow). A freed key touched
+ * again restarts from zero and the hub's MAX hides that growth — an out-of-order line in the same file,
+ * or a later file of the same session on a freed day (never an over-count).
+ */
+function freeKeys(file: UsageFile, day: string): void {
+	for (const k of Object.keys(file.totals))
+		if (!k.startsWith(`${day}|`)) delete file.totals[k];
+}
+
+/** What a line did: added usage, nothing, or did not fit (the scan stops before it). */
+type LineResult = boolean | { full: string };
 
 const modelOf = (v: unknown): string => usageLabel(v) ?? "unknown";
 
@@ -304,7 +337,7 @@ interface DayRange {
 	keyCap: number;
 }
 
-/** One Claude transcript line. Returns true when it added usage. */
+/** One Claude transcript line. Changes nothing when it does not fit (`full`). */
 function claudeLine(
 	line: string,
 	file: UsageFile,
@@ -312,7 +345,7 @@ function claudeLine(
 	seen: Record<string, string>,
 	pathKey: string,
 	range: DayRange,
-): boolean {
+): LineResult {
 	if (!line.includes('"usage"') || !line.includes('"assistant"')) return false;
 	let r: Obj;
 	try {
@@ -331,51 +364,57 @@ function claudeLine(
 	if (id !== null && id === file.last_id) return false; // same message, next content block
 	const day = usageDay(str(r.timestamp) ?? "");
 	if (!day) return false;
-	if (id !== null) file.last_id = id;
-	if (day < range.minDay) return false; // after the backfill: an old day the hub already holds (or a replay)
-	if (id !== null) {
-		const first = seen[id];
-		if (first !== undefined && !first.startsWith(`${pathKey}|`)) return false; // replayed
-		if (first === undefined) seen[id] = `${pathKey}|${day}`;
+	const first = id === null ? undefined : seen[id];
+	const counts =
+		day >= range.minDay && // after the backfill: an old day the hub already holds (or a replay)
+		!(first !== undefined && !first.startsWith(`${pathKey}|`)); // replayed
+	const parts: [string, Totals][] = [];
+	if (counts) {
+		const own: Totals = [
+			tokenCount(u.input_tokens),
+			tokenCount(u.output_tokens),
+			tokenCount(u.cache_read_input_tokens),
+			tokenCount(u.cache_creation_input_tokens),
+			1,
+		];
+		if (own[0] + own[1] + own[2] + own[3] > 0)
+			parts.push([modelOf(m.model), own]);
+		if (Array.isArray(u.iterations))
+			for (const it of u.iterations.slice(0, ITERATIONS_MAX)) {
+				if (!isObj(it) || it.type !== "advisor_message") continue;
+				parts.push([
+					modelOf(it.model),
+					[
+						tokenCount(it.input_tokens),
+						tokenCount(it.output_tokens),
+						tokenCount(it.cache_read_input_tokens),
+						tokenCount(it.cache_creation_input_tokens),
+						1,
+					],
+				]);
+			}
 	}
+	// decided before anything changes: a line that does not fit is read again, whole, after the pause
+	const keys = placeKeys(
+		file,
+		day,
+		parts.map(([model]) => model),
+		range,
+	);
+	if (keys === null) return { full: day };
+	if (id !== null) file.last_id = id;
+	if (!counts) return false;
+	if (id !== null && first === undefined) seen[id] = `${pathKey}|${day}`;
 	if (!file.session) {
 		const raw = str(r.sessionId);
 		if (raw) file.session = sessionId("claude", raw);
 	}
 	const p = project(str(r.cwd));
 	if (p) file.project = p;
-	let added = false;
-	const own: Totals = [
-		tokenCount(u.input_tokens),
-		tokenCount(u.output_tokens),
-		tokenCount(u.cache_read_input_tokens),
-		tokenCount(u.cache_creation_input_tokens),
-		1,
-	];
-	if (own[0] + own[1] + own[2] + own[3] > 0) {
-		add(file, day, modelOf(m.model), own, range);
-		added = true;
-	}
-	if (Array.isArray(u.iterations)) {
-		for (const it of u.iterations.slice(0, ITERATIONS_MAX)) {
-			if (!isObj(it) || it.type !== "advisor_message") continue;
-			add(
-				file,
-				day,
-				modelOf(it.model),
-				[
-					tokenCount(it.input_tokens),
-					tokenCount(it.output_tokens),
-					tokenCount(it.cache_read_input_tokens),
-					tokenCount(it.cache_creation_input_tokens),
-					1,
-				],
-				range,
-			);
-			added = true;
-		}
-	}
-	return added;
+	parts.forEach(([, t], i) => {
+		addAt(file, keys[i] as string, t);
+	});
+	return parts.length > 0;
 }
 
 const CODEX_KEYS = [
@@ -422,14 +461,14 @@ function codexLimits(rl: Obj, observed: string): UsageLimit[] {
 	return out;
 }
 
-/** One Codex rollout line. Returns true when it added usage. */
+/** One Codex rollout line. Changes nothing when it does not fit (`full`). */
 function codexLine(
 	line: string,
 	file: UsageFile,
 	project: Resolve,
 	onLimit: (l: UsageLimit) => void,
 	range: DayRange,
-): boolean {
+): LineResult {
 	if (!CODEX_KEYS.some((k) => line.includes(k))) return false;
 	let r: Obj;
 	try {
@@ -466,19 +505,15 @@ function codexLine(
 		const u = p.usage;
 		const input = tokenCount(u.input_tokens);
 		const cached = Math.min(tokenCount(u.cached_input_tokens), input);
-		add(
-			file,
-			day,
-			file.model ?? "unknown",
-			[
-				input - cached,
-				tokenCount(u.output_tokens),
-				cached,
-				tokenCount(u.cache_write_input_tokens),
-				1,
-			],
-			range,
-		);
+		const keys = placeKeys(file, day, [file.model ?? "unknown"], range);
+		if (keys === null) return { full: day };
+		addAt(file, keys[0] as string, [
+			input - cached,
+			tokenCount(u.output_tokens),
+			cached,
+			tokenCount(u.cache_write_input_tokens),
+			1,
+		]);
 		return true;
 	}
 	if (
@@ -585,8 +620,9 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 
 	let bytes = 0;
 	let backlog = false;
-	/** The budget ran out inside a file: no later file is read this scan. */
+	/** The budget ran out inside a file, or a full file waits for the hub: no later file is read. */
 	let stopped = false;
+	let paused = false;
 	// The most one read can return: a piece this long without a newline is one over-long line.
 	const unit = Math.min(perFileMax, opts.totalMax ?? TOTAL_MAX);
 	const seen = new Set<string>();
@@ -615,7 +651,10 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 			continue;
 		}
 		const pathKey = fnv1a64(path);
-		let added = false;
+		const read = (line: string): LineResult =>
+			tool === "claude"
+				? claudeLine(line, file, project, seenIds, pathKey, range)
+				: codexLine(line, file, project, onLimit, range);
 		// backlog = a read cut short by the budget. A file ending in a line without its newline yet (being
 		// written, or cut off by a crash) is not backlog: it waits for the next regular poll.
 		while (file.offset < size) {
@@ -650,13 +689,29 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 				if (nl === -1) break; // partial line: the next piece (or poll) has the rest
 				if (nl > pos) {
 					const line = buf.subarray(pos, nl).toString("utf8");
-					const got =
-						tool === "claude"
-							? claudeLine(line, file, project, seenIds, pathKey, range)
-							: codexLine(line, file, project, onLimit, range);
-					if (got) added = true;
+					let got = read(line);
+					if (
+						typeof got === "object" &&
+						!(file.session && dirty.has(file.session))
+					) {
+						// the hub holds everything this file has counted: free it and read the line
+						freeKeys(file, got.full);
+						got = read(line);
+					}
+					if (typeof got === "object") {
+						// full, and the hub has not taken the totals yet: stop before this line
+						paused = true;
+						break;
+					}
+					if (got && file.session) dirty.add(file.session);
 				}
 				pos = nl + 1;
+			}
+			if (paused) {
+				file.offset += pos;
+				backlog = true;
+				stopped = true;
+				break;
 			}
 			if (pos === 0 && buf.length === unit) {
 				// one line longer than the largest read: skip it (never parse a fragment)
@@ -675,7 +730,6 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 				}
 			}
 		}
-		if (added && file.session) dirty.add(file.session);
 	}
 
 	// Forget old days — never while the backfill runs, and only once the hub took them (the session is
@@ -724,7 +778,7 @@ export function scanUsage(opts: ScanOptions): ScanResult {
 			files: seen.size,
 			cut,
 		};
-	return { bytes, backlog, files: seen.size, backfilled };
+	return { bytes, backlog, files: seen.size, backfilled, paused };
 }
 
 /**

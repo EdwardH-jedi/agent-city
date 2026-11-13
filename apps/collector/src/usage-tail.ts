@@ -269,6 +269,7 @@ export function createUsagePoll(
 
 	return async () => {
 		let backlog = false;
+		let paused = false;
 		try {
 			const r = scanUsage({
 				claudeRoot: cfg.usage.claudeProjectsDir,
@@ -278,6 +279,7 @@ export function createUsagePoll(
 				deps,
 			});
 			backlog = r.backlog;
+			paused = r.paused;
 			saveUsageState(statePath, state);
 			if (r.backfilled)
 				log(
@@ -289,9 +291,11 @@ export function createUsagePoll(
 		} catch (err) {
 			log(`[usage] scan failed (${code(err)})`);
 		}
+		let sendFailed = false;
 		try {
 			if (state.dirty.length > 0 || state.limits_dirty) {
 				const out = await sendUsage(cfg, state, opts.fetchImpl);
+				sendFailed = out.failed !== null;
 				saveUsageState(statePath, state);
 				if (out.failed !== lastFailure) {
 					log(
@@ -307,7 +311,10 @@ export function createUsagePoll(
 		} catch (err) {
 			log(`[usage] send failed (${code(err)})`);
 		}
-		return backlog ? USAGE_BACKLOG_MS : USAGE_POLL_MS;
+		// a full file waits for the hub's ack: no point polling fast while the hub refuses or is away
+		return backlog && !(paused && sendFailed)
+			? USAGE_BACKLOG_MS
+			: USAGE_POLL_MS;
 	};
 }
 

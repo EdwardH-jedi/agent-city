@@ -1485,3 +1485,241 @@ describe("U5 · P1: a replay's owner does not depend on where a read cap falls",
 		expect(msgs.sort()).toEqual(["claude:a:1", "claude:b:1"]);
 	});
 });
+
+/** Claude lines: one per (day from 2025-01-01, model), plus today's; each key its own. */
+function longHistory(days: number[], models: number, extra = "") {
+	let text = "";
+	for (const d of days)
+		for (let m = 0; m < models; m++)
+			text += claudeMsg(
+				{
+					id: `k-${d}-${m}`,
+					session: "keys",
+					model: `model-${m}`,
+					ts: new Date(
+						Date.parse("2025-01-01T01:00:00Z") + d * DAY_S * 1000,
+					).toISOString(),
+					usage: { input_tokens: 1 },
+				},
+				1,
+			);
+	return text + extra;
+}
+const todayMsg = claudeMsg(
+	{ id: "today", session: "keys", usage: { input_tokens: 1 } },
+	1,
+);
+const hubDown = (async () =>
+	new Response("", { status: 503 })) as unknown as typeof fetch;
+
+describe("U5 · P2-1: the key cap pauses before a line instead of dropping it", () => {
+	test("Codex keyCap: 280 days × 3 models + today all reach the hub (841 / 841, today present)", async () => {
+		const root = tmp("u5-keys");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const f = join(root, "p", "keys.jsonl");
+		writeFileSync(
+			f,
+			longHistory(
+				Array.from({ length: 280 }, (_, d) => d),
+				3,
+				todayMsg,
+			),
+		);
+		const hub = maxHub();
+		const state = emptyUsageState();
+		await backfillAll(root, state, hub);
+		expect(hub.total()[4]).toBe(841);
+		expect(hub.days()).toContain("2026-11-13");
+		expect(state.backfill.done).not.toBeNull();
+	});
+
+	test("while the hub is down a full file waits before its line (offset kept, nothing dropped), then finishes", async () => {
+		const root = tmp("u5-keys-down");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const f = join(root, "p", "keys.jsonl");
+		writeFileSync(
+			f,
+			longHistory(
+				Array.from({ length: 280 }, (_, d) => d),
+				3,
+				todayMsg,
+			),
+		);
+		const state = emptyUsageState();
+		for (let i = 0; i < 5; i++) {
+			const r = scan(root, null, state);
+			expect(r).toMatchObject({
+				backlog: true,
+				backfilled: false,
+				paused: true,
+			});
+			expect((await sendUsage(sendCfg, state, hubDown)).failed).toBe(503);
+		}
+		const held = Object.values(state.files)[0];
+		expect(held?.offset).toBeLessThan(statSync(f).size);
+		const hub = maxHub();
+		await backfillAll(root, state, hub);
+		expect(hub.total()[4]).toBe(841);
+		expect(hub.days()).toContain("2026-11-13");
+	});
+
+	test("a line whose models do not all fit is deferred whole (advisor calls are not dropped, the message is not skipped)", async () => {
+		const root = tmp("u5-keys-atomic");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const f = join(root, "p", "keys.jsonl");
+		// 270 × 3 = 810 keys; the cap during the backfill is 811 → the next line needs 3 more
+		const advised = claudeMsg(
+			{
+				id: "advised",
+				session: "keys",
+				model: "model-x",
+				usage: {
+					input_tokens: 1,
+					iterations: [
+						{ type: "advisor_message", model: "model-y", input_tokens: 5 },
+						{ type: "advisor_message", model: "model-z", input_tokens: 7 },
+					],
+				},
+			},
+			2,
+		);
+		writeFileSync(
+			f,
+			longHistory(
+				Array.from({ length: 270 }, (_, d) => d),
+				3,
+				advised,
+			),
+		);
+		const hub = maxHub();
+		await backfillAll(root, emptyUsageState(), hub);
+		expect(hub.total()[4]).toBe(813);
+		expect(hub.total()[0]).toBe(810 + 1 + 5 + 7);
+	});
+
+	test("days out of order: a full file still moves on after the hub's ack (a held key newer than the line)", async () => {
+		const root = tmp("u5-keys-shuffle");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const days = Array.from({ length: 300 }, (_, d) => d);
+		let seed = 7;
+		for (let i = days.length - 1; i > 0; i--) {
+			seed = (seed * 1103515245 + 12345) % 2 ** 31;
+			const j = seed % (i + 1);
+			[days[i], days[j]] = [days[j] as number, days[i] as number];
+		}
+		writeFileSync(
+			join(root, "p", "keys.jsonl"),
+			longHistory(days, 3, todayMsg),
+		);
+		const hub = maxHub();
+		await backfillAll(root, emptyUsageState(), hub);
+		// every (day, model) appears once, so nothing freed is touched again: exact
+		expect(hub.total()[4]).toBe(901);
+	});
+
+	test("a line that adds no key never counts as full (no needless free that would hide later growth)", async () => {
+		const root = tmp("u5-keys-noop");
+		mkdirSync(join(root, "p"), { recursive: true });
+		const f = join(root, "p", "busy.jsonl");
+		// 17 keys a day (16 models + unknown) over the last 10 days: more than the 138 counted after the backfill
+		let body = "";
+		for (let d = 9; d >= 0; d--)
+			for (let m = 0; m < 17; m++)
+				body += claudeMsg(
+					{
+						id: `b-${d}-${m}`,
+						session: "busy",
+						model: `model-${m}`,
+						ts: isoDaysAgo(d),
+						usage: { input_tokens: 1 },
+					},
+					1,
+				);
+		writeFileSync(f, body);
+		const hub = maxHub();
+		const state = emptyUsageState();
+		await backfillAll(root, state, hub);
+		const before = hub.total()[4] as number;
+		// an old line (not counted after the backfill), then more of today on a model it already has
+		appendFileSync(
+			f,
+			claudeMsg(
+				{ id: "old", session: "busy", ts: isoDaysAgo(20), model: "model-0" },
+				1,
+			) +
+				claudeMsg(
+					{
+						id: "t2",
+						session: "busy",
+						model: "model-0",
+						usage: { input_tokens: 1 },
+					},
+					1,
+				),
+		);
+		const r = scan(root, null, state);
+		await sendUsage(sendCfg, state, hub.fetchImpl);
+		expect(r.paused).toBe(false);
+		expect(hub.total()[4]).toBe(before + 1);
+	});
+
+	test("limit (pinned): a later file of the same session adding to a day its full main file freed is hidden by the hub's MAX — never over-counted", async () => {
+		const root = tmp("u5-keys-sibling");
+		mkdirSync(join(root, "p", "keys", "subagents"), { recursive: true });
+		writeFileSync(
+			join(root, "p", "keys.jsonl"),
+			longHistory(
+				Array.from({ length: 280 }, (_, d) => d),
+				3,
+			),
+		);
+		// born after the main file: one message on day 0, model-0 — a key the full main file freed
+		writeFileSync(
+			join(root, "p", "keys", "subagents", "agent-1.jsonl"),
+			claudeMsg(
+				{
+					id: "sub-0",
+					session: "keys",
+					model: "model-0",
+					ts: "2025-01-01T02:00:00Z",
+					usage: { input_tokens: 1 },
+				},
+				1,
+			),
+		);
+		const hub = maxHub();
+		await backfillAll(root, emptyUsageState(), hub);
+		// truth is 841; the subagent's one message on the freed day is hidden (840), never counted twice
+		expect(hub.total()[4]).toBe(840);
+	});
+
+	test("the poller waits the long interval while a full file waits for a hub that is down", async () => {
+		const claudeRoot = tmp("u5-poll-keys");
+		const home = tmp("u5-poll-home");
+		mkdirSync(join(claudeRoot, "p"), { recursive: true });
+		writeFileSync(
+			join(claudeRoot, "p", "keys.jsonl"),
+			longHistory(
+				Array.from({ length: 280 }, (_, d) => d),
+				3,
+				todayMsg,
+			),
+		);
+		const conf = {
+			hubUrl: "http://hub.test",
+			ingestToken: "t",
+			machine: "cockpit",
+			home,
+			codex: { sessionsDir: join(home, "none") },
+			usage: { enabled: true, claudeProjectsDir: claudeRoot },
+		} as unknown as CollectorConfig;
+		const poll = createUsagePoll({
+			cfg: conf,
+			deps,
+			fetchImpl: hubDown,
+			now: () => NOW,
+			log: () => {},
+		});
+		expect(await poll()).toBe(60_000);
+	});
+});

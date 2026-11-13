@@ -468,7 +468,11 @@ log stated them (today Codex `rate_limits`; Claude transcripts carry none). The 
 transcript. `AGENTCITY_USAGE=0` turns the poller off.
 
 What the poller keeps in `~/.agentcity/usage-offsets.json`: per log file its offset and per-(day, model)
-totals (at most 16 models a day, then `unknown`; at most 128 keys + one per countable day a file, older days still waiting for the hub not counted), and Claude message ids only as hashes (at most 200k, across files, so a
+totals (at most 16 models a day, then `unknown`; at most 128 keys + one per countable day a file, older days still waiting for the hub not counted; a line that
+would pass that is not read: the poller stops before it until the hub has accepted the file's totals, then
+frees every day but that line's and reads on — nothing valid is dropped, and while the hub is away it waits
+on the 60 s poll. A later line on a freed (day, model) — out of order in that file, or in a later file of the
+same session — is hidden by the hub's larger value, never counted twice), and Claude message ids only as hashes (at most 200k, across files, so a
 resumed transcript that replays earlier messages counts them once — in the oldest-born file holding them). A
 Claude session comes from the file path (`<id>.jsonl`, `<id>/subagents/*.jsonl`). Counts are clamped to 1e9
 a message and 1e13 a row. `project` must look like a repo id (`owner/name` or `local/<folder>`, inner plain
