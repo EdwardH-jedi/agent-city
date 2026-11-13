@@ -42,4 +42,23 @@ export {
 	sanitizeEvent,
 } from "./sanitize.ts";
 export { endsAgent, nextStatus, SUBAGENT_TOOLS } from "./status.ts";
-export type { AgentKind, IngestEvent, Provider } from "./types.ts";
+export type {
+	AgentKind,
+	IngestEvent,
+	Provider,
+	UsageLimit,
+	UsageRow,
+	UsageTool,
+} from "./types.ts";
+export {
+	dayMinus,
+	tokenCount,
+	USAGE_MAX_BODY_BYTES,
+	USAGE_MAX_DAYS,
+	USAGE_MAX_LIMITS,
+	USAGE_MAX_ROWS,
+	USAGE_TOKENS_MAX,
+	USAGE_TZ,
+	usageDay,
+	usageLabel,
+} from "./usage.ts";

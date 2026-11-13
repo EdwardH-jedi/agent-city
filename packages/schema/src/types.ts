@@ -11,6 +11,13 @@ import {
 	RUNS_MAX_PER_PAYLOAD,
 } from "./limits.ts";
 import { redact } from "./redact.ts";
+import {
+	USAGE_DAY_RE,
+	USAGE_LABEL_RE,
+	USAGE_MAX_LIMITS,
+	USAGE_MAX_ROWS,
+	USAGE_TOKENS_MAX,
+} from "./usage.ts";
 
 const Ts = z.iso.datetime({ offset: true });
 
@@ -380,3 +387,64 @@ export type IngestBatch = z.infer<typeof IngestBatch>;
 /** POST /ingest body: a single event or a batch. */
 export const IngestBody = z.union([IngestEvent, IngestBatch]);
 export type IngestBody = z.infer<typeof IngestBody>;
+
+// ── token usage (M1, 18 §5.1) ──────────────────────────────────────────────────────────────────────
+
+export const UsageTool = z.enum(["claude", "codex"]);
+export type UsageTool = z.infer<typeof UsageTool>;
+
+/** Session ids as ids.ts builds them for the two usage tools (`redacted-<hash>` fits the charset). */
+const UsageSessionId = z
+	.string()
+	.regex(/^(claude|codex):[A-Za-z0-9._-]{1,128}$/);
+const UsageDay = z.string().regex(USAGE_DAY_RE);
+const UsageLabel = z.string().regex(USAGE_LABEL_RE);
+/** USAGE_TOKENS_MAX per message × many messages still sits well inside 2^53. */
+const TokenSum = z
+	.number()
+	.int()
+	.nonnegative()
+	.max(USAGE_TOKENS_MAX * 1000);
+
+/**
+ * One cumulative row: a session's tokens for one Australia/Sydney day and one model. Strict, and
+ * there is deliberately no field that could carry text, a command or a path.
+ */
+export const UsageRow = z.strictObject({
+	session_id: UsageSessionId,
+	day: UsageDay,
+	model: UsageLabel,
+	tool: UsageTool,
+	/** Repo id by the shared rule (repo-slug.ts); null when the session ran outside a repo. */
+	project: z.string().min(1).max(256).nullable(),
+	/** Input not served from the prompt cache (Codex's cached part is moved to cache_read_tokens). */
+	input_tokens: TokenSum,
+	output_tokens: TokenSum,
+	cache_read_tokens: TokenSum,
+	cache_write_tokens: TokenSum,
+	/** Model responses counted (one per API message; an advisor call counts under its own model). */
+	messages: TokenSum,
+});
+export type UsageRow = z.infer<typeof UsageRow>;
+
+/** A plan limit exactly as the tool's own log stated it (Codex `rate_limits`); never computed. */
+export const UsageLimit = z.strictObject({
+	tool: UsageTool,
+	limit_id: UsageLabel,
+	window_minutes: z.number().int().positive().max(1_000_000),
+	used_percent: z.number().min(0).max(1000),
+	resets_at: Ts.nullable(),
+	plan_type: UsageLabel.nullable(),
+	/** Time of the log record that stated it. The newest observation wins at the hub. */
+	observed_at: Ts,
+});
+export type UsageLimit = z.infer<typeof UsageLimit>;
+
+/** POST /ingest/usage body. */
+export const UsageReport = z.strictObject({
+	schema: z.literal(1),
+	machine_id: MachineRole,
+	rows: z.array(UsageRow).max(USAGE_MAX_ROWS),
+	limits: z.array(UsageLimit).max(USAGE_MAX_LIMITS),
+});
+export type UsageReport = z.infer<typeof UsageReport>;

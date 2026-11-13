@@ -1,0 +1,245 @@
+// Token usage poller (M1, 18 §5): runs inside the resident Codex tailer (`bun run collector:codex`),
+// on its own timer and its own error handling, so it can never stall or break the event tail.
+//
+// - every USAGE_POLL_MS (USAGE_BACKLOG_MS while a first read is still catching up) it scans the
+//   Claude transcripts and Codex rollouts (usage-scan.ts, bounded) and saves the offsets/totals to
+//   ~/.agentcity/usage-offsets.json
+// - then it POSTs the cumulative rows of every session that changed to /ingest/usage. A failed send
+//   is not spooled: the rows stay marked and are sent again next time (they are totals, so nothing
+//   is lost and a repeat changes nothing at the hub)
+// - on start every known session is marked, so a restart re-sends what the hub may have missed
+// - logs carry counts and HTTP status only — never a line, a path from a log, or an error message
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+	USAGE_MAX_LIMITS,
+	USAGE_MAX_ROWS,
+	type UsageLimit,
+	type UsageRow,
+} from "@agent-city/schema/core";
+import type { CollectorConfig } from "./config.ts";
+import { gitInfo } from "./git-info.ts";
+import {
+	emptyUsageState,
+	type ScanDeps,
+	scanUsage,
+	type UsageState,
+	usageRows,
+} from "./usage-scan.ts";
+
+export const USAGE_POLL_MS = 60_000;
+export const USAGE_BACKLOG_MS = 5_000;
+const SEND_TIMEOUT_MS = 10_000;
+const MACHINES = new Set(["cockpit", "forge", "spine"]);
+
+export function loadUsageState(path: string): UsageState {
+	try {
+		const s = JSON.parse(readFileSync(path, "utf8")) as UsageState;
+		if (
+			s &&
+			s.v === 1 &&
+			typeof s.files === "object" &&
+			s.files !== null &&
+			Array.isArray(s.dirty) &&
+			typeof s.limits === "object" &&
+			s.limits !== null
+		)
+			return s;
+	} catch {
+		// missing / corrupt → fresh (every file is read again; the hub keeps the larger values)
+	}
+	return emptyUsageState();
+}
+
+export function saveUsageState(path: string, state: UsageState): void {
+	const tmp = `${path}.tmp`;
+	writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
+	renameSync(tmp, path);
+}
+
+/** Mark every session the state knows (and the limits) for sending — used once at start. */
+export function markAll(state: UsageState): void {
+	const all = new Set(state.dirty);
+	for (const f of Object.values(state.files)) if (f.session) all.add(f.session);
+	state.dirty = [...all];
+	if (Object.keys(state.limits).length > 0) state.limits_dirty = true;
+}
+
+interface Chunk {
+	sessions: string[];
+	rows: UsageRow[];
+}
+
+/** Sessions packed whole into chunks of ≤ USAGE_MAX_ROWS rows (a giant session is split). */
+export function chunkRows(
+	state: UsageState,
+	sessions: readonly string[],
+): Chunk[] {
+	const out: Chunk[] = [];
+	let cur: Chunk = { sessions: [], rows: [] };
+	for (const s of [...sessions].sort()) {
+		const rows = usageRows(state, [s]);
+		for (let i = 0; i < rows.length; i += USAGE_MAX_ROWS) {
+			const part = rows.slice(i, i + USAGE_MAX_ROWS);
+			if (cur.rows.length + part.length > USAGE_MAX_ROWS) {
+				out.push(cur);
+				cur = { sessions: [], rows: [] };
+			}
+			cur.rows.push(...part);
+		}
+		cur.sessions.push(s); // cleared only once the chunk holding its last rows is accepted
+	}
+	if (cur.rows.length > 0 || cur.sessions.length > 0) out.push(cur);
+	return out;
+}
+
+export interface SendOutcome {
+	posted: number;
+	rows: number;
+	/** HTTP status of the first failed POST, `0` for a network error, -1 bad machine, null = all ok. */
+	failed: number | null;
+}
+
+/**
+ * POST the dirty sessions' rows (and the limits when they changed). Clears what the hub accepted.
+ * Never throws.
+ */
+export async function sendUsage(
+	cfg: Pick<CollectorConfig, "hubUrl" | "ingestToken" | "machine">,
+	state: UsageState,
+	fetchImpl: typeof fetch = fetch,
+): Promise<SendOutcome> {
+	const result: SendOutcome = { posted: 0, rows: 0, failed: null };
+	if (!MACHINES.has(cfg.machine)) return { ...result, failed: -1 };
+	const chunks = chunkRows(state, state.dirty);
+	let limits: UsageLimit[] = state.limits_dirty
+		? Object.values(state.limits)
+				.sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))
+				.slice(0, USAGE_MAX_LIMITS)
+		: [];
+	if (chunks.length === 0 && limits.length > 0)
+		chunks.push({ sessions: [], rows: [] });
+	for (const chunk of chunks) {
+		if (chunk.rows.length === 0 && limits.length === 0) {
+			// sessions with nothing left to say (all their days aged out)
+			const done = new Set(chunk.sessions);
+			state.dirty = state.dirty.filter((s) => !done.has(s));
+			continue;
+		}
+		let status = 0;
+		try {
+			const res = await fetchImpl(`${cfg.hubUrl}/ingest/usage`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${cfg.ingestToken ?? ""}`,
+				},
+				body: JSON.stringify({
+					schema: 1,
+					machine_id: cfg.machine,
+					rows: chunk.rows,
+					limits,
+				}),
+				signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+			});
+			status = res.status;
+			await res.body?.cancel().catch(() => {});
+		} catch {
+			status = 0;
+		}
+		if (status < 200 || status >= 300) {
+			result.failed = status;
+			return result; // the rest stays marked; try again next poll
+		}
+		result.posted++;
+		result.rows += chunk.rows.length;
+		const done = new Set(chunk.sessions);
+		state.dirty = state.dirty.filter((s) => !done.has(s));
+		if (limits.length > 0) {
+			state.limits_dirty = false;
+			limits = [];
+		}
+	}
+	return result;
+}
+
+export interface UsagePollerOptions {
+	cfg: CollectorConfig;
+	deps?: ScanDeps;
+	fetchImpl?: typeof fetch;
+	now?: () => number;
+	log?: (line: string) => void;
+}
+
+const code = (err: unknown): string =>
+	typeof (err as { code?: unknown })?.code === "string"
+		? String((err as { code: string }).code).slice(0, 32)
+		: "error";
+
+/** One poll: scan, save, send. Resolves to the delay until the next one. Never throws. */
+export function createUsagePoll(
+	opts: UsagePollerOptions,
+): () => Promise<number> {
+	const { cfg } = opts;
+	const statePath = join(cfg.home, "usage-offsets.json");
+	const state = loadUsageState(statePath);
+	markAll(state);
+	const deps: ScanDeps = opts.deps ?? { git: gitInfo };
+	const now = opts.now ?? Date.now;
+	const log = opts.log ?? ((l: string) => console.log(l));
+	let lastFailure: number | null | undefined;
+
+	return async () => {
+		let backlog = false;
+		try {
+			const r = scanUsage({
+				claudeRoot: cfg.usage.claudeProjectsDir,
+				codexRoot: cfg.codex.sessionsDir,
+				state,
+				now: now(),
+				deps,
+			});
+			backlog = r.backlog;
+			saveUsageState(statePath, state);
+		} catch (err) {
+			log(`[usage] scan failed (${code(err)})`);
+		}
+		try {
+			if (state.dirty.length > 0 || state.limits_dirty) {
+				const out = await sendUsage(cfg, state, opts.fetchImpl);
+				saveUsageState(statePath, state);
+				if (out.failed !== lastFailure) {
+					log(
+						out.failed === null
+							? `[usage] sent ${out.rows} rows`
+							: out.failed === -1
+								? "[usage] AGENTCITY_MACHINE is not cockpit/forge/spine — not sending"
+								: `[usage] hub refused or unreachable (status ${out.failed}); will retry`,
+					);
+					lastFailure = out.failed;
+				}
+			}
+		} catch (err) {
+			log(`[usage] send failed (${code(err)})`);
+		}
+		return backlog ? USAGE_BACKLOG_MS : USAGE_POLL_MS;
+	};
+}
+
+/** Start the poll loop (first poll after `firstDelayMs`). Returns a stop function. */
+export function startUsagePoller(
+	opts: UsagePollerOptions & { firstDelayMs?: number },
+): () => void {
+	const poll = createUsagePoll(opts);
+	let timer: ReturnType<typeof setTimeout> | null = null;
+	let stopped = false;
+	const run = async () => {
+		const next = await poll();
+		if (!stopped) timer = setTimeout(run, next);
+	};
+	timer = setTimeout(run, opts.firstDelayMs ?? 3_000);
+	return () => {
+		stopped = true;
+		if (timer) clearTimeout(timer);
+	};
+}

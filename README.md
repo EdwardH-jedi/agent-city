@@ -360,6 +360,8 @@ chats or issues. `.env.example` documents every variable with blank secrets.
 | `AGENTCITY_DEBUG`          | collector      | `1` → `~/.agentcity/hook.log` with timings + error messages (never payloads).            |
 | `SPOOL_MAX_MB`             | collector      | Cap on `spool.jsonl` + `spool.*.flushing` together (default 20); oldest dropped first.   |
 | `SPOOL_MAX_AGE_DAYS`       | collector      | Spooled events older than this are dropped (default 7). Drops show on `/healthz`.        |
+| `AGENTCITY_USAGE`          | collector      | `0` → the token usage poller in `collector:codex` is off (default on).                   |
+| `AGENTCITY_CLAUDE_PROJECTS_DIR` | collector | Claude Code transcripts the usage poller reads (default `~/.claude/projects`).        |
 | `CODEX_SESSIONS_DIR`       | collector      | Codex log dir (default `~/.codex/sessions`).                                             |
 | `CODEX_BACKFILL_HOURS`     | collector      | First-sight window **by file mtime** (default 2; `0` = tail every new file from EOF).    |
 | `CODEX_BACKFILL_EVENT_FILTER` | collector   | `1` → during a file's initial backfill (until its first EOF) skip records older than that window. |
@@ -400,7 +402,7 @@ CI badges need *Actions: read* (a 403 shows as `none` and is counted in the sync
 | `db:backup`                   | Hub may keep running. Consistent dated copy of `DB_PATH` into `<data dir>/backups/`; `--keep N` prunes. See [Backing up the database](#backing-up-the-database). |
 | `districts:draft`             | Writes `config/districts.draft.yaml` (all repos by district; gitignored).        |
 | `collector:hooks`             | Print-only merge of the Claude hook into `~/.claude/settings.json`.              |
-| `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s).                     |
+| `collector:codex`             | Resident Codex log tailer (also drains the spool every 5 s) and the token usage poller (every 60 s: Claude transcripts + Codex logs → numbers and ids only → `/ingest/usage`). |
 | `collector:heartbeat`         | Resident machine heartbeat: one beat every 30 s to `POST /ingest/heartbeat`.     |
 | `collector:launchd`           | Print-only: launchd job files for the Mac's resident processes → `~/.agentcity/launchd/`. See [Mac login jobs](#mac-login-jobs-launchd). |
 | `check:secrets`               | Scan tracked/untracked files for token patterns. Run before every commit.        |
