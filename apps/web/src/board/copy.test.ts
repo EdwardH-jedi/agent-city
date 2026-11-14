@@ -43,6 +43,31 @@ describe("stopPhrase (§6 文구表)", () => {
 		);
 	});
 
+	test("DELEGATED_CONFIG_MISMATCH: the delegated-integration setting differs from the approval (reason and alert alike)", () => {
+		const text = "위임 통합 설정이 승인 때와 다릅니다. Mac에서 확인해 주세요.";
+		const want = { text, code: "DELEGATED_CONFIG_MISMATCH", known: true };
+		expect(
+			stopPhrase(
+				run({
+					status: "HOLD",
+					last_display: "hold",
+					reason: "DELEGATED_CONFIG_MISMATCH",
+					alert: "DELEGATED_CONFIG_MISMATCH",
+				}),
+			),
+		).toEqual(want);
+		expect(
+			stopPhrase(
+				run({
+					status: "HOLD",
+					last_display: "hold",
+					reason: "DELEGATED_CONFIG_MISMATCH",
+				}),
+			),
+		).toEqual(want);
+		expect(tagOfCode("DELEGATED_CONFIG_MISMATCH")).toBe("설정 확인");
+	});
+
 	test("a code that is not in the table is never explained: 확인이 필요합니다 + the code", () => {
 		const p = stopPhrase(run({ reason: "SOMETHING_NEW_FROM_OFFICE" }));
 		expect(p.text).toBe(UNKNOWN_TEXT);

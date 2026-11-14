@@ -57,6 +57,10 @@ export const STOP_PHRASES: Readonly<Record<string, string>> = {
 	// the run was closed before Report; it is recorded PARTIAL and the worktree is kept
 	PRESERVED_ON_HOLD:
 		"끝까지 가기 전에 닫았습니다. 작업 폴더는 남겨 두었습니다.",
+	// Integration HOLD: the project's delegated-integration setting is missing or differs from what the
+	// owner approved (DISPATCHER_STATUS.md P2-2). The fix is on the Mac, so the sentence says so.
+	DELEGATED_CONFIG_MISMATCH:
+		"위임 통합 설정이 승인 때와 다릅니다. Mac에서 확인해 주세요.",
 };
 
 /**
@@ -164,6 +168,7 @@ const TAG_OF_CODE: Readonly<Record<string, string>> = {
 	EVENT_LOG_TORN: "복구 확인",
 	DISPATCH_STOPPED: "중간에 멈춤",
 	PRESERVED_ON_HOLD: "일부만 끝냄",
+	DELEGATED_CONFIG_MISMATCH: "설정 확인",
 };
 export const SESSION_WAIT_TAG = "입력 대기";
 export const PAUSED_TAG = "쉬는 중";
