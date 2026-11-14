@@ -560,6 +560,23 @@ describe("runStateAt — what City itself adds", () => {
 		);
 	});
 
+	test("DELEGATED_CONFIG_MISMATCH (Integration HOLD, reason also in alert): hold and needs the owner", () => {
+		const r = {
+			...base,
+			status: "HOLD",
+			phase: "Integration",
+			reason: "DELEGATED_CONFIG_MISMATCH",
+			alert: "DELEGATED_CONFIG_MISMATCH",
+		};
+		const st = runStateAt(r, iso, "online", at(0));
+		expect(st.display).toBe("hold");
+		expect(st.needs_owner).toBe(true);
+		// the alert slot alone does not change it
+		expect(
+			runStateAt({ ...r, alert: null }, iso, "online", at(0)).needs_owner,
+		).toBe(true);
+	});
+
 	test("needs_owner covers waiting_owner, hold, needs_reconcile and unverified (a finished run)", () => {
 		const need = (o: Record<string, unknown>) =>
 			runStateAt({ ...base, ...o }, iso, "online", at(0)).needs_owner;

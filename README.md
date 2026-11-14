@@ -525,6 +525,7 @@ values are kept verbatim; the only thing City adds is the receive time and `snap
 | `waiting for owner`     | `READY` with `GOAL_RECORDED` (goal on record, no plan yet), `AWAITING_PLAN_APPROVAL`, `AWAITING_OWNER_INTEGRATION`, `DRAFT_REQUIRES_OWNER_COMMIT` or `PLAN_APPROVED` |
 | `paused`                | `READY` with `DISPATCH_STOPPED` — Office's loop stopped **without a failure** and tasks are left. Not in *Needs owner*. The same reason after a failed loop arrives as `HOLD` and stays `hold` |
 | `hold` + reason         | `HOLD`                                                                           |
+| `hold` + `DELEGATED_CONFIG_MISMATCH` | `HOLD` at Integration: the project's delegated-integration setting is missing or differs from the approved one. Listed in *Needs owner* with "위임 통합 설정이 승인 때와 다릅니다. Mac에서 확인해 주세요." |
 | `passed` / `partial`    | `PASS` / `PARTIAL`                                                               |
 | `unverified`            | evidence not verified **and the run reads as `passed` / `partial`** — such a run is never shown as passed. A run still in progress (running, waiting, paused, hold…) keeps its own state — a new run has no signed event yet and is reported unverified for that reason alone. The alert `EVIDENCE_UNVERIFIED` (Office could not read the evidence) still wins for every run |
 | `unknown`               | a combination not in this table (never guessed)                                  |
