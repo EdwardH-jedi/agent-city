@@ -79,6 +79,8 @@ import { LAMP_COLORS, type LampState } from "./engine/scene-ring.mjs";
 import type { Actor } from "./engine/sprites.mjs";
 import type { RooAction, RooDirection } from "./engine/town-roo-art-m2.mjs";
 import { TownRooArtM2 } from "./engine/town-roo-art-m2.mjs";
+import type { InteriorScene } from "./interior/scene.ts";
+import type { InteriorNotice, InteriorSource } from "./interior/types.ts";
 import { type LeadSprite, leadKey } from "./lead-sprites.ts";
 import { townLive } from "./live.ts";
 import {
@@ -157,11 +159,14 @@ export interface TownInput {
 	model: CampusModel;
 	reducedMotion: boolean;
 	time: TimeOfDay;
+	requestedInterior?: string | null;
+	interiorSource?: InteriorSource;
 }
 
 export interface TownCallbacks {
 	onContextLost(): void;
 	onReady(): void;
+	onInteriorChange?(inside: InteriorNotice | null): void;
 }
 
 export interface TownStage {
@@ -297,6 +302,57 @@ function buildStage(
 		disposed = true;
 	}, "stage state");
 
+	// The interior chunk is fetched only for an existing requested building. No renderer is made.
+	let room: InteriorScene | null = null;
+	let loading: string | null = null;
+	const failedRooms = new Set<string>();
+	function closeRoom() {
+		if (!room) return;
+		room.dispose();
+		room = null;
+		delete canvas.dataset.inside;
+		cb.onInteriorChange?.(null);
+	}
+	reg.defer(closeRoom, "interior");
+	const wantedRoom = () => {
+		if (
+			!input.interiorSource ||
+			input.model.visitors.some((v) => v.kind === "sign")
+		)
+			return null;
+		return (
+			input.model.repos.find((r) => r.repo_id === input.requestedInterior) ??
+			null
+		);
+	};
+	function syncRoom() {
+		const want = wantedRoom();
+		if (room && room.repo_id !== want?.repo_id) closeRoom();
+		if (
+			!want ||
+			room ||
+			loading === want.repo_id ||
+			failedRooms.has(want.repo_id)
+		)
+			return;
+		loading = want.repo_id;
+		void import("./interior/scene.ts")
+			.then(({ createInteriorScene }) => {
+				if (disposed || wantedRoom()?.repo_id !== want.repo_id) return;
+				if (room) closeRoom();
+				room = createInteriorScene(want);
+				canvas.dataset.inside = room.repo_id;
+				cb.onInteriorChange?.({ repo_id: room.repo_id, label: room.label });
+				schedule();
+			})
+			.catch(() => {
+				failedRooms.add(want.repo_id);
+			})
+			.finally(() => {
+				if (loading === want.repo_id) loading = null;
+			});
+	}
+
 	const moving = () => !input.reducedMotion && !input.model.still;
 	const nowScene = () => sceneNow(clock, Date.now());
 	const canRun = () => !disposed && !contextLost && !document.hidden;
@@ -319,6 +375,30 @@ function buildStage(
 		last = walk ? ts : 0;
 		const reduced = input.reducedMotion;
 		const now = nowScene();
+		if (room && input.interiorSource) {
+			const repo = input.model.repos.find((r) => r.repo_id === room?.repo_id);
+			if (repo) {
+				// The ring stays resident; its patrol phase is held while only the room is rendered.
+				const paused = lastScene ? Math.max(0, now - lastScene) : 0;
+				if (roo?.mode === "patrol")
+					roo = { ...roo, shiftMs: roo.shiftMs - paused };
+				lastScene = now;
+				room.update(
+					input.interiorSource,
+					repo,
+					Date.now(),
+					reduced,
+					pipe.layout,
+				);
+				pipe.renderScene(room.scene, room.camera);
+				if (!readySent) {
+					readySent = true;
+					cb.onReady();
+				}
+				if (walk) schedule();
+				return;
+			}
+		}
 		book = settleVisits(book, now, walkMsOf, reduced);
 		const kin: KangarooInput = {
 			now,
@@ -705,6 +785,7 @@ function buildStage(
 			next.reducedMotion !== prev.reducedMotion
 		)
 			applyModel();
+		syncRoom();
 		schedule();
 	}
 
@@ -802,6 +883,7 @@ function buildStage(
 	function markLayout(l: StageLayout | undefined) {
 		const d = (host as Partial<HTMLElement>).dataset;
 		if (!d || !l) return;
+		d.rtW = String(l.rtW);
 		d.rtH = String(l.rtH);
 		d.scale = String(l.scale);
 		d.pictureH = String(l.height);
@@ -860,6 +942,7 @@ function buildStage(
 	// ── start ───────────────────────────────────────────────────────────────────
 	applyModel();
 	resize();
+	syncRoom();
 	schedule();
 
 	return {

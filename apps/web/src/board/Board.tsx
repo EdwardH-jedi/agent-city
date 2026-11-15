@@ -278,6 +278,7 @@ export function BoardView({
 	// The ring town in the middle column (design doc 12, the default); `?scene=campus`: the 3D campus.
 	const [scene] = useState(() => sceneOf(window.location.search));
 	const town = scene === "town";
+	const [insideRepo, setInsideRepo] = useState<string | null>(null);
 	const cols = useBoardColumns();
 	// `?ui=1.15` / `?ui=1.3`: one scale for every panel text size (15 §1); not the sentence, not the columns
 	const [ui] = useState(() => uiScaleOf(window.location.search));
@@ -402,11 +403,13 @@ export function BoardView({
 						sessions={sessions}
 						events={events}
 						done={done}
+						onInteriorChange={setInsideRepo}
 					/>
 				) : (
 					<CampusView model={model} now={now} />
 				)}
 				<Sessions
+					insideRepo={town ? insideRepo : null}
 					model={model}
 					sessions={sessions}
 					events={events}

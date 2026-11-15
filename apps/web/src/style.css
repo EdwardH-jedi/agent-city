@@ -1724,3 +1724,22 @@ tr.st-waiting td {
 	font-size: calc(10.5px * var(--ui));
 	color: var(--b-dim);
 }
+
+/* 21: the existing stage stays fixed; a room adds one accessible project name. */
+.town-inside {
+	position: absolute;
+	top: 12px;
+	left: 12px;
+	z-index: 2;
+	margin: 0;
+	padding: 6px 10px;
+	border: 1px solid #8a826e;
+	background: #171b20;
+	color: #eee4cd;
+	font-size: calc(14px * var(--ui));
+	font-weight: 700;
+	pointer-events: none;
+}
+.sess-group.is-inside {
+	box-shadow: inset 3px 0 #9aaf93;
+}

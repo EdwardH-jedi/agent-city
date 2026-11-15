@@ -42,13 +42,16 @@ export interface DemoData {
  * where one building has just finished (its confetti, for 20 s after the page opens) and one finished
  * earlier today (its flag); few buildings, so both stand. Anything else: the default.
  */
-export type DemoCase = "default" | "calm" | "busy" | "done";
+export type DemoCase = "default" | "calm" | "busy" | "done" | "interior";
 export function demoCaseOf(search: string): DemoCase {
 	const c = new URLSearchParams(search).get("case");
-	return c === "calm" || c === "busy" || c === "done" ? c : "default";
+	return c === "calm" || c === "busy" || c === "done" || c === "interior"
+		? c
+		: "default";
 }
 
 export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
+	if (kase === "interior") return interiorDemo(t0);
 	const at = (agoMs: number) => new Date(t0 - agoMs).toISOString();
 	const run = (
 		project: string,
@@ -568,4 +571,60 @@ export function demoUsage(
 			],
 		},
 	};
+}
+
+/** 21 I1: explicitly marked example data, never imported by the live board. */
+function interiorDemo(t0: number): DemoData {
+	const d = demoData(t0, "calm");
+	const base = d.sessions[0] as Session;
+	const at = (ago: number) => new Date(t0 - ago).toISOString();
+	d.sessions = Array.from(
+		{ length: 4 },
+		(_, i): Session => ({
+			...base,
+			id: `${i === 1 ? "codex" : "claude"}:demo-room-${i}`,
+			provider: i === 1 ? "codex" : "claude",
+			repo_id: "demo/station0",
+			cwd: null,
+			branch: null,
+			model:
+				i === 1
+					? "gpt-6-astra"
+					: i === 2
+						? "claude-sonnet-5-5"
+						: "claude-opus-5-5",
+			status: i === 3 ? "waiting" : "active",
+			started_at: at(120_000 + i * 10_000),
+			last_event_at: at(i === 3 ? 0 : 5_000 + i * 1_000),
+			ended_at: null,
+		}),
+	);
+	const r = d.runs.find((r) => r.display === "running") as RunView;
+	d.runs = [
+		{
+			...r,
+			project: "demo/station0",
+			workflow_id: "room-example",
+			run_id: "room-example-1",
+			phase: "Implementation",
+		},
+	];
+	d.districts = { demo: [] };
+	d.eventsByRun = new Map();
+	d.events = [0, 1].map(
+		(i): Event => ({
+			id: `demo:room-sub-${i}`,
+			ts: at(8_000),
+			machine_id: "cockpit",
+			session_id: "claude:demo-room-0",
+			agent_id: `claude:demo-room-0/sub:example-${i}`,
+			provider: "claude",
+			type: "PreToolUse",
+			tool: "Agent",
+			summary: "Agent → example",
+			repo_id: "demo/station0",
+			payload_redacted: {},
+		}),
+	);
+	return d;
 }

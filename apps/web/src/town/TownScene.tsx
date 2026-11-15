@@ -3,11 +3,15 @@
 // aria-hidden — every word the owner needs is in the side columns.
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { CampusSceneProps } from "../campus/presentation.ts";
+import type { InteriorNotice, InteriorSource } from "./interior/types.ts";
 import type { TimeOfDay } from "./params.ts";
 import { createTownStage, type TownStage } from "./stage.ts";
 
 export interface TownSceneProps extends CampusSceneProps {
 	time: TimeOfDay;
+	requestedInterior?: string | null;
+	interiorSource?: InteriorSource;
+	onInteriorChange?: (inside: InteriorNotice | null) => void;
 }
 
 export default function TownScene(props: TownSceneProps) {
@@ -29,10 +33,14 @@ export default function TownScene(props: TownSceneProps) {
 					model: latest.current.model,
 					reducedMotion: latest.current.reducedMotion,
 					time: latest.current.time,
+					requestedInterior: latest.current.requestedInterior,
+					interiorSource: latest.current.interiorSource,
 				},
 				{
 					onContextLost: () => latest.current.onUnavailable("context_lost"),
 					onReady: () => latest.current.onReady?.(),
+					onInteriorChange: (inside) =>
+						latest.current.onInteriorChange?.(inside),
 				},
 			);
 		} catch {
@@ -46,10 +54,17 @@ export default function TownScene(props: TownSceneProps) {
 		};
 	}, []);
 
-	const { model, reducedMotion, time } = props;
+	const { model, reducedMotion, time, requestedInterior, interiorSource } =
+		props;
 	useEffect(() => {
-		stage.current?.update({ model, reducedMotion, time });
-	}, [model, reducedMotion, time]);
+		stage.current?.update({
+			model,
+			reducedMotion,
+			time,
+			requestedInterior,
+			interiorSource,
+		});
+	}, [model, reducedMotion, time, requestedInterior, interiorSource]);
 
 	return <div ref={host} className="town-stage" aria-hidden="true" />;
 }

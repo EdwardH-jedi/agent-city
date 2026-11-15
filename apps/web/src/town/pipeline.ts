@@ -13,6 +13,7 @@
 // Two lifetimes: the WebGL renderer and the targets live for the mount; the world (scene, pylon, rig,
 // atlas, actors) is rebuilt by setWorld() when its spec changes (time of day, the lots' signs and facades).
 import {
+	type Camera,
 	Color,
 	ColorManagement,
 	LinearSRGBColorSpace,
@@ -195,6 +196,8 @@ export interface TownPipeline {
 	setLitWindows(lotId: string, n: number): void;
 	/** One frame: actors staged, world → target → integer blit. */
 	render(actors: readonly Actor[], shot?: CameraShot | null): void;
+	/** An interior uses the same renderer, target and integer blit; the ring is not drawn. */
+	renderScene(scene: Scene, camera: Camera): void;
 	dispose(): void;
 }
 
@@ -332,10 +335,15 @@ export function createTownPipeline(opts: {
 	function render(actors: readonly Actor[], shot?: CameraShot | null): void {
 		if (disposed) return;
 		world.stage(actors, shot);
+		renderScene(world.scene, world.rig.camera);
+	}
+
+	function renderScene(scene: Scene, camera: Camera): void {
+		if (disposed) return;
 		gl.setScissorTest(false);
 		gl.autoClear = true;
 		gl.setRenderTarget(rt.target);
-		gl.render(world.scene, world.rig.camera);
+		gl.render(scene, camera);
 		gl.setRenderTarget(null);
 		gl.autoClear = false;
 		gl.setViewport(0, 0, winW, winH);
@@ -379,6 +387,7 @@ export function createTownPipeline(opts: {
 			world.setLitWindows(lotId, n);
 		},
 		render,
+		renderScene,
 		dispose() {
 			if (disposed) return;
 			disposed = true;
