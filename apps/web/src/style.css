@@ -1743,3 +1743,12 @@ tr.st-waiting td {
 .sess-group.is-inside {
 	box-shadow: inset 3px 0 #9aaf93;
 }
+
+.town-interior-fade {
+	position: absolute;
+	inset: 0;
+	background: #101417;
+	pointer-events: none;
+	opacity: 0;
+	z-index: 2;
+}

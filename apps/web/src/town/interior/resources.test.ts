@@ -75,7 +75,7 @@ test("interior mount/draw/unmount releases every reachable GPU resource exactly 
 		now,
 		false,
 		{ rtW: 384, rtH: 340 },
-		true,
+		new Date(now - 5000).toISOString(),
 	);
 	expect(room.people).toHaveLength(4);
 	expect(room.actors.sprites.size).toBe(10);
@@ -112,4 +112,31 @@ test("interior mount/draw/unmount releases every reachable GPU resource exactly 
 	expect(room.registry.errors).toEqual([]);
 	expect(room.frames.size).toBe(0);
 	expect(room.actors.sprites.size).toBe(0);
+});
+
+test("50 actual room lifecycles keep registration count fixed and release every entry", () => {
+	const now = Date.UTC(2026, 10, 16),
+		data = demoData(now, "interior");
+	const model = toVillageModel({ ...data, now, conn: "open" }),
+		repo = toCampusModel(model).repos[0];
+	if (!repo) throw Error("no repo");
+	let baseline = 0;
+	for (let i = 0; i < 50; i++) {
+		const room = createInteriorScene(repo);
+		room.update(
+			{ model, sessions: data.sessions, events: data.events, now },
+			repo,
+			now,
+			false,
+			{ rtW: 384, rtH: 340 },
+		);
+		if (i === 0) baseline = room.registry.size;
+		expect(room.registry.size).toBe(baseline);
+		room.dispose();
+		expect(room.registry.size).toBe(0);
+		expect(room.registry.errors).toEqual([]);
+		expect(room.scene.children.length).toBe(0);
+		expect(room.actors.sprites.size).toBe(0);
+		expect(room.frames.size).toBe(0);
+	}
 });

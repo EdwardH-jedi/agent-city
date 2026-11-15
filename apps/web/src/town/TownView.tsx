@@ -29,12 +29,15 @@ import {
 	toCampusModel,
 } from "../campus/presentation.ts";
 import { townCrew } from "./crew.ts";
+import type { InteriorCommand } from "./interior/tour.ts";
 import type { InteriorNotice, InteriorSource } from "./interior/types.ts";
 import { type TimeOfDay, timeOfDayAt } from "./params.ts";
 
 type TownSceneProps = CampusSceneProps & {
 	time: TimeOfDay;
 	requestedInterior?: string | null;
+	tourOff?: boolean;
+	interiorCommand?: InteriorCommand;
 	interiorSource?: InteriorSource;
 	onInteriorChange?: (inside: InteriorNotice | null) => void;
 };
@@ -110,7 +113,9 @@ function SceneHost({
 	done,
 	time,
 	requestedInterior,
+	tourOff,
 	onInteriorChange,
+	interiorCommand,
 	onUnavailable,
 }: {
 	model: VillageModel;
@@ -120,6 +125,8 @@ function SceneHost({
 	done: CampusDone | undefined;
 	time: TimeOfDay;
 	requestedInterior: string | null;
+	tourOff: boolean;
+	interiorCommand?: InteriorCommand;
 	onInteriorChange: (inside: InteriorNotice | null) => void;
 	onUnavailable: () => void;
 }) {
@@ -159,6 +166,8 @@ function SceneHost({
 				reducedMotion={reduced}
 				time={time}
 				requestedInterior={requestedInterior}
+				interiorCommand={interiorCommand}
+				tourOff={tourOff}
 				interiorSource={interiorSource}
 				onInteriorChange={onInteriorChange}
 				onUnavailable={unavailable}
@@ -187,6 +196,7 @@ export function TownView({
 	events = [],
 	done,
 	onInteriorChange,
+	interiorCommand,
 }: {
 	model: VillageModel;
 	now: number;
@@ -196,6 +206,7 @@ export function TownView({
 	/** The finish show (17 §3, board/done.ts): flags of today's finishes, confetti of new ones. */
 	done?: CampusDone;
 	onInteriorChange?: (repo: string | null) => void;
+	interiorCommand?: InteriorCommand;
 }) {
 	const [gl, setGl] = useState(webglAvailable);
 	const [inside, setInside] = useState<InteriorNotice | null>(null);
@@ -216,7 +227,13 @@ export function TownView({
 		model.village.shown.find(
 			(p) => p.label.toLowerCase() === pin?.toLowerCase(),
 		)?.id ?? null;
-	const fallBack = useMemo(() => () => setGl(false), []);
+	const fallBack = useMemo(
+		() => () => {
+			setGl(false);
+			changed(null);
+		},
+		[changed],
+	);
 	// `?time=` pins the look; otherwise the local hour picks it, re-read with the board's clock.
 	const time = timeOfDayAt(window.location.search, new Date(now));
 	if (!gl) return <Village2d model={model} now={now} />;
@@ -233,6 +250,8 @@ export function TownView({
 				done={done}
 				time={time}
 				requestedInterior={requestedInterior}
+				interiorCommand={interiorCommand}
+				tourOff={q.get("tour") === "off" || pin !== null}
 				onInteriorChange={changed}
 				onUnavailable={fallBack}
 			/>

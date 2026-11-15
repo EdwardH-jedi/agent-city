@@ -75,11 +75,22 @@ import {
 	roofSpot,
 } from "./done-fx.ts";
 import { turnBetween, yawOfDir } from "./engine/orbit-camera.mjs";
+import { ellipseTheta } from "./engine/ring-layout.mjs";
 import { LAMP_COLORS, type LampState } from "./engine/scene-ring.mjs";
 import type { Actor } from "./engine/sprites.mjs";
 import type { RooAction, RooDirection } from "./engine/town-roo-art-m2.mjs";
 import { TownRooArtM2 } from "./engine/town-roo-art-m2.mjs";
 import type { InteriorScene } from "./interior/scene.ts";
+import {
+	holdRoo,
+	type InteriorCommand,
+	newTour,
+	type Stop,
+	stepTour,
+	tourPosition,
+	tourRoom,
+	tourShade,
+} from "./interior/tour.ts";
 import type { InteriorNotice, InteriorSource } from "./interior/types.ts";
 import { type LeadSprite, leadKey } from "./lead-sprites.ts";
 import { townLive } from "./live.ts";
@@ -160,6 +171,8 @@ export interface TownInput {
 	reducedMotion: boolean;
 	time: TimeOfDay;
 	requestedInterior?: string | null;
+	tourOff?: boolean;
+	interiorCommand?: InteriorCommand;
 	interiorSource?: InteriorSource;
 }
 
@@ -305,6 +318,64 @@ function buildStage(
 	// The interior chunk is fetched only for an existing requested building. No renderer is made.
 	let room: InteriorScene | null = null;
 	let loading: string | null = null;
+	let tour = newTour();
+	let pinDismissed = false;
+	let fade: HTMLDivElement | null = null;
+	reg.defer(() => fade?.remove(), "interior fade");
+	function stepNavigation(now: number, scene: number) {
+		if (input.interiorCommand && input.interiorCommand.serial !== tour.command)
+			pinDismissed = true;
+		const pinned = !pinDismissed && !!input.requestedInterior;
+		const pose = roo ? rooPose(roo, scene) : { x: 0, z: 0 };
+		let front: Stop | null = null;
+		if (
+			roo?.mode === "patrol" &&
+			!tour.visit &&
+			input.interiorSource &&
+			!pinned &&
+			!input.tourOff
+		) {
+			for (const repo of input.model.repos) {
+				const lot = lots.find((l) => l.id === assign.get(repo.repo_id));
+				if (!lot || lot.id === HQ_LOT || lot.id === CAFE_LOT) continue;
+				const delta = Math.abs(
+					Math.atan2(
+						Math.sin(ellipseTheta(pose.x, pose.z) - lot.deg * DEG),
+						Math.cos(ellipseTheta(pose.x, pose.z) - lot.deg * DEG),
+					),
+				);
+				if (delta < 0.035 && Math.hypot(pose.x, pose.z) > 15) {
+					front = { ...pose, repo_id: repo.repo_id, door: doorPoint(lot.id) };
+					break;
+				}
+			}
+		}
+		const phase = scene + (roo && "shiftMs" in roo ? roo.shiftMs : 0);
+		tour = stepTour(tour, {
+			now,
+			lap: Math.floor(phase / 240_000),
+			owner: input.model.owner_present,
+			still: input.model.still,
+			reduced: input.reducedMotion,
+			sign: input.model.visitors.some((v) => v.kind === "sign"),
+			off: !!input.tourOff,
+			pinned,
+			repos: input.model.repos,
+			front,
+			here: pose,
+			command: input.interiorCommand,
+			ready: !!room && room.repo_id === tour.visit?.repo_id,
+		});
+		if (tour.visit && !fade) {
+			fade = document.createElement("div");
+			fade.className = "town-interior-fade";
+			fade.setAttribute("aria-hidden", "true");
+			host.appendChild(fade);
+		}
+		if (fade) fade.style.opacity = String(tourShade(tour.visit, now));
+		if (host.dataset) host.dataset.tour = tour.visit?.phase ?? "patrol";
+	}
+
 	const failedRooms = new Set<string>();
 	function closeRoom() {
 		if (!room) return;
@@ -317,12 +388,17 @@ function buildStage(
 	const wantedRoom = () => {
 		if (
 			!input.interiorSource ||
+			input.model.still ||
 			input.model.visitors.some((v) => v.kind === "sign")
 		)
 			return null;
 		return (
-			input.model.repos.find((r) => r.repo_id === input.requestedInterior) ??
-			null
+			input.model.repos.find(
+				(r) =>
+					r.repo_id ===
+					((!pinDismissed && input.requestedInterior) ||
+						tourRoom(tour.visit, Date.now())),
+			) ?? null
 		);
 	};
 	function syncRoom() {
@@ -375,13 +451,21 @@ function buildStage(
 		last = walk ? ts : 0;
 		const reduced = input.reducedMotion;
 		const now = nowScene();
-		if (room && input.interiorSource) {
+		// Ring clocks advance only outside the room/door trip, regardless of roo's current mode.
+		const held = !!room || !!tour.visit;
+		if (held && roo && lastScene)
+			roo = holdRoo(roo, Math.max(0, now - lastScene));
+		if (held) lastScene = now;
+		stepNavigation(Date.now(), now);
+		syncRoom();
+		const drawRoom =
+			room &&
+			(!tour.visit ||
+				tour.visit.phase === "inside" ||
+				tour.visit.phase === "leaving");
+		if (drawRoom && room && input.interiorSource) {
 			const repo = input.model.repos.find((r) => r.repo_id === room?.repo_id);
 			if (repo) {
-				// The ring stays resident; its patrol phase is held while only the room is rendered.
-				const paused = lastScene ? Math.max(0, now - lastScene) : 0;
-				if (roo?.mode === "patrol")
-					roo = { ...roo, shiftMs: roo.shiftMs - paused };
 				lastScene = now;
 				room.update(
 					input.interiorSource,
@@ -389,6 +473,9 @@ function buildStage(
 					Date.now(),
 					reduced,
 					pipe.layout,
+					input.model.owner_present && tour.visit
+						? new Date(tour.visit.insideAt).toISOString()
+						: null,
 				);
 				pipe.renderScene(room.scene, room.camera);
 				if (!readySent) {
@@ -408,9 +495,17 @@ function buildStage(
 			signedAtOf,
 			reducedMotion: reduced,
 		};
-		roo = roo ? stepKangaroo(roo, kin, now - lastScene) : initialRoo(kin);
+		roo = roo
+			? tour.visit
+				? roo
+				: stepKangaroo(roo, kin, now - lastScene)
+			: initialRoo(kin);
 		lastScene = now;
-		const pose = rooPose(roo, now);
+		const basePose = rooPose(roo, now);
+		const pose =
+			tour.visit?.mode === "auto"
+				? { ...basePose, ...tourPosition(tour.visit, Date.now()) }
+				: basePose;
 		const cam = easeCam(pose.cam);
 		const fixed = reduced ? SHOTS.plaza : SHOTS.hq;
 		const rig = pipe.world.rig;
@@ -785,6 +880,7 @@ function buildStage(
 			next.reducedMotion !== prev.reducedMotion
 		)
 			applyModel();
+		stepNavigation(Date.now(), nowScene());
 		syncRoom();
 		schedule();
 	}

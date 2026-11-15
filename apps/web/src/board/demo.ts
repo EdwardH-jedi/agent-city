@@ -50,7 +50,9 @@ export type DemoCase =
 	| "interior"
 	| "interior-empty"
 	| "interior-four"
-	| "interior-entry";
+	| "interior-entry"
+	| "tour-sign"
+	| "tour";
 export function demoCaseOf(search: string): DemoCase {
 	const c = new URLSearchParams(search).get("case");
 	return c === "calm" ||
@@ -59,13 +61,16 @@ export function demoCaseOf(search: string): DemoCase {
 		c === "interior" ||
 		c === "interior-empty" ||
 		c === "interior-four" ||
-		c === "interior-entry"
+		c === "interior-entry" ||
+		c === "tour-sign" ||
+		c === "tour"
 		? c
 		: "default";
 }
 
 export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
-	if (kase.startsWith("interior")) return interiorDemo(t0, kase);
+	if (kase.startsWith("interior") || kase === "tour-sign" || kase === "tour")
+		return interiorDemo(t0, kase);
 	const at = (agoMs: number) => new Date(t0 - agoMs).toISOString();
 	const run = (
 		project: string,
@@ -654,13 +659,25 @@ function interiorDemo(t0: number, kase: DemoCase): DemoData {
 		d.runs = [];
 		d.events = [];
 	}
-	if (kase === "interior-four")
+	if (kase === "interior-four" || kase === "tour")
 		d.sessions = d.sessions.map((s) => ({ ...s, status: "active" }));
 	if (kase === "interior-entry") {
 		d.sessions = d.sessions
 			.slice(0, 1)
 			.map((s) => ({ ...s, started_at: at(0), last_event_at: at(0) }));
 		d.events = [];
+	}
+
+	// The real 60-second D3 rule crosses eight seconds after this explicit demo opens.
+	if (kase === "tour-sign") {
+		d.sessions = d.sessions.filter((s) => s.status === "active");
+		d.runs = d.runs.map((r) => ({
+			...r,
+			display: "waiting_owner",
+			last_display: "waiting_owner",
+			needs_owner: true,
+			last_progress_at: at(52_000),
+		}));
 	}
 
 	return d;

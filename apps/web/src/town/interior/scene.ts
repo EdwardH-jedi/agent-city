@@ -134,7 +134,7 @@ function build(repo: CampusRepo, reg: DisposalRegistry) {
 		wall: number,
 		reduced: boolean,
 		layout: Pick<StageLayout, "rtW" | "rtH">,
-		owner = false,
+		ownerSince: string | null = null,
 	) {
 		if (reg.disposed) return;
 		if (source !== lastSource) {
@@ -161,7 +161,7 @@ function build(repo: CampusRepo, reg: DisposalRegistry) {
 			fill(img, 0, 0, w, h, rgb(colors.frame));
 			fill(img, 1, 1, w - 2, h - 2, rgb(colors.background));
 			letters(img, label, 4, 3, rgb(colors.ink), 2);
-			letters(img, text, 4, h - 14, rgb(colors.ink), 2);
+			if (text !== label) letters(img, text, 4, h - 14, rgb(colors.ink), 2);
 			upload(board.map, img);
 		}
 		const localTime = clockText(wall);
@@ -178,16 +178,26 @@ function build(repo: CampusRepo, reg: DisposalRegistry) {
 				? ritualAt(theme, p.at, p.since, now, reduced)
 				: { ...p.at, walking: false, phase: 0, light: false, open: false },
 		);
+		const ownerPose = ownerSince
+			? ritualAt(
+					theme,
+					{ x: theme.gate.x, z: theme.gate.z - 2 },
+					ownerSince,
+					now,
+					reduced,
+				)
+			: null;
+		const cues = ownerPose ? [...poses, ownerPose] : poses;
 		const lamp = lampOf(current);
 		const c = lamp === "off" ? rgb(0x273136) : LAMP_COLORS[lamp];
 		const blink =
-			poses.some((p) => p.light) && Math.floor(now / 150) % 2 === 0 ? 0.3 : 1;
+			cues.some((p) => p.light) && Math.floor(now / 150) % 2 === 0 ? 0.3 : 1;
 		lampMat.color
 			.copy(new Color(c[0] / 255, c[1] / 255, c[2] / 255))
 			.multiplyScalar(blink);
 		// Only the middle lane, used by the timestamped path, opens. No cosmetic gate cycles.
 		for (const [i, bar] of bars.entries())
-			bar.scale.x = i === 1 && poses.some((p) => p.open) ? 0.12 : 1;
+			bar.scale.x = i === 1 && cues.some((p) => p.open) ? 0.12 : 1;
 		const list: Actor[] = [];
 		for (const [i, p] of people.entries()) {
 			const pose = poses[i];
@@ -237,13 +247,13 @@ function build(repo: CampusRepo, reg: DisposalRegistry) {
 				});
 			}
 		}
-		if (owner)
+		if (ownerPose)
 			list.push({
 				id: "player",
 				kind: "player",
-				x: theme.gate.x,
-				z: theme.gate.z - 1.5,
-				key: "roo|north|idle|0",
+				x: ownerPose.x,
+				z: ownerPose.z,
+				key: `roo|north|${ownerPose.walking ? "walk" : "idle"}|${ownerPose.walking ? ownerPose.phase : 0}`,
 				lockedScale: false,
 			});
 		actors.sync(camera, list);
