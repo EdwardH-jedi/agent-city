@@ -63,7 +63,13 @@ export function letters(
 			height: 6,
 			data: new Uint8Array(Math.floor((img.width - x) / scale) * 6 * 4),
 		};
-		letters(small, text, 0, 0, color);
+		font.drawBoardText(
+			small,
+			font.boardText(text, 40, small.width),
+			0,
+			0,
+			color,
+		);
 		for (let yy = 0; yy < small.height; yy++)
 			for (let xx = 0; xx < small.width; xx++) {
 				const i = (yy * small.width + xx) * 4;

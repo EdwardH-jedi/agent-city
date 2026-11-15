@@ -5,6 +5,7 @@ import {
 	PerspectiveCamera,
 	PlaneGeometry,
 } from "three";
+import { clockText } from "../../board/today.ts";
 import type { CampusRepo } from "../../campus/presentation.ts";
 import { DisposalRegistry } from "../../campus/resources.ts";
 import {
@@ -30,6 +31,7 @@ import { ritualAt } from "./ritual.ts";
 import { buildInteriorScene } from "./room-art.mjs";
 import { interiorLabel, statusText } from "./status-text.ts";
 import { themeFor } from "./themes/index.ts";
+import type { Rect } from "./themes/types.ts";
 import type { InteriorSource } from "./types.ts";
 
 export type InteriorScene = ReturnType<typeof createInteriorScene>;
@@ -79,18 +81,32 @@ function build(repo: CampusRepo, reg: DisposalRegistry) {
 		}),
 		"actor layer",
 	);
-	const b = theme.statusBoard;
-	const w = Math.round(b.w * 16),
-		h = Math.round(b.h * 16);
-	const boardMap = reg.track(pixelTexture(w, h), "status texture");
-	const boardGeo = reg.track(new PlaneGeometry(b.w, b.h), "status geometry");
-	const boardMat = reg.track(
-		new MeshBasicMaterial({ map: boardMap, toneMapped: false }),
-		"status material",
-	);
-	const board = new Mesh(boardGeo, boardMat);
-	board.position.set(b.x + b.w / 2, b.y + b.h / 2, b.z);
-	scene.add(board);
+	function plate(b: Rect, name: string) {
+		const w = Math.round(b.w * 16),
+			h = Math.round(b.h * 16);
+		const map = reg.track(pixelTexture(w, h), `${name} texture`);
+		const geo = reg.track(new PlaneGeometry(b.w, b.h), `${name} geometry`);
+		const mat = reg.track(
+			new MeshBasicMaterial({ map, toneMapped: false }),
+			`${name} material`,
+		);
+		const mesh = new Mesh(geo, mat);
+		mesh.position.set(b.x + b.w / 2, b.y + b.h / 2, b.z);
+		scene.add(mesh);
+		const img = { width: w, height: h, data: new Uint8Array(w * h * 4) };
+		return { map, img, w, h };
+	}
+	const board = plate(theme.statusBoard, "status");
+	const clock = theme.clock ? plate(theme.clock, "clock") : null;
+	for (const sign of theme.signs ?? []) {
+		const p = plate(sign, "sign");
+		fill(p.img, 0, 0, p.w, p.h, rgb(0x294e54));
+		letters(p.img, sign.text, 3, 3, rgb(0xd2d5bd));
+		upload(p.map, p.img);
+	}
+	const bars = (theme.gateBars ?? [])
+		.map((id) => scene.getObjectByName(id))
+		.filter((b) => b !== undefined);
 	const lampMat = reg.track(
 		new MeshBasicMaterial({ color: 0x273136, toneMapped: false }),
 		"entry lamp material",
@@ -107,6 +123,7 @@ function build(repo: CampusRepo, reg: DisposalRegistry) {
 	let people: Occupant[] = [];
 	let lastSource: InteriorSource | null = null;
 	let lastText = "";
+	let lastClock = "";
 	let frozenNow = 0;
 	let stopped = false;
 	const label = interiorLabel(repo.label);
@@ -135,22 +152,46 @@ function build(repo: CampusRepo, reg: DisposalRegistry) {
 		const boardKey = `${label}|${text}`;
 		if (boardKey !== lastText) {
 			lastText = boardKey;
-			const img = { width: w, height: h, data: new Uint8Array(w * h * 4) };
-			fill(img, 0, 0, w, h, rgb(0x6d7975));
-			fill(img, 1, 1, w - 2, h - 2, rgb(0xe0ddc8));
-			letters(img, label, 4, 4, rgb(0x30433f), 2);
-			letters(img, text, 4, 20, rgb(0x30433f), 2);
-			upload(boardMap, img);
+			const { img, w, h } = board;
+			const colors = theme.boardColors ?? {
+				frame: 0x6d7975,
+				background: 0xe0ddc8,
+				ink: 0x30433f,
+			};
+			fill(img, 0, 0, w, h, rgb(colors.frame));
+			fill(img, 1, 1, w - 2, h - 2, rgb(colors.background));
+			letters(img, label, 4, 3, rgb(colors.ink), 2);
+			letters(img, text, 4, h - 14, rgb(colors.ink), 2);
+			upload(board.map, img);
 		}
+		const localTime = clockText(wall);
+		if (clock && localTime !== lastClock) {
+			lastClock = localTime;
+			fill(clock.img, 0, 0, clock.w, clock.h, rgb(0x253d45));
+			letters(clock.img, localTime.replace(":", " "), 3, 3, rgb(0xd1d5b5), 2);
+			fill(clock.img, 20, 5, 2, 2, rgb(0xd1d5b5));
+			fill(clock.img, 20, 9, 2, 2, rgb(0xd1d5b5));
+			upload(clock.map, clock.img);
+		}
+		const poses = people.map((p) =>
+			p.status === "active"
+				? ritualAt(theme, p.at, p.since, now, reduced)
+				: { ...p.at, walking: false, phase: 0, light: false, open: false },
+		);
 		const lamp = lampOf(current);
 		const c = lamp === "off" ? rgb(0x273136) : LAMP_COLORS[lamp];
-		lampMat.color.copy(new Color(c[0] / 255, c[1] / 255, c[2] / 255));
+		const blink =
+			poses.some((p) => p.light) && Math.floor(now / 150) % 2 === 0 ? 0.3 : 1;
+		lampMat.color
+			.copy(new Color(c[0] / 255, c[1] / 255, c[2] / 255))
+			.multiplyScalar(blink);
+		// Only the middle lane, used by the timestamped path, opens. No cosmetic gate cycles.
+		for (const [i, bar] of bars.entries())
+			bar.scale.x = i === 1 && poses.some((p) => p.open) ? 0.12 : 1;
 		const list: Actor[] = [];
 		for (const [i, p] of people.entries()) {
-			const pose =
-				p.status === "active"
-					? ritualAt(theme, p.at, p.since, now, reduced)
-					: { ...p.at, walking: false, phase: 0 };
+			const pose = poses[i];
+			if (!pose) continue;
 			const look = crewLook(p.id, p.provider, p.family);
 			const sprite: CrewSprite = {
 				kind: "crew",
@@ -216,6 +257,10 @@ function build(repo: CampusRepo, reg: DisposalRegistry) {
 		registry: reg,
 		actors,
 		frames,
+		lampMat,
+		get clockText() {
+			return lastClock;
+		},
 		update,
 		get people() {
 			return people;

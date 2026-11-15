@@ -7,3 +7,5 @@ The original renderer builds independently from room data. Its 16-texel grid, fl
 Themes supply new room data and the board supplies actual occupants. Actors use the existing TownArt crew frames and TownRooArtM2; no images, audio or new animation frames are added. The original interior preset supplies the camera (55° pitch, 18° base FOV, 16 pixels/unit at focus); height expansion follows the existing town fovFor rule.
 
 Engine modifications: none. The original town folder is unchanged.
+
+I2 adds an optional floorStyle override and code-drawn screen-door/faregate face details to the copied painter. All other engine modules remain imported without edits. Station0 uses no train, logo, route colours/map or transit-card brand.

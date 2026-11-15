@@ -42,16 +42,30 @@ export interface DemoData {
  * where one building has just finished (its confetti, for 20 s after the page opens) and one finished
  * earlier today (its flag); few buildings, so both stand. Anything else: the default.
  */
-export type DemoCase = "default" | "calm" | "busy" | "done" | "interior";
+export type DemoCase =
+	| "default"
+	| "calm"
+	| "busy"
+	| "done"
+	| "interior"
+	| "interior-empty"
+	| "interior-four"
+	| "interior-entry";
 export function demoCaseOf(search: string): DemoCase {
 	const c = new URLSearchParams(search).get("case");
-	return c === "calm" || c === "busy" || c === "done" || c === "interior"
+	return c === "calm" ||
+		c === "busy" ||
+		c === "done" ||
+		c === "interior" ||
+		c === "interior-empty" ||
+		c === "interior-four" ||
+		c === "interior-entry"
 		? c
 		: "default";
 }
 
 export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
-	if (kase === "interior") return interiorDemo(t0);
+	if (kase.startsWith("interior")) return interiorDemo(t0, kase);
 	const at = (agoMs: number) => new Date(t0 - agoMs).toISOString();
 	const run = (
 		project: string,
@@ -574,7 +588,7 @@ export function demoUsage(
 }
 
 /** 21 I1: explicitly marked example data, never imported by the live board. */
-function interiorDemo(t0: number): DemoData {
+function interiorDemo(t0: number, kase: DemoCase): DemoData {
 	const d = demoData(t0, "calm");
 	const base = d.sessions[0] as Session;
 	const at = (ago: number) => new Date(t0 - ago).toISOString();
@@ -609,7 +623,16 @@ function interiorDemo(t0: number): DemoData {
 			phase: "Implementation",
 		},
 	];
-	d.districts = { demo: [] };
+	const exampleRepo = Object.values(d.districts).flat()[0] as RepoView;
+	d.districts = {
+		demo: [
+			{
+				...exampleRepo,
+				id: "demo/station0",
+				pushed_at: at(1_000),
+			},
+		],
+	};
 	d.eventsByRun = new Map();
 	d.events = [0, 1].map(
 		(i): Event => ({
@@ -626,5 +649,19 @@ function interiorDemo(t0: number): DemoData {
 			payload_redacted: {},
 		}),
 	);
+	if (kase === "interior-empty") {
+		d.sessions = [];
+		d.runs = [];
+		d.events = [];
+	}
+	if (kase === "interior-four")
+		d.sessions = d.sessions.map((s) => ({ ...s, status: "active" }));
+	if (kase === "interior-entry") {
+		d.sessions = d.sessions
+			.slice(0, 1)
+			.map((s) => ({ ...s, started_at: at(0), last_event_at: at(0) }));
+		d.events = [];
+	}
+
 	return d;
 }

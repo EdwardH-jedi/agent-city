@@ -210,7 +210,7 @@ export function makeInteriorFloor(data, seed) {
 		bevelL = r(6),
 		bevelD = r(4),
 		o = WALL_T * T;
-	const style = FLOOR_STYLES[data.id] || "checker",
+	const style = data.floorStyle || FLOOR_STYLES[data.id] || "checker",
 		m = (v, n) => ((v % n) + n) % n;
 	const RW = data.width * T,
 		RD = data.depth * T;
@@ -511,6 +511,20 @@ function paintDetail(img, kind, c, seed, item) {
 	}
 	// M2.9 T3: the other rooms' kinds reuse these details: shelves of any name get books, benches and drafting tables the
 	// desk front, drawers / fridges / flat files / hoods the cabinet doors, racks a slot-and-LED front.
+	if (kind === "screen_door") {
+		fillRect(img, 2, 2, w - 4, h - 4, [0x26, 0x3b, 0x48]);
+		fillRect(img, 3, 3, w - 6, Math.round(h * 0.6), [0x40, 0x5e, 0x68]);
+		fillRect(img, (w >> 1) - 1, 1, 2, h - 2, c.edge);
+		fillRect(img, 1, h - 8, w - 2, 2, [0x72, 0x96, 0x92]);
+		for (let y = 4; y < h - 10; y += 4) setPx(img, 5, y, [0x83, 0xa7, 0xaa]);
+		return;
+	}
+	if (kind === "faregate") {
+		fillRect(img, 2, 2, w - 4, 3, c.edge);
+		fillRect(img, 2, 3, w - 4, 1, [0x48, 0x66, 0x70]);
+		fillRect(img, 2, h - 5, w - 4, 2, c.side);
+		return;
+	}
 	if (/rack$/.test(kind) && kind !== "coat_rack" && h > 8) {
 		fillRect(img, 1, 1, w - 2, h - 2, shade(c.front, 0.8));
 		for (let y = 3; y + 3 < h - 2; y += 4) {
@@ -1097,7 +1111,7 @@ export function buildInteriorMeshes(data, seed, look) {
 		const summary = {
 			department: data.id,
 			title: data.title,
-			floor: FLOOR_STYLES[data.id] || "checker",
+			floor: data.floorStyle || FLOOR_STYLES[data.id] || "checker",
 			boxes,
 			billboards,
 			walls: wallBoxes(data).length,

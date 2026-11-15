@@ -39,6 +39,7 @@ export interface RoomData {
 	title: string;
 	width: number;
 	depth: number;
+	floorStyle?: string;
 	exit: Point;
 	obstacles: RoomItem[];
 	furniture: RoomItem[];
@@ -60,6 +61,10 @@ export interface InteriorTheme {
 	waitSlots: readonly Slot[];
 	statusBoard: Rect;
 	entryLamp: readonly (Point & { y: number })[];
+	gateBars?: readonly string[];
+	clock?: Rect;
+	signs?: readonly (Rect & { text: string })[];
+	boardColors?: { background: number; ink: number; frame: number };
 	room: RoomData;
 }
 

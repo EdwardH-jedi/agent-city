@@ -209,7 +209,9 @@ export function TownView({
 	const q = new URLSearchParams(window.location.search);
 	const pin =
 		q.get("interior") ??
-		(q.get("demo") === "1" && q.get("case") === "interior" ? "station0" : null);
+		(q.get("demo") === "1" && q.get("case")?.startsWith("interior")
+			? "station0"
+			: null);
 	const requestedInterior =
 		model.village.shown.find(
 			(p) => p.label.toLowerCase() === pin?.toLowerCase(),

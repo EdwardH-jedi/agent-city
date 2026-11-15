@@ -26,20 +26,28 @@ export function ritualAt(
 	const t = Math.max(0, elapsed);
 	let point: Point;
 	if (t < 1_200) point = mix(theme.entrance, theme.gate, t / 1_200);
-	else if (t < 1_800) point = theme.gate;
+	else if (t < 1_800)
+		point =
+			theme.entry === "faregate"
+				? theme.gate
+				: mix(
+						theme.gate,
+						{ x: theme.gate.x, z: target.z },
+						(t - 1_200) / 1_500,
+					);
 	else if (t < 2_700)
 		point = mix(
 			theme.gate,
 			{ x: theme.gate.x, z: target.z },
-			(t - 1_800) / 900,
+			theme.entry === "faregate" ? (t - 1_800) / 900 : (t - 1_200) / 1_500,
 		);
 	else
 		point = mix({ x: theme.gate.x, z: target.z }, target, (t - 2_700) / 1_300);
 	return {
 		...point,
-		walking: t < 1_200 || t >= 1_800,
+		walking: theme.entry === "door" || t < 1_200 || t >= 1_800,
 		phase: Math.floor(t / 150) % 4,
-		light: t >= 1_200 && t < 1_800,
-		open: t >= 1_500 && t < 2_700,
+		light: theme.entry === "faregate" && t >= 1_200 && t < 1_800,
+		open: theme.entry === "faregate" && t >= 1_500 && t < 2_700,
 	};
 }
