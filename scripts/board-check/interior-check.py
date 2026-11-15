@@ -35,6 +35,36 @@ def url(**extra):
 def stage():
     return evaluate('''(()=>{const c=document.querySelector('.town-stage canvas'),h=document.querySelector('.town-stage'),r=h?.getBoundingClientRect();return {width:r?.width,height:r?.height,rtW:h?.dataset.rtW,rtH:h?.dataset.rtH,scale:h?.dataset.scale,inside:document.querySelector('.town-inside')?.textContent,highlight:document.querySelectorAll('.sess-group.is-inside').length,hidden:c?.getAttribute('aria-hidden')}})()''')
 
+def project_name(expected, suffix):
+    # TextContent alone misses a shadow painted over the first letter. Measure the full text range
+    # against its clipping ancestors and the actual painted left-hand highlight, including inset.
+    value = evaluate('''(()=>{
+        const group=document.querySelector('.sess-group.is-inside'),name=group?.querySelector('.sess-name');
+        if(!name)return {visible:false};
+        const range=document.createRange();range.selectNodeContents(name);
+        const text=range.getBoundingClientRect(),g=group.getBoundingClientRect();
+        const clip={left:0,top:0,right:innerWidth,bottom:innerHeight};
+        for(let node=name;node;node=node.parentElement){
+            const style=getComputedStyle(node),r=node.getBoundingClientRect();
+            if(/hidden|clip|auto|scroll/.test(style.overflowX)){
+                clip.left=Math.max(clip.left,r.left+node.clientLeft);
+                clip.right=Math.min(clip.right,r.left+node.clientLeft+node.clientWidth);
+            }
+            if(/hidden|clip|auto|scroll/.test(style.overflowY)){
+                clip.top=Math.max(clip.top,r.top+node.clientTop);
+                clip.bottom=Math.min(clip.bottom,r.top+node.clientTop+node.clientHeight);
+            }
+        }
+        const shadow=getComputedStyle(group).boxShadow;
+        const [x,y,blur,spread]=shadow.replace(/rgba?\\([^)]*\\)|inset/g,'').trim().split(/\\s+/).map(Number.parseFloat);
+        const bar=shadow.includes('inset')?{left:g.left,right:g.left+x}:{left:g.left+x,right:g.left};
+        const barVisible=bar.right>bar.left&&y===0&&blur===0&&spread===0;
+        const unclipped=text.width>0&&text.height>0&&text.left>=clip.left-.5&&text.right<=clip.right+.5&&text.top>=clip.top-.5&&text.bottom<=clip.bottom+.5;
+        const clearOfBar=text.left>=bar.right-.5||text.right<=bar.left+.5;
+        return {name:name.textContent,unclipped,clearOfBar,barVisible,shadow,bar,clip,text:{left:text.left,right:text.right,top:text.top,bottom:text.bottom}};
+    })()''')
+    check(f'interior_project_name_unclipped_{suffix}', value.get('name')==expected and all(value.get(k) for k in ['unclipped','clearOfBar','barVisible']), value)
+
 try:
     cmd(['open'])
     for width,height in [(1920,1080),(1366,768)]:
@@ -50,6 +80,7 @@ try:
         room = stage()
         check(f'interior_stage_matches_ring_{width}', all(room.get(k)==ring.get(k) for k in ['width','height','rtW','rtH','scale']), {'ring':ring,'room':room})
         check(f'interior_name_and_panel_{width}', room.get('inside')=='STATION0' and room.get('highlight')==1 and room.get('hidden')=='true', room)
+        project_name('station0', f'station0_{width}')
         check(f'interior_demo_no_hub_requests_{width}', not evaluate('performance.getEntriesByType("resource").some(e=>new URL(e.name).pathname.startsWith("/api/"))'), None)
         cmd(['screenshot',str(OUT/f'interior-{width}x{height}.png')])
     cmd(['open',ab.board_url() + ('&' if '?' in ab.board_url() else '?') + 'tour=off'])
@@ -106,6 +137,7 @@ try:
         cmd(['wait','--fn','document.querySelector(".town-inside")?.textContent === "NO-WUKKAS-CAFE"'])
         room = stage()
         check(f'interior_cafe_name_and_panel_{width}', room.get('inside')=='NO-WUKKAS-CAFE' and room.get('highlight')==1 and room.get('hidden')=='true',room)
+        project_name('no-wukkas-cafe', f'cafe_{width}')
         check(f'interior_cafe_demo_no_hub_{width}',not evaluate('performance.getEntriesByType("resource").some(e=>new URL(e.name).pathname.startsWith("/api/"))'),None)
         cmd(['screenshot',str(OUT/f'cafe-{width}x{height}.png')])
     errors = cmd(['errors']).get('errors',[])

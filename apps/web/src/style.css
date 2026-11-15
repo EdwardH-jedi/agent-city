@@ -1741,7 +1741,8 @@ tr.st-waiting td {
 	pointer-events: none;
 }
 .sess-group.is-inside {
-	box-shadow: inset 3px 0 #9aaf93;
+	/* The list's left padding holds the marker without painting over project names. */
+	box-shadow: -3px 0 #9aaf93;
 }
 
 .town-interior-fade {
