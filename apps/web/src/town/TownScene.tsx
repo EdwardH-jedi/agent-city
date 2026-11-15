@@ -68,7 +68,7 @@ export default function TownScene(props: TownSceneProps) {
 		tourOff,
 		interiorCommand,
 	} = props;
-	useEffect(() => {
+	useLayoutEffect(() => {
 		stage.current?.update({
 			model,
 			reducedMotion,

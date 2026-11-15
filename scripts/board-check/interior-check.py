@@ -2,6 +2,8 @@
 """21: room layout, lazy load and unchanged read paths, on an isolated local browser."""
 import importlib.util
 import json
+import select
+import subprocess
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -64,6 +66,53 @@ def project_name(expected, suffix):
         return {name:name.textContent,unclipped,clearOfBar,barVisible,shadow,bar,clip,text:{left:text.left,right:text.right,top:text.top,bottom:text.bottom}};
     })()''')
     check(f'interior_project_name_unclipped_{suffix}', value.get('name')==expected and all(value.get(k) for k in ['unclipped','clearOfBar','barVisible']), value)
+
+def sign_same_frame():
+    # Fresh owned browser: emulation and the RAF observer are confined to synthetic demo pages.
+    cmd(['close'])
+    cmd(['--init-script',str(HERE/'observe-interior-frames.js'),'open'])
+    cmd(['set','viewport','1366','768'])
+    endpoint = cmd(['get','cdp-url'])['cdpUrl']
+    tab = next(t for t in cmd(['tab','list'])['tabs'] if t['active'])
+    throttle = subprocess.Popen(['bun',str(HERE/'throttle-cpu.ts')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    repetitions = []
+    try:
+        throttle.stdin.write(json.dumps({'endpoint':endpoint,'targetId':tab['targetId']}))
+        throttle.stdin.close()
+        throttle.stdin = None
+        if not select.select([throttle.stdout],[],[],15)[0]:
+            raise RuntimeError('CPU emulation did not become ready')
+        ready = json.loads(throttle.stdout.readline())
+        if ready != {'ready':True,'rate':8}:
+            raise RuntimeError('CPU emulation was not confirmed at rate 8')
+        for iteration in range(1,13):
+            if throttle.poll() is not None:
+                raise RuntimeError('CPU emulation ended during observation')
+            cmd(['open',url(case='tour-sign',tour='off',time='day')])
+            cmd(['wait','--fn','Boolean(document.querySelector(".town-map:not([hidden])"))'])
+            production = evaluate('performance.getEntriesByType("resource").some(e=>new URL(e.name).pathname.startsWith("/assets/TownScene-")) && !performance.getEntriesByType("resource").some(e=>e.name.includes("/@vite/client"))')
+            if not production:
+                raise RuntimeError('Same-frame regression requires the production build')
+            cmd(['press','1'])
+            cmd(['wait','--fn','Boolean(document.querySelector(".town-stage canvas")?.dataset.inside)'])
+            cmd(['wait','--fn','window.__agentCityInteriorFrames.frames.filter(f=>f.sign&&!f.inside).length >= 5'])
+            trace = evaluate('window.__agentCityInteriorFrames')
+            (OUT/f'sign-frame-{iteration:02}.json').write_text(json.dumps(trace,ensure_ascii=False,indent=2)+'\n')
+            frames = trace['frames']
+            bad = [f for f in frames if f['sign'] and f['inside']]
+            valid = any(f['inside'] and not f['sign'] for f in frames) and any(f['sign'] and not f['inside'] for f in frames) and not trace['overflow'] and not trace['errors']
+            repetitions.append({'iteration':iteration,'valid':valid,'frames':len(frames),'overlapFrames':len({f['frame'] for f in bad}),'bad':bad})
+            if bad or not valid:
+                break
+        value = {'cpuRate':8,'production':True,'repetitions':repetitions,'overlapFrames':sum(r['overlapFrames'] for r in repetitions)}
+        (OUT/'sign-frame-summary.json').write_text(json.dumps(value,ensure_ascii=False,indent=2)+'\n')
+        check('interior_sign_same_frame',len(repetitions)==12 and all(r['valid'] for r in repetitions) and value['overlapFrames']==0,value)
+    finally:
+        if throttle.poll() is None:
+            throttle.terminate()
+        _,stderr = throttle.communicate(timeout=15)
+        if throttle.returncode != 0:
+            raise RuntimeError('CPU emulation cleanup failed: '+stderr[-500:])
 
 try:
     cmd(['open'])
@@ -142,6 +191,7 @@ try:
         cmd(['screenshot',str(OUT/f'cafe-{width}x{height}.png')])
     errors = cmd(['errors']).get('errors',[])
     check('interior_errors_zero', not errors, len(errors))
+    sign_same_frame()
 except Exception as error:
     check('interior_inspection_completed',False,str(error))
 finally:
