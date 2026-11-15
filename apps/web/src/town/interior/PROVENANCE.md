@@ -9,3 +9,5 @@ Themes supply new room data and the board supplies actual occupants. Actors use 
 Engine modifications: none. The original town folder is unchanged.
 
 I2 adds an optional floorStyle override and code-drawn screen-door/faregate face details to the copied painter. All other engine modules remain imported without edits. Station0 uses no train, logo, route colours/map or transit-card brand.
+
+I4 adds an espresso-machine front (two group heads, cups and drip tray) in the copied painter. The cafe uses the original planks, counters, tables, chairs and coffee-machine details; its room data and bell are code-drawn. No engine or source-town files change.

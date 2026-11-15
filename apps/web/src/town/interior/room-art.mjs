@@ -623,6 +623,18 @@ function paintDetail(img, kind, c, seed, item) {
 			if (k % 3 === 0) strokeRect(img, x, y + 2, 5, 4, ink[(k + 1) % 3]);
 		}
 		fillRect(img, 1, h - 2, w - 2, 1, c.side);
+	} else if (kind === "espresso") {
+		fillRect(img, 3, 4, w - 6, h - 7, c.edge);
+		fillRect(img, 2, 2, w - 4, 3, c.top);
+		for (const x of [Math.round(w / 3), Math.round((w * 2) / 3)]) {
+			fillRect(img, x - 2, 3, 2, 1, c.edge);
+			fillRect(img, x - 3, 6, 6, 2, c.front);
+			fillRect(img, x, 8, 1, 2, c.top);
+			fillRect(img, x + 1, 7, 4, 1, c.edge);
+			fillRect(img, x - 1, h - 6, 3, 3, [0xe1, 0xd6, 0xbb]);
+		}
+		fillRect(img, w - 6, 5, 1, h - 8, c.top);
+		fillRect(img, 3, h - 3, w - 6, 1, c.top);
 	} else if (kind === "coffee_machine") {
 		const y = Math.round(h * 0.45);
 		fillRect(img, 3, y, w - 6, 3, c.edge);

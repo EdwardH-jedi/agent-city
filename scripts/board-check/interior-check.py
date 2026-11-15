@@ -100,6 +100,14 @@ try:
     cmd(['screenshot',str(OUT/'sign-exit.png')])
     cmd(['press','1'])
     check('interior_sign_blocks_reentry',not stage().get('inside'),None)
+    for width,height in [(1920,1080),(1366,768)]:
+        cmd(['set','viewport',str(width),str(height)])
+        cmd(['open',url(case='interior-cafe')])
+        cmd(['wait','--fn','document.querySelector(".town-inside")?.textContent === "NO-WUKKAS-CAFE"'])
+        room = stage()
+        check(f'interior_cafe_name_and_panel_{width}', room.get('inside')=='NO-WUKKAS-CAFE' and room.get('highlight')==1 and room.get('hidden')=='true',room)
+        check(f'interior_cafe_demo_no_hub_{width}',not evaluate('performance.getEntriesByType("resource").some(e=>new URL(e.name).pathname.startsWith("/api/"))'),None)
+        cmd(['screenshot',str(OUT/f'cafe-{width}x{height}.png')])
     errors = cmd(['errors']).get('errors',[])
     check('interior_errors_zero', not errors, len(errors))
 except Exception as error:

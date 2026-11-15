@@ -52,7 +52,9 @@ export type DemoCase =
 	| "interior-four"
 	| "interior-entry"
 	| "tour-sign"
-	| "tour";
+	| "tour"
+	| "interior-cafe"
+	| "interior-cafe-empty";
 export function demoCaseOf(search: string): DemoCase {
 	const c = new URLSearchParams(search).get("case");
 	return c === "calm" ||
@@ -63,7 +65,9 @@ export function demoCaseOf(search: string): DemoCase {
 		c === "interior-four" ||
 		c === "interior-entry" ||
 		c === "tour-sign" ||
-		c === "tour"
+		c === "tour" ||
+		c === "interior-cafe" ||
+		c === "interior-cafe-empty"
 		? c
 		: "default";
 }
@@ -678,6 +682,25 @@ function interiorDemo(t0: number, kase: DemoCase): DemoData {
 			needs_owner: true,
 			last_progress_at: at(52_000),
 		}));
+	}
+
+	if (kase === "interior-cafe" || kase === "interior-cafe-empty") {
+		const repo = "demo/no-wukkas-cafe";
+		d.sessions = d.sessions.map((s) => ({
+			...s,
+			repo_id: repo,
+			status: "active",
+		}));
+		d.runs = d.runs.map((r) => ({ ...r, project: repo }));
+		d.districts = {
+			demo: (d.districts.demo ?? []).map((r) => ({ ...r, id: repo })),
+		};
+		d.events = d.events.map((e) => ({ ...e, repo_id: repo }));
+		if (kase === "interior-cafe-empty") {
+			d.sessions = [];
+			d.runs = [];
+			d.events = [];
+		}
 	}
 
 	return d;

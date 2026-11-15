@@ -221,7 +221,9 @@ export function TownView({
 	const pin =
 		q.get("interior") ??
 		(q.get("demo") === "1" && q.get("case")?.startsWith("interior")
-			? "station0"
+			? q.get("case")?.startsWith("interior-cafe")
+				? "no-wukkas-cafe"
+				: "station0"
 			: null);
 	const requestedInterior =
 		model.village.shown.find(
