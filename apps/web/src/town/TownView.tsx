@@ -29,9 +29,18 @@ import {
 	toCampusModel,
 } from "../campus/presentation.ts";
 import { townCrew } from "./crew.ts";
+import type { InteriorCommand } from "./interior/tour.ts";
+import type { InteriorNotice, InteriorSource } from "./interior/types.ts";
 import { type TimeOfDay, timeOfDayAt } from "./params.ts";
 
-type TownSceneProps = CampusSceneProps & { time: TimeOfDay };
+type TownSceneProps = CampusSceneProps & {
+	time: TimeOfDay;
+	requestedInterior?: string | null;
+	tourOff?: boolean;
+	interiorCommand?: InteriorCommand;
+	interiorSource?: InteriorSource;
+	onInteriorChange?: (inside: InteriorNotice | null) => void;
+};
 
 /** Stands in for the scene when its chunk cannot be loaded: it only says so, once. */
 function SceneMissing({ onUnavailable }: TownSceneProps) {
@@ -103,6 +112,10 @@ function SceneHost({
 	events,
 	done,
 	time,
+	requestedInterior,
+	tourOff,
+	onInteriorChange,
+	interiorCommand,
 	onUnavailable,
 }: {
 	model: VillageModel;
@@ -111,6 +124,10 @@ function SceneHost({
 	events: readonly TailEvent[];
 	done: CampusDone | undefined;
 	time: TimeOfDay;
+	requestedInterior: string | null;
+	tourOff: boolean;
+	interiorCommand?: InteriorCommand;
+	onInteriorChange: (inside: InteriorNotice | null) => void;
 	onUnavailable: () => void;
 }) {
 	const [reduced, setReduced] = useState(prefersReducedMotion);
@@ -129,6 +146,10 @@ function SceneHost({
 			),
 		[model, sessions, events, now, sessionWaitMs, done],
 	);
+	const interiorSource = useMemo(
+		() => ({ model, sessions, events, now }),
+		[model, sessions, events, now],
+	);
 	useEffect(() => () => setSceneUp(false), []);
 	const unavailable = useMemo(
 		() => () => {
@@ -144,6 +165,11 @@ function SceneHost({
 				model={scene}
 				reducedMotion={reduced}
 				time={time}
+				requestedInterior={requestedInterior}
+				interiorCommand={interiorCommand}
+				tourOff={tourOff}
+				interiorSource={interiorSource}
+				onInteriorChange={onInteriorChange}
 				onUnavailable={unavailable}
 				onReady={ready}
 			/>
@@ -169,6 +195,8 @@ export function TownView({
 	sessions = [],
 	events = [],
 	done,
+	onInteriorChange,
+	interiorCommand,
 }: {
 	model: VillageModel;
 	now: number;
@@ -177,9 +205,37 @@ export function TownView({
 	events?: readonly TailEvent[];
 	/** The finish show (17 §3, board/done.ts): flags of today's finishes, confetti of new ones. */
 	done?: CampusDone;
+	onInteriorChange?: (repo: string | null) => void;
+	interiorCommand?: InteriorCommand;
 }) {
 	const [gl, setGl] = useState(webglAvailable);
-	const fallBack = useMemo(() => () => setGl(false), []);
+	const [inside, setInside] = useState<InteriorNotice | null>(null);
+	const changed = useMemo(
+		() => (next: InteriorNotice | null) => {
+			setInside(next);
+			onInteriorChange?.(next?.repo_id ?? null);
+		},
+		[onInteriorChange],
+	);
+	const q = new URLSearchParams(window.location.search);
+	const pin =
+		q.get("interior") ??
+		(q.get("demo") === "1" && q.get("case")?.startsWith("interior")
+			? q.get("case")?.startsWith("interior-cafe")
+				? "no-wukkas-cafe"
+				: "station0"
+			: null);
+	const requestedInterior =
+		model.village.shown.find(
+			(p) => p.label.toLowerCase() === pin?.toLowerCase(),
+		)?.id ?? null;
+	const fallBack = useMemo(
+		() => () => {
+			setGl(false);
+			changed(null);
+		},
+		[changed],
+	);
 	// `?time=` pins the look; otherwise the local hour picks it, re-read with the board's clock.
 	const time = timeOfDayAt(window.location.search, new Date(now));
 	if (!gl) return <Village2d model={model} now={now} />;
@@ -195,9 +251,14 @@ export function TownView({
 				events={events}
 				done={done}
 				time={time}
+				requestedInterior={requestedInterior}
+				interiorCommand={interiorCommand}
+				tourOff={q.get("tour") === "off" || pin !== null}
+				onInteriorChange={changed}
 				onUnavailable={fallBack}
 			/>
-			<DoorBubble model={model} />
+			{inside && <p className="town-inside">{inside.label}</p>}
+			{!inside && <DoorBubble model={model} />}
 			{model.village.folded > 0 && (
 				<p className="quiet campus-folded">조용함 {model.village.folded}곳</p>
 			)}

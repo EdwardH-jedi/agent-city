@@ -17,12 +17,15 @@ const SUITES: Record<string, string[]> = {
 	ab1: ["board-check.py", "ab1"],
 	ab2: ["readonly-check.py"],
 	ab3: ["board-check.py", "ab3"],
+	ab4: ["interior-check.py"],
 };
 
 const arg = process.argv[2] ?? "ab1";
 const wanted = arg === "all" ? Object.keys(SUITES) : [arg];
 if (!wanted.every((name) => name in SUITES)) {
-	console.error(`[check:board] unknown suite "${arg}" (ab1 | ab2 | ab3 | all)`);
+	console.error(
+		`[check:board] unknown suite "${arg}" (ab1 | ab2 | ab3 | ab4 | all)`,
+	);
 	process.exit(2);
 }
 

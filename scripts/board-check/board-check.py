@@ -28,7 +28,8 @@ try:
     cases=[(1920,1080,False,None),(1920,1080,True,None)]
     # 16 A4-2: ab1 also opens the busy and calm demo cases (many sessions and waits; nothing waiting);
     # 17 §3: and the done case (a building that has just finished, one that finished earlier today)
-    if MODE=='ab1': cases.extend([(1366,768,False,None),(1366,768,True,None),(1920,1080,True,'busy'),(1920,1080,True,'calm'),(1920,1080,True,'done')])
+    if MODE=='ab1': cases.extend([(1366,768,False,None),(1366,768,True,None),(1920,1080,True,'busy'),(1920,1080,True,'calm'),(1920,1080,True,'done'),(1920,1080,True,'interior')])
+    if MODE=='ab3': cases.append((1920,1080,True,'interior'))
     for width,height,demo,case in cases:
         name=f'{MODE}-{width}x{height}-'+('demo' if demo else 'live')+(f'-{case}' if case else '')
         case_dir=OUT/name;case_dir.mkdir(parents=True,exist_ok=True)
@@ -45,6 +46,7 @@ try:
             # (measure-board.js town_minimap_shown then reports what is there)
             command(['wait','--fn','!document.querySelector(".town-stage canvas") || Boolean(document.querySelector(".town-map:not([hidden])"))','--timeout','5000'],required=False)
             command(['eval','--stdin'],stdin='(async()=>{await document.fonts.ready;await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()')
+            if case=='interior' and MODE=='ab1': command(['wait','--fn','Boolean(document.querySelector(".town-inside"))','--timeout','5000'])
             measured,_=command(['eval','--stdin'],stdin=(HERE/'measure-board.js').read_text())
             record.update(measured['data']['result'])
             command(['screenshot',str(case_dir/'screen.png')])

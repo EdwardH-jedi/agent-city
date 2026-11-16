@@ -96,6 +96,7 @@ export function Sessions({
 	ui,
 	wide,
 	pixel = false,
+	insideRepo = null,
 }: {
 	model: VillageModel;
 	sessions: readonly Session[];
@@ -106,6 +107,7 @@ export function Sessions({
 	ui: number;
 	wide: boolean;
 	pixel?: boolean;
+	insideRepo?: string | null;
 }) {
 	// tails follow the events, not the clock; each session's last lines outlive the 200-event window and
 	// the D screen (the page's one memory, tail-memory.ts screenMemory; a reload starts empty)
@@ -148,7 +150,10 @@ export function Sessions({
 				) : (
 					<ul className="sess-list">
 						{panel.groups.map((g) => (
-							<li key={g.project_id} className="sess-group">
+							<li
+								key={g.project_id}
+								className={`sess-group${g.project_id === insideRepo ? " is-inside" : ""}`}
+							>
 								<div className="sess-proj">
 									<span
 										className={`sess-name${g.unassigned ? " sess-nameless" : ""}`}

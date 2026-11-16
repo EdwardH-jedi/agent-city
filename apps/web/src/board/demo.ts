@@ -42,13 +42,39 @@ export interface DemoData {
  * where one building has just finished (its confetti, for 20 s after the page opens) and one finished
  * earlier today (its flag); few buildings, so both stand. Anything else: the default.
  */
-export type DemoCase = "default" | "calm" | "busy" | "done";
+export type DemoCase =
+	| "default"
+	| "calm"
+	| "busy"
+	| "done"
+	| "interior"
+	| "interior-empty"
+	| "interior-four"
+	| "interior-entry"
+	| "tour-sign"
+	| "tour"
+	| "interior-cafe"
+	| "interior-cafe-empty";
 export function demoCaseOf(search: string): DemoCase {
 	const c = new URLSearchParams(search).get("case");
-	return c === "calm" || c === "busy" || c === "done" ? c : "default";
+	return c === "calm" ||
+		c === "busy" ||
+		c === "done" ||
+		c === "interior" ||
+		c === "interior-empty" ||
+		c === "interior-four" ||
+		c === "interior-entry" ||
+		c === "tour-sign" ||
+		c === "tour" ||
+		c === "interior-cafe" ||
+		c === "interior-cafe-empty"
+		? c
+		: "default";
 }
 
 export function demoData(t0: number, kase: DemoCase = "default"): DemoData {
+	if (kase.startsWith("interior") || kase === "tour-sign" || kase === "tour")
+		return interiorDemo(t0, kase);
 	const at = (agoMs: number) => new Date(t0 - agoMs).toISOString();
 	const run = (
 		project: string,
@@ -568,4 +594,114 @@ export function demoUsage(
 			],
 		},
 	};
+}
+
+/** 21 I1: explicitly marked example data, never imported by the live board. */
+function interiorDemo(t0: number, kase: DemoCase): DemoData {
+	const d = demoData(t0, "calm");
+	const base = d.sessions[0] as Session;
+	const at = (ago: number) => new Date(t0 - ago).toISOString();
+	d.sessions = Array.from(
+		{ length: 4 },
+		(_, i): Session => ({
+			...base,
+			id: `${i === 1 ? "codex" : "claude"}:demo-room-${i}`,
+			provider: i === 1 ? "codex" : "claude",
+			repo_id: "demo/station0",
+			cwd: null,
+			branch: null,
+			model:
+				i === 1
+					? "gpt-6-astra"
+					: i === 2
+						? "claude-sonnet-5-5"
+						: "claude-opus-5-5",
+			status: i === 3 ? "waiting" : "active",
+			started_at: at(120_000 + i * 10_000),
+			last_event_at: at(i === 3 ? 0 : 5_000 + i * 1_000),
+			ended_at: null,
+		}),
+	);
+	const r = d.runs.find((r) => r.display === "running") as RunView;
+	d.runs = [
+		{
+			...r,
+			project: "demo/station0",
+			workflow_id: "room-example",
+			run_id: "room-example-1",
+			phase: "Implementation",
+		},
+	];
+	const exampleRepo = Object.values(d.districts).flat()[0] as RepoView;
+	d.districts = {
+		demo: [
+			{
+				...exampleRepo,
+				id: "demo/station0",
+				pushed_at: at(1_000),
+			},
+		],
+	};
+	d.eventsByRun = new Map();
+	d.events = [0, 1].map(
+		(i): Event => ({
+			id: `demo:room-sub-${i}`,
+			ts: at(8_000),
+			machine_id: "cockpit",
+			session_id: "claude:demo-room-0",
+			agent_id: `claude:demo-room-0/sub:example-${i}`,
+			provider: "claude",
+			type: "PreToolUse",
+			tool: "Agent",
+			summary: "Agent → example",
+			repo_id: "demo/station0",
+			payload_redacted: {},
+		}),
+	);
+	if (kase === "interior-empty") {
+		d.sessions = [];
+		d.runs = [];
+		d.events = [];
+	}
+	if (kase === "interior-four" || kase === "tour")
+		d.sessions = d.sessions.map((s) => ({ ...s, status: "active" }));
+	if (kase === "interior-entry") {
+		d.sessions = d.sessions
+			.slice(0, 1)
+			.map((s) => ({ ...s, started_at: at(0), last_event_at: at(0) }));
+		d.events = [];
+	}
+
+	// The real 60-second D3 rule crosses eight seconds after this explicit demo opens.
+	if (kase === "tour-sign") {
+		d.sessions = d.sessions.filter((s) => s.status === "active");
+		d.runs = d.runs.map((r) => ({
+			...r,
+			display: "waiting_owner",
+			last_display: "waiting_owner",
+			needs_owner: true,
+			last_progress_at: at(52_000),
+		}));
+	}
+
+	if (kase === "interior-cafe" || kase === "interior-cafe-empty") {
+		const repo = "demo/no-wukkas-cafe";
+		d.sessions = d.sessions.map((s) => ({
+			...s,
+			repo_id: repo,
+			status: "active",
+		}));
+		d.runs = d.runs.map((r) => ({ ...r, project: repo }));
+		d.districts = {
+			demo: (d.districts.demo ?? []).map((r) => ({ ...r, id: repo })),
+		};
+		d.events = d.events.map((e) => ({ ...e, repo_id: repo }));
+		if (kase === "interior-cafe-empty") {
+			d.sessions = [];
+			d.runs = [];
+			d.events = [];
+		}
+	}
+
+	return d;
 }

@@ -278,6 +278,39 @@ export function BoardView({
 	// The ring town in the middle column (design doc 12, the default); `?scene=campus`: the 3D campus.
 	const [scene] = useState(() => sceneOf(window.location.search));
 	const town = scene === "town";
+	const [insideRepo, setInsideRepo] = useState<string | null>(null);
+	const [interiorCommand, setInteriorCommand] = useState({
+		serial: 0,
+		index: -1,
+	});
+	useEffect(() => {
+		if (!town) return;
+		const navigate = (e: KeyboardEvent) => {
+			if (
+				e.repeat ||
+				e.altKey ||
+				e.ctrlKey ||
+				e.metaKey ||
+				e.shiftKey ||
+				e.isComposing
+			)
+				return;
+			const target = e.target as HTMLElement | null;
+			if (target?.isContentEditable || target?.closest("input,textarea,select"))
+				return;
+			const index =
+				e.key === "Escape" || e.key === "0"
+					? -1
+					: /^[1-8]$/.test(e.key)
+						? Number(e.key) - 1
+						: null;
+			if (index === null) return;
+			e.preventDefault();
+			setInteriorCommand((c) => ({ serial: c.serial + 1, index }));
+		};
+		window.addEventListener("keydown", navigate);
+		return () => window.removeEventListener("keydown", navigate);
+	}, [town]);
 	const cols = useBoardColumns();
 	// `?ui=1.15` / `?ui=1.3`: one scale for every panel text size (15 §1); not the sentence, not the columns
 	const [ui] = useState(() => uiScaleOf(window.location.search));
@@ -402,11 +435,14 @@ export function BoardView({
 						sessions={sessions}
 						events={events}
 						done={done}
+						onInteriorChange={setInsideRepo}
+						interiorCommand={interiorCommand}
 					/>
 				) : (
 					<CampusView model={model} now={now} />
 				)}
 				<Sessions
+					insideRepo={town ? insideRepo : null}
 					model={model}
 					sessions={sessions}
 					events={events}
