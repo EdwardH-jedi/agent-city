@@ -1965,6 +1965,9 @@ describe("U5 · P2-3: the state file holds no source path", () => {
 			claudeMsg({ id: "1", session: "m", cwd: "/work/widget" }),
 		);
 		age(main, 2);
+		// Linux cannot backdate a birth time and stamps files on a coarse clock: without a gap the two
+		// files tie and the order falls to the hashed key. 25 ms keeps the main transcript born first.
+		Bun.sleepSync(25);
 		const sub = join(root, "p", "m", "subagents", "agent-z.jsonl");
 		writeFileSync(
 			sub,
