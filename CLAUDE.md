@@ -65,6 +65,12 @@ bun run collector:launchd # print-only: launchd job files (tunnel, heartbeat, co
 bun run check:secrets    # scan tracked/untracked files for token patterns
 ```
 
+**CI.** `.github/workflows/ci.yml` (job `check`, shown as `ci / check`) runs on every pull request and every push to
+`main`, on one ubuntu runner with read-only permissions and no secrets: `bun install --frozen-lockfile`, then
+`check:secrets`, `typecheck`, `lint`, `bun test`, and the web build, in that order. A PR whose `ci / check` is red is
+not merged. `check:board` is not in CI (it needs a browser and a hub); run it by hand when you change a screen.
+Tests must not depend on the wall clock, file times or the OS (a test that did made CI flaky once).
+
 ## Conventions
 
 - Biome is the only formatter/linter; don't add ESLint/Prettier.

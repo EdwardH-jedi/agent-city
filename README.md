@@ -290,8 +290,11 @@ bun run check:secrets
 The test suite covers schema/IDs/redaction, collector mapping and spooling,
 hub ingestion and ordering, GitHub integration logic, web-state merging, and
 documentation parity. These checks do not by themselves prove a live
-multi-machine deployment or provider session compatibility. `main` currently
-has no GitHub Actions workflow; run the checks locally for the change under review.
+multi-machine deployment or provider session compatibility. GitHub Actions
+(`.github/workflows/ci.yml`, job `ci / check`) runs `check:secrets`, `typecheck`,
+`lint`, `bun test` and the web build on every pull request and every push to `main`;
+it uses read-only permissions and no secrets. `check:board` is not part of it, so run
+it by hand when you change a screen.
 
 **Screen check (`check:board`).** `bun run check:board [ab1|ab2|ab3|all]` drives the board in
 headless Chrome through the `agent-browser` CLI and reads numbers off the page: `ab1` (default)
