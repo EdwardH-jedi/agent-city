@@ -2,6 +2,8 @@
 import {
 	compareInstants,
 	type Event,
+	MACHINE_GAPS_MAX,
+	MACHINE_GAPS_RECENT_MS,
 	type MachineView,
 	machineStatus,
 	type RunView,
@@ -89,9 +91,42 @@ export function parseHubMessage(raw: string): HubMessage | null {
 
 const MACHINE_ORDER = ["cockpit", "forge", "spine"] as const;
 
+type Gaps = NonNullable<MachineView["recent_gaps"]>;
+
+/**
+ * N12: the hub's `recent_gaps` as this screen trusts it. The web does not parse hub payloads with zod, so the
+ * shape is enforced here: `undefined` when the field is absent or not a list (an older hub: no history known);
+ * otherwise only well-formed gaps (from_at before until_at, ISO times, boolean boot_changed), one per from_at,
+ * ordered by until_at, the newest MACHINE_GAPS_MAX.
+ */
+export function normalizeGaps(raw: unknown): Gaps | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const byFrom = new Map<string, Gaps[number]>();
+	for (const g of raw as unknown[]) {
+		if (!g || typeof g !== "object") continue;
+		const { from_at, until_at, boot_changed } = g as Record<string, unknown>;
+		if (typeof from_at !== "string" || typeof until_at !== "string") continue;
+		if (typeof boot_changed !== "boolean") continue;
+		const from = Date.parse(from_at);
+		const until = Date.parse(until_at);
+		if (Number.isNaN(from) || Number.isNaN(until) || from >= until) continue;
+		byFrom.set(from_at, { from_at, until_at, boot_changed });
+	}
+	return [...byFrom.values()]
+		.sort(
+			(a, b) =>
+				Date.parse(a.until_at) - Date.parse(b.until_at) ||
+				Date.parse(a.from_at) - Date.parse(b.from_at),
+		)
+		.slice(-MACHINE_GAPS_MAX);
+}
+
 /**
  * Upsert machines by id. A snapshot or message carrying an older heartbeat never replaces a newer one
  * (a snapshot that raced a live beat can't win), and the result is always cockpit, forge, spine.
+ * `recent_gaps` (N12): a payload that carries the field is the hub's answer for that heartbeat and replaces
+ * the list (an empty list included); one without it (an older hub) keeps the list this screen already has.
+ * An older-heartbeat payload changes nothing, its gaps included.
  */
 export function mergeMachines(
 	current: readonly MachineView[],
@@ -100,8 +135,10 @@ export function mergeMachines(
 	const byId = new Map(current.map((m) => [m.id, m]));
 	for (const m of incoming) {
 		const prev = byId.get(m.id);
-		if (!prev || (m.heartbeat_at ?? "") >= (prev.heartbeat_at ?? ""))
-			byId.set(m.id, m);
+		if (prev && (m.heartbeat_at ?? "") < (prev.heartbeat_at ?? "")) continue;
+		const { recent_gaps: raw, ...row } = m;
+		const gaps = normalizeGaps(raw) ?? prev?.recent_gaps;
+		byId.set(m.id, gaps === undefined ? row : { ...row, recent_gaps: gaps });
 	}
 	return MACHINE_ORDER.flatMap((id) => {
 		const m = byId.get(id);
@@ -118,9 +155,18 @@ export function machinesAt(
 	now: number,
 ): MachineView[] {
 	const at = new Date(now);
+	const since = now - MACHINE_GAPS_RECENT_MS;
 	return machines.map((m) => ({
 		...m,
 		status: machineStatus(m.heartbeat_at, at),
+		// N12: the hub's 24 h window, kept on this screen's clock (a gap ending exactly 24 h ago stays)
+		...(m.recent_gaps
+			? {
+					recent_gaps: m.recent_gaps.filter(
+						(g) => Date.parse(g.until_at) >= since,
+					),
+				}
+			: {}),
 	}));
 }
 
