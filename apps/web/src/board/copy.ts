@@ -126,9 +126,12 @@ export const REVIEW_TEXT = "Codex 리뷰에 들어갑니다.";
 export const AGAIN_TEXT = "한 번 실패해서 다시 시도합니다.";
 export const LEAVING_TEXT = "진행하겠습니다.";
 
-/** Decision D2: a paused run (Office's loop ended for the day with tasks left). Said once, in its list. */
+/**
+ * Decision D2: a paused run (Office's loop stopped with tasks left). Said once, in its list. The stop can be a day
+ * limit, a failed review or a HOLD, so the text says only that it stopped, not that the day's share is done.
+ */
 export const PAUSED_HEADING = "쉬는 중 · 이어서 실행 필요";
-export const PAUSED_TEXT = "오늘 몫은 끝났습니다. 남은 작업이 있습니다.";
+export const PAUSED_TEXT = "실행이 멈췄습니다. 남은 작업이 있습니다.";
 
 /** Decision D4: a Claude Code / Codex session waiting for input. */
 export const SESSION_WAIT_TEXT = "입력을 기다리고 있습니다.";
