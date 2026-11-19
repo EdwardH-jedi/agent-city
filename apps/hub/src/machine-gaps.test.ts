@@ -4,9 +4,14 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HEARTBEAT_ONLINE_BELOW_MS, type Heartbeat } from "@agent-city/schema";
+import {
+	HEARTBEAT_ONLINE_BELOW_MS,
+	type Heartbeat,
+	MachineView,
+} from "@agent-city/schema";
 import { MIGRATIONS_DIR } from "@agent-city/schema/migrations";
 import { migrate, openDb } from "./db.ts";
+import { createApp } from "./index.ts";
 import { recordHeartbeat } from "./store.ts";
 
 const T0 = Date.UTC(2026, 10, 20, 0, 0, 0);
@@ -220,5 +225,164 @@ describe("migration 009 on an existing hub DB", () => {
 				"SELECT rowid FROM machine_gaps WHERE until_at < '2026' ORDER BY until_at LIMIT 64",
 			),
 		).toMatch(/USING (COVERING )?INDEX/);
+	});
+});
+
+// ── 07: the same recent gaps over GET /api/machines and the `machine` message ──────────────────
+
+const TOKEN = "test-ingest-token";
+
+function appAt() {
+	const db = openDb(":memory:");
+	const published: { kind: string; data: unknown }[] = [];
+	let clock = T0;
+	const app = createApp({
+		db,
+		ingestToken: TOKEN,
+		publish: (kind, data) => published.push({ kind, data }),
+		now: () => new Date(clock),
+	});
+	let seq = 0;
+	return {
+		db,
+		published,
+		async beat(ms: number, machine_id: Heartbeat["machine_id"] = "cockpit") {
+			clock = T0 + ms;
+			const body = JSON.stringify({
+				schema: 1,
+				machine_id,
+				boot_id: "boot-aaaa-0001",
+				seq: seq++,
+				sent_at: new Date(T0).toISOString(),
+				interval_s: 30,
+			});
+			const res = await app.request("/ingest/heartbeat", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"content-length": String(new TextEncoder().encode(body).length),
+					authorization: `Bearer ${TOKEN}`,
+				},
+				body,
+			});
+			expect(res.status).toBe(200);
+		},
+		async machines(ms: number): Promise<MachineView[]> {
+			clock = T0 + ms;
+			const res = await app.request("/api/machines");
+			expect(res.status).toBe(200);
+			return ((await res.json()) as { machines: MachineView[] }).machines;
+		},
+	};
+}
+
+const gapOf = (from: number, until: number, boot_changed = false) => ({
+	from_at: iso(from),
+	until_at: iso(until),
+	boot_changed,
+});
+
+describe("recent_gaps over REST and WS", () => {
+	test("every machine carries recent_gaps; never-heard and gapless ones have []", async () => {
+		const a = appAt();
+		const list = await a.machines(0);
+		expect(list.map((m) => [m.id, m.recent_gaps])).toEqual([
+			["cockpit", []],
+			["forge", []],
+			["spine", []],
+		]);
+		await a.beat(0, "spine");
+		await a.beat(30_000, "spine");
+		expect(
+			(await a.machines(30_000)).find((m) => m.id === "spine")?.recent_gaps,
+		).toEqual([]);
+	});
+
+	test("the returning beat's `machine` message and a later GET show the same gaps", async () => {
+		const a = appAt();
+		await a.beat(0);
+		await a.beat(600_000);
+		const sent = a.published.filter((p) => p.kind === "machine").at(-1)
+			?.data as MachineView;
+		expect(sent.recent_gaps).toEqual([gapOf(0, 600_000)]);
+		const cockpit = (await a.machines(600_000)).find((m) => m.id === "cockpit");
+		expect(cockpit).toEqual(sent);
+		expect(MachineView.parse(sent)).toEqual(sent);
+		// asking again gives the same answer
+		expect((await a.machines(600_000)).find((m) => m.id === "cockpit")).toEqual(
+			cockpit,
+		);
+	});
+
+	test("only gaps that ended within the last 24 h, the newest 20, oldest first", async () => {
+		const a = appAt();
+		let t = 0;
+		await a.beat(t);
+		const ends: number[] = [];
+		for (let i = 0; i < 25; i++) {
+			t += 100_000; // each beat 100 s after the last: 25 gaps
+			await a.beat(t);
+			ends.push(t);
+		}
+		const gapsAt = async (ms: number) =>
+			(await a.machines(ms)).find((m) => m.id === "cockpit")?.recent_gaps ?? [];
+		const now = t;
+		const got = await gapsAt(now);
+		expect(got).toHaveLength(20);
+		expect(got.map((g) => g.until_at)).toEqual(ends.slice(-20).map(iso));
+		// the window: a gap ending exactly 24 h before `now` is in, 1 ms earlier is out
+		const last = ends.at(-1) ?? 0;
+		expect((await gapsAt(last + DAY)).map((g) => g.until_at)).toEqual([
+			iso(last),
+		]);
+		expect(await gapsAt(last + DAY + 1)).toEqual([]);
+	});
+
+	test("forge with no history is still drawn (unobserved, [])", async () => {
+		const a = appAt();
+		await a.beat(0, "cockpit");
+		await a.beat(500_000, "cockpit");
+		const forge = (await a.machines(500_000)).find((m) => m.id === "forge");
+		expect(forge).toEqual({
+			id: "forge",
+			hostname: null,
+			heartbeat_at: null,
+			interval_s: null,
+			status: "unobserved",
+			recent_gaps: [],
+		});
+	});
+});
+
+describe("MachineView.recent_gaps schema", () => {
+	const base = {
+		id: "cockpit" as const,
+		hostname: null,
+		heartbeat_at: iso(0),
+		interval_s: 30,
+		status: "online" as const,
+	};
+	test("an old hub's row without the field is still valid", () => {
+		expect(MachineView.safeParse(base).success).toBe(true);
+	});
+	test("ordered, at most 20, each from_at before until_at", () => {
+		const ok = Array.from({ length: 20 }, (_, i) =>
+			gapOf(i * 200_000, i * 200_000 + 100_000),
+		);
+		expect(MachineView.safeParse({ ...base, recent_gaps: ok }).success).toBe(
+			true,
+		);
+		const tooMany = [...ok, gapOf(5_000_000, 5_100_000)];
+		expect(
+			MachineView.safeParse({ ...base, recent_gaps: tooMany }).success,
+		).toBe(false);
+		const unordered = [gapOf(300_000, 400_000), gapOf(0, 100_000)];
+		expect(
+			MachineView.safeParse({ ...base, recent_gaps: unordered }).success,
+		).toBe(false);
+		const backwards = [gapOf(100_000, 0)];
+		expect(
+			MachineView.safeParse({ ...base, recent_gaps: backwards }).success,
+		).toBe(false);
 	});
 });
