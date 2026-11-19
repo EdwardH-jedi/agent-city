@@ -4,7 +4,8 @@
 // never loads or starts anything — copying the files and `launchctl bootstrap` are the owner's call.
 //
 // Jobs (each one only when its inputs are given): tunnel (ssh -L to the hub host), heartbeat, codex
-// log tailer, Agent Office run exporter.
+// log tailer, Agent Office run exporter, and one more exporter per `--office-instance <name>=<home>`
+// (a second Office state home: own label `…exporter.<name>`, own log `exporter.<name>.log`).
 //
 // No secret is ever written: the heartbeat and the tailer read this checkout's own .env at run time
 // (collector/config.ts), and the exporter job sources the owner's projection env file in a shell at
@@ -16,6 +17,7 @@ import {
 	existsSync,
 	lstatSync,
 	mkdirSync,
+	readFileSync,
 	realpathSync,
 	writeFileSync,
 } from "node:fs";
@@ -26,7 +28,7 @@ import { parseArgs } from "node:util";
 export const LABEL_PREFIX = "local.agentcity";
 
 export interface LaunchdJob {
-	/** short name: tunnel | heartbeat | codex | exporter */
+	/** short name: tunnel | heartbeat | codex | exporter | exporter.<instance> */
 	name: string;
 	label: string;
 	args: string[];
@@ -54,8 +56,21 @@ export interface PlanOptions {
 		home?: string | null;
 		/** `<worktreeId>=<owner/name>` entries, each passed as `--project`. */
 		projects?: string[];
+		/** Further Office state homes, one exporter job each (same checkout, env file and hub). */
+		instances?: OfficeInstance[];
 	} | null;
 }
+
+export interface OfficeInstance {
+	/** `[a-z0-9][a-z0-9-]{0,23}`: goes into the job's label and log file name. */
+	name: string;
+	/** Absolute Office state home this exporter reads (`--home`). */
+	home: string;
+	/** `<worktreeId>=<owner/name>` entries for this home only. */
+	projects: string[];
+}
+
+export const INSTANCE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
 
 export interface Plan {
 	jobs: LaunchdJob[];
@@ -151,29 +166,54 @@ export function buildPlan(o: PlanOptions): Plan {
 	} else if (!o.bin.node) {
 		skipped.push("exporter: `node` not found on PATH");
 	} else {
-		jobs.push({
-			name: "exporter",
-			label: `${LABEL_PREFIX}.exporter`,
+		const office = o.office;
+		const node = o.bin.node;
+		const exporter = (
+			name: string,
+			home: string | null,
+			projects: string[],
+		): Omit<LaunchdJob, "stopFirst" | "note"> => ({
+			name,
+			label: `${LABEL_PREFIX}.${name}`,
 			// The token stays in the owner's env file; the shell sources it when the job starts.
 			args: [
 				"/bin/sh",
 				"-c",
 				'set -a; . "$1"; set +a; n="$2"; h="$3"; shift 3; exec "$n" scripts/city-export.mjs --hub "$h" "$@"',
 				"agentcity-exporter",
-				o.office.envFile,
-				o.bin.node,
+				office.envFile,
+				node,
 				o.hubUrl,
 				// Further flags ride along as positional arguments: nothing is spliced into the shell text.
-				...(o.office.home ? ["--home", o.office.home] : []),
-				...(o.office.projects ?? []).flatMap((p) => ["--project", p]),
+				...(home ? ["--home", home] : []),
+				...projects.flatMap((p) => ["--project", p]),
 			],
-			workingDirectory: o.office.dir,
-			logPath: log("exporter"),
+			workingDirectory: office.dir,
+			logPath: log(name),
+		});
+		jobs.push({
+			...exporter("exporter", office.home ?? null, office.projects ?? []),
 			stopFirst: "the terminal `npm run city:export`",
-			note: o.office.home
+			note: office.home
 				? "Runs scripts/city-export.mjs of the checkout given as --office-dir; if that file is not there, the job exits and is retried every 10 s."
 				: "No --office-home: the exporter reads its default state home (~/.agent-office), which may not hold your runs; pass --office-home <the state home that recorded them>. Runs scripts/city-export.mjs of --office-dir; if that file is not there, the job exits and is retried every 10 s.",
 		});
+		for (const i of office.instances ?? [])
+			jobs.push({
+				...exporter(`exporter.${i.name}`, i.home, i.projects),
+				stopFirst: `a terminal \`npm run city:export\` reading ${i.home}, if one runs`,
+			});
+	}
+	// Two jobs with one label would replace each other in launchd; two with one log would interleave.
+	for (const key of ["label", "logPath"] as const) {
+		const seen = new Set<string>();
+		for (const j of jobs) {
+			if (seen.has(j[key]))
+				throw new Error(
+					`two launchd jobs share a ${key === "label" ? "label" : "log"}: ${j[key]}`,
+				);
+			seen.add(j[key]);
+		}
 	}
 	return { jobs, skipped };
 }
@@ -244,6 +284,17 @@ export function outDirProblem(
 	return null;
 }
 
+/** The `--home` an existing exporter job file passes, or null when it passes none (or cannot be read). */
+export function plistHome(xml: string): string | null {
+	const m = /<string>--home<\/string>\s*<string>([^<]*)<\/string>/.exec(xml);
+	if (!m?.[1]) return null;
+	return m[1]
+		.replace(/&quot;/g, '"')
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&amp;/g, "&");
+}
+
 export interface Deps {
 	userHome: string;
 	repoRoot: string;
@@ -260,6 +311,7 @@ export function run(argv: string[], deps: Deps): number {
 		"office-dir"?: string;
 		"office-env"?: string;
 		"office-home"?: string;
+		"office-instance"?: string[];
 		project?: string[];
 		hub?: string;
 		"out-dir"?: string;
@@ -273,6 +325,7 @@ export function run(argv: string[], deps: Deps): number {
 				"office-dir": { type: "string" },
 				"office-env": { type: "string" },
 				"office-home": { type: "string" },
+				"office-instance": { type: "string", multiple: true },
 				project: { type: "string", multiple: true },
 				hub: { type: "string", default: "http://127.0.0.1:4317" },
 				"out-dir": { type: "string" },
@@ -310,10 +363,17 @@ export function run(argv: string[], deps: Deps): number {
 	}
 
 	let office: PlanOptions["office"] = null;
-	const projects = values.project ?? [];
+	const allProjects = values.project ?? [];
+	const instanceArgs = values["office-instance"] ?? [];
 	if (values["office-dir"] === undefined) {
-		if (values["office-home"] !== undefined || projects.length > 0) {
-			deps.log("error: --office-home and --project need --office-dir");
+		if (
+			values["office-home"] !== undefined ||
+			allProjects.length > 0 ||
+			instanceArgs.length > 0
+		) {
+			deps.log(
+				"error: --office-home, --office-instance and --project need --office-dir",
+			);
 			return 2;
 		}
 	} else {
@@ -322,9 +382,52 @@ export function run(argv: string[], deps: Deps): number {
 			deps.log("error: --office-home must be an absolute path");
 			return 2;
 		}
-		if (!projects.every(validProject)) {
-			deps.log("error: --project must look like <worktreeId>=<owner/name>");
-			return 2;
+		// `--office-instance <name>=<absolute home>`: one more exporter job for a second state home.
+		const instances: OfficeInstance[] = [];
+		const homes = new Set(home !== undefined ? [resolve(home)] : []);
+		for (const arg of instanceArgs) {
+			const i = arg.indexOf("=");
+			const name = i > 0 ? arg.slice(0, i) : "";
+			const ihome = i > 0 ? arg.slice(i + 1) : "";
+			if (!INSTANCE_NAME_RE.test(name) || !isAbsolute(ihome)) {
+				deps.log(
+					"error: --office-instance must look like <name>=<absolute state home>, name [a-z0-9-] (max 24)",
+				);
+				return 2;
+			}
+			if (instances.some((x) => x.name === name)) {
+				deps.log(`error: --office-instance name '${name}' is given twice`);
+				return 2;
+			}
+			if (homes.has(resolve(ihome))) {
+				deps.log(
+					"error: two exporters would read the same state home (each home gets one exporter)",
+				);
+				return 2;
+			}
+			homes.add(resolve(ihome));
+			instances.push({ name, home: ihome, projects: [] });
+		}
+		// `--project <worktreeId>=<owner/name>` belongs to the default exporter;
+		// `--project <name>:<worktreeId>=<owner/name>` to that instance only.
+		const projects: string[] = [];
+		for (const entry of allProjects) {
+			const m = /^([a-z0-9][a-z0-9-]{0,23}):(.*)$/.exec(entry);
+			const target = m ? instances.find((x) => x.name === m[1]) : null;
+			const value = m ? (m[2] ?? "") : entry;
+			if (m && !target) {
+				deps.log(
+					`error: --project ${m[1]}:… names no --office-instance '${m[1]}'`,
+				);
+				return 2;
+			}
+			if (!validProject(value)) {
+				deps.log(
+					"error: --project must look like <worktreeId>=<owner/name> (or <instance>:<worktreeId>=<owner/name>)",
+				);
+				return 2;
+			}
+			(target ? target.projects : projects).push(value);
 		}
 		office = {
 			dir: resolve(values["office-dir"]),
@@ -333,6 +436,7 @@ export function run(argv: string[], deps: Deps): number {
 			),
 			home: home ?? null,
 			projects,
+			instances,
 		};
 	}
 
@@ -382,6 +486,30 @@ export function run(argv: string[], deps: Deps): number {
 			return 1;
 		}
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
+	}
+
+	// An exporter file already written for another state home is not replaced: that is how one home's
+	// job would silently start reading another home. Checked for every job before anything is written.
+	for (const job of plan.jobs) {
+		if (!job.name.startsWith("exporter")) continue;
+		const path = join(outDir, `${job.label}.plist`);
+		if (!existsSync(path)) continue;
+		let before: string | null = null;
+		try {
+			before = plistHome(readFileSync(path, "utf8"));
+		} catch {
+			before = null;
+		}
+		const now = plistHome(plistXml(job, []));
+		// Only an explicit home replaced by another explicit home is refused; regenerating without
+		// --office-home keeps the single-home behaviour it always had.
+		if (before !== null && now !== null && before !== now) {
+			deps.log(
+				`error: ${path} already runs the exporter for another state home — refusing to replace it. ` +
+					"Give the new home as --office-instance <name>=<home>, or use another --out-dir.",
+			);
+			return 1;
+		}
 	}
 
 	const written: Array<{ job: LaunchdJob; path: string }> = [];

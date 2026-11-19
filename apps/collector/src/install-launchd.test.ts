@@ -17,6 +17,7 @@ import {
 	LABEL_PREFIX,
 	outDirProblem,
 	parsePorts,
+	plistHome,
 	plistXml,
 	run,
 	validProject,
@@ -379,5 +380,218 @@ describe("run: writes only under ~/.agentcity, prints, never loads", () => {
 			const r = Bun.spawnSync(["plutil", "-lint", join(outDir(), f)]);
 			expect(r.exitCode).toBe(0);
 		}
+	});
+});
+
+describe("a second Office home (--office-instance <name>=<home>)", () => {
+	// Synthetic homes and repo names only.
+	const st = "/h/.agent-office-a";
+	const other = "/h/.agent-office-b";
+	const opts = (
+		instances: { name: string; home: string; projects: string[] }[],
+	) => ({
+		repoRoot: "/r/checkout",
+		agentcityHome: "/h/.agentcity",
+		bin: {
+			bun: "/b/bun",
+			node: "/b/node" as string | null,
+			ssh: "/usr/bin/ssh",
+		},
+		hubUrl: "http://127.0.0.1:4317",
+		tunnel: null,
+		office: {
+			dir: "/o/office",
+			envFile: "/h/.agentcity/office-projection.env",
+			home: st,
+			projects: ["wt-a=Owner/repo-a"],
+			instances,
+		},
+	});
+
+	test("the single-home exporter keeps its label, log and arguments when no instance is given", () => {
+		const e = buildPlan({
+			...opts([]),
+			office: { ...opts([]).office, instances: undefined },
+		}).jobs.find((j) => j.name === "exporter");
+		expect(e?.label).toBe(`${LABEL_PREFIX}.exporter`);
+		expect(e?.logPath).toBe("/h/.agentcity/logs/exporter.log");
+		expect(e?.args.slice(3)).toEqual([
+			"agentcity-exporter",
+			"/h/.agentcity/office-projection.env",
+			"/b/node",
+			"http://127.0.0.1:4317",
+			"--home",
+			st,
+			"--project",
+			"wt-a=Owner/repo-a",
+		]);
+	});
+
+	test("an instance is its own job: own label, own log, own --home, only its own projects", () => {
+		const { jobs } = buildPlan(
+			opts([{ name: "b", home: other, projects: [] }]),
+		);
+		const a = jobs.find((j) => j.name === "exporter");
+		const b = jobs.find((j) => j.name === "exporter.b");
+		expect(a?.label).toBe(`${LABEL_PREFIX}.exporter`);
+		expect(b?.label).toBe(`${LABEL_PREFIX}.exporter.b`);
+		expect(b?.logPath).toBe("/h/.agentcity/logs/exporter.b.log");
+		expect(b?.workingDirectory).toBe("/o/office");
+		expect(b?.args.slice(7)).toEqual(["--home", other]);
+		expect(b?.args).not.toContain("wt-a=Owner/repo-a");
+		expect(a?.args).not.toContain(other);
+		// the shell text is the same fixed string; the home rides as an argument
+		expect(b?.args[2]).toBe(a?.args[2]);
+	});
+
+	test("every label and every log path in a plan is unique", () => {
+		const { jobs } = buildPlan(
+			opts([
+				{ name: "b", home: other, projects: ["wt-b=Owner/repo-b"] },
+				{ name: "c", home: "/h/.agent-office-c", projects: [] },
+			]),
+		);
+		const labels = jobs.map((j) => j.label);
+		const logs = jobs.map((j) => j.logPath);
+		expect(new Set(labels).size).toBe(labels.length);
+		expect(new Set(logs).size).toBe(logs.length);
+		expect(jobs.filter((j) => j.name.startsWith("exporter")).length).toBe(3);
+	});
+
+	test("buildPlan refuses a plan where two jobs would share a label or a log", () => {
+		expect(() =>
+			buildPlan(
+				opts([
+					{ name: "b", home: other, projects: [] },
+					{ name: "b", home: "/h/.agent-office-c", projects: [] },
+				]),
+			),
+		).toThrow(/label|log/);
+	});
+
+	const office = () => join(home, "office");
+	const homeA = () => join(home, "state-a");
+	const homeB = () => join(home, "state-b");
+
+	test("run: one invocation writes both exporters; the instance carries only its prefixed projects", () => {
+		expect(
+			run(
+				[
+					"--office-dir",
+					office(),
+					"--office-home",
+					homeA(),
+					"--project",
+					"wt-a=Owner/repo-a",
+					"--office-instance",
+					`b=${homeB()}`,
+					"--project",
+					"b:wt-b=Owner/repo-b",
+				],
+				deps(),
+			),
+		).toBe(0);
+		expect(plists()).toContain(`${LABEL_PREFIX}.exporter.plist`);
+		expect(plists()).toContain(`${LABEL_PREFIX}.exporter.b.plist`);
+		const a = read(`${LABEL_PREFIX}.exporter.plist`);
+		const b = read(`${LABEL_PREFIX}.exporter.b.plist`);
+		expect(a).toContain(`<string>${homeA()}</string>`);
+		expect(a).toContain("<string>wt-a=Owner/repo-a</string>");
+		expect(a).not.toContain(homeB());
+		expect(a).not.toContain("wt-b=");
+		expect(b).toContain(`<string>${homeB()}</string>`);
+		expect(b).toContain("<string>wt-b=Owner/repo-b</string>");
+		expect(b).not.toContain("wt-a=");
+		expect(b).toContain(join(home, ".agentcity", "logs", "exporter.b.log"));
+		expect(lines.join("\n")).toContain(`${LABEL_PREFIX}.exporter.b.plist`);
+	});
+
+	test("run: bad instances write nothing and exit 2", () => {
+		const o = ["--office-dir", office(), "--office-home", homeA()];
+		const bad: string[][] = [
+			["--office-instance", `b=${homeB()}`], // needs --office-dir
+			[...o, "--office-instance", "b=relative/dir"],
+			[...o, "--office-instance", `B=${homeB()}`],
+			[...o, "--office-instance", `-b=${homeB()}`],
+			[...o, "--office-instance", homeB()],
+			[
+				...o,
+				"--office-instance",
+				`b=${homeB()}`,
+				"--office-instance",
+				`b=${join(home, "state-c")}`,
+			],
+			[...o, "--office-instance", `b=${homeA()}`], // same home as the default exporter
+			[
+				...o,
+				"--office-instance",
+				`b=${homeB()}`,
+				"--office-instance",
+				`c=${homeB()}/`,
+			],
+			[
+				...o,
+				"--office-instance",
+				`b=${homeB()}`,
+				"--project",
+				"x:wt=Owner/repo",
+			], // unknown instance
+			[...o, "--office-instance", `b=${homeB()}`, "--project", "b:wt=repo"],
+		];
+		for (const args of bad) expect(run(args, deps())).toBe(2);
+		expect(existsSync(outDir())).toBe(false);
+	});
+
+	test("run: an exporter file already written for another home is not overwritten", () => {
+		expect(
+			run(["--office-dir", office(), "--office-home", homeA()], deps()),
+		).toBe(0);
+		const before = read(`${LABEL_PREFIX}.exporter.plist`);
+		lines = [];
+		// the second home given as the default exporter's home would replace the first one's job
+		expect(
+			run(["--office-dir", office(), "--office-home", homeB()], deps()),
+		).toBe(1);
+		expect(read(`${LABEL_PREFIX}.exporter.plist`)).toBe(before);
+		expect(lines.join("\n")).toContain("--office-instance");
+		// the same home again (e.g. more --project) is a normal regeneration
+		expect(
+			run(
+				[
+					"--office-dir",
+					office(),
+					"--office-home",
+					homeA(),
+					"--project",
+					"wt-a=Owner/repo-a",
+				],
+				deps(),
+			),
+		).toBe(0);
+		// and the second home as an instance sits beside it
+		expect(
+			run(
+				[
+					"--office-dir",
+					office(),
+					"--office-home",
+					homeA(),
+					"--office-instance",
+					`b=${homeB()}`,
+				],
+				deps(),
+			),
+		).toBe(0);
+		expect(read(`${LABEL_PREFIX}.exporter.plist`)).toContain(homeA());
+		expect(read(`${LABEL_PREFIX}.exporter.b.plist`)).toContain(homeB());
+	});
+
+	test("plistHome reads back the --home an exporter file passes, XML escapes undone", () => {
+		const job = buildPlan(
+			opts([{ name: "b", home: "/h/a&b <c>", projects: [] }]),
+		).jobs.find((j) => j.name === "exporter.b");
+		if (!job) throw new Error("no instance job");
+		expect(plistHome(plistXml(job, ["/usr/bin"]))).toBe("/h/a&b <c>");
+		expect(plistHome("<plist></plist>")).toBeNull();
 	});
 });
