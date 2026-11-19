@@ -383,6 +383,14 @@ export function run(argv: string[], deps: Deps): number {
 			return 2;
 		}
 		// `--office-instance <name>=<absolute home>`: one more exporter job for a second state home.
+		// Without --office-home the main exporter reads Office's own default home, which this tool cannot
+		// resolve (Office decides it); an instance could then be that same home. So instances need it.
+		if (instanceArgs.length > 0 && home === undefined) {
+			deps.log(
+				"error: --office-instance needs --office-home for the main exporter (so two exporters never read one home)",
+			);
+			return 2;
+		}
 		const instances: OfficeInstance[] = [];
 		const homes = new Set(home !== undefined ? [resolve(home)] : []);
 		for (const arg of instanceArgs) {

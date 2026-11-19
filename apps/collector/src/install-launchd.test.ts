@@ -542,6 +542,39 @@ describe("a second Office home (--office-instance <name>=<home>)", () => {
 		expect(existsSync(outDir())).toBe(false);
 	});
 
+	test("run: an instance needs an explicit --office-home (the default home could be the instance's own)", () => {
+		// Without --office-home the main exporter reads Office's default home (~/.agent-office), which the
+		// generator cannot compare; an instance on that same home would make two exporters of one home.
+		const dup = [
+			"--office-dir",
+			office(),
+			"--office-instance",
+			`duplicate=${join(home, ".agent-office")}`,
+		];
+		const other = [
+			"--office-dir",
+			office(),
+			"--office-instance",
+			`b=${homeB()}`,
+		];
+		expect(run(dup, deps())).toBe(2);
+		expect(run(other, deps())).toBe(2);
+		expect(existsSync(outDir())).toBe(false);
+		expect(lines.join("\n")).toContain("--office-home");
+
+		// refused before anything is written or replaced, also when files are already there
+		expect(
+			run(["--office-dir", office(), "--office-home", homeA()], deps()),
+		).toBe(0);
+		const before = plists().map((f) => [f, read(f)]);
+		expect(run(dup, deps())).toBe(2);
+		expect(plists().map((f) => [f, read(f)])).toEqual(before);
+		expect(plists()).not.toContain(`${LABEL_PREFIX}.exporter.duplicate.plist`);
+
+		// the single exporter without --office-home and without instances still works as before
+		expect(run(["--office-dir", office()], deps())).toBe(0);
+	});
+
 	test("run: an exporter file already written for another home is not overwritten", () => {
 		expect(
 			run(["--office-dir", office(), "--office-home", homeA()], deps()),
