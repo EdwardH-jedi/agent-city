@@ -660,7 +660,8 @@ bun run collector:launchd -- --tunnel-target <user@host-or-ssh-alias> \
 | `--ports` | Forwarded loopback ports, default `4317,5173` (what the running tunnel forwards). |
 | `--office-dir` | Checkout whose `scripts/city-export.mjs` is the exporter. Without it the exporter job is skipped. |
 | `--office-home` | The Office state home the exporter reads (`city-export --home`). Without it the exporter reads its own default (`~/.agent-office`), which may not hold your runs, and the generator says so. Absolute path. Needs `--office-dir`. |
-| `--project` | `<worktreeId>=<owner/name>`, repeatable, passed to the exporter as `--project` (same shape it accepts). Needs `--office-dir`. |
+| `--project` | `<worktreeId>=<owner/name>`, repeatable, passed to the exporter as `--project` (same shape it accepts). Needs `--office-dir`. `<instance>:<worktreeId>=<owner/name>` goes to that `--office-instance` only. |
+| `--office-instance` | `<name>=<absolute state home>`, repeatable: one more exporter for a second Office state home, as its own job `local.agentcity.exporter.<name>` logging to `exporter.<name>.log` (name: `a-z`, `0-9`, `-`, at most 24). Same `--office-dir`, env file and hub as the main exporter. Two exporters may not read the same home. Needs `--office-dir` and an explicit `--office-home` (the main exporter's home must be known to compare). |
 | `--office-env` | File with `OFFICE_PROJECTION_TOKEN=…`, default `~/.agentcity/office-projection.env`. |
 | `--hub` | Hub URL the exporter posts to, default `http://127.0.0.1:4317`. |
 | `--out-dir` | Must be inside `~/.agentcity`; `~/Library/LaunchAgents` and `~/.claude` are refused. |
@@ -670,6 +671,13 @@ bun run collector:launchd -- --tunnel-target <user@host-or-ssh-alias> \
   job starts; the generator never opens that file. `--office-home` and `--project` are passed to the
   exporter as separate arguments after `--hub`, never spliced into the shell text. The generator warns when
   `<office-dir>/scripts/city-export.mjs` does not exist; the job would then exit and be retried every 10 s.
+- **Two Office homes.** The main exporter keeps its label and log; each `--office-instance` adds its own job beside it,
+  so one command writes both (`--office-home <home A> --office-instance b=<home B> --project b:<worktreeId>=<owner/name>`).
+  `--office-home` is required once an instance is given: without it the main exporter would read Office's own default
+  home, which the generator cannot see, so an instance on that home would not be caught (exit 2, nothing written).
+  An exporter file already in the out dir that passes another `--home` is not replaced (exit 1): giving the second home
+  as `--office-home` would have turned the first home's job into the second's. Both exporters report as `cockpit`; the
+  hub keeps each run by its run id, so the two homes must not reuse a run id.
 - **Stop the terminal copies first** (the printed list says which). Two tunnels fight over the port, two Codex
   tailers share one offsets file, two heartbeats flap `boot_id`.
 - **The tunnel runs with `BatchMode=yes`**, so it needs a key that works without a prompt. On the cockpit Mac the
