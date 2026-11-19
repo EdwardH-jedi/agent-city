@@ -16,6 +16,17 @@ export const HEARTBEAT_ONLINE_BELOW_MS = 90_000;
 /** Age at or above this → offline; in between → stale. */
 export const HEARTBEAT_OFFLINE_FROM_MS = 600_000;
 
+// Machine gap history (N12, migration 009). A gap is a completed silence of at least HEARTBEAT_ONLINE_BELOW_MS
+// between two accepted beats, on the hub's receive clock.
+/** A stored gap is kept this long after it ended. */
+export const MACHINE_GAP_RETAIN_MS = 30 * 24 * 3_600_000;
+/** At most this many expired gaps are deleted per gap written (the prune never scans the whole table). */
+export const MACHINE_GAP_PRUNE_BATCH = 64;
+/** GET /api/machines and the `machine` message carry the gaps that ended within this window… */
+export const MACHINE_GAPS_RECENT_MS = 24 * 3_600_000;
+/** …at most this many per machine (the newest). */
+export const MACHINE_GAPS_MAX = 20;
+
 // Office run projection (POST /ingest/runs). First-implementation values, tunable in one place.
 /** A snapshot of a few runs with their recent events is tens of KiB; above this → 413. */
 export const RUNS_MAX_BODY_BYTES = 256 * 1024;

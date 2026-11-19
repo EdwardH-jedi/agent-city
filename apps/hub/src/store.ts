@@ -7,8 +7,11 @@ import {
 	dayMinus,
 	type Event,
 	endsAgent,
+	HEARTBEAT_ONLINE_BELOW_MS,
 	type Heartbeat,
 	type IngestEvent,
+	MACHINE_GAP_PRUNE_BATCH,
+	MACHINE_GAP_RETAIN_MS,
 	type MachineLiveness,
 	MachineRole,
 	type MachineView,
@@ -500,6 +503,44 @@ export interface HeartbeatResult {
 }
 
 /**
+ * N12: an accepted beat that comes HEARTBEAT_ONLINE_BELOW_MS or more after the machine's last accepted beat
+ * (both hub receive times) ends a gap; store it. Nothing for a first beat or a hub clock that went backwards.
+ * Called inside recordHeartbeat's transaction, after a repeat was refused. Only when a gap is written, the gaps
+ * that ended more than MACHINE_GAP_RETAIN_MS ago are pruned, at most MACHINE_GAP_PRUNE_BATCH at a time.
+ */
+function recordGap(
+	db: Database,
+	hb: Heartbeat,
+	before: MachineRow | null | undefined,
+	now: Date,
+): void {
+	const last = before?.heartbeat_at
+		? Date.parse(before.heartbeat_at)
+		: Number.NaN;
+	if (!before?.heartbeat_at || Number.isNaN(last)) return;
+	if (now.getTime() - last < HEARTBEAT_ONLINE_BELOW_MS) return;
+	db.query(
+		`INSERT OR IGNORE INTO machine_gaps (machine_id, from_at, until_at, boot_changed)
+		 VALUES ($id, $from, $until, $boot)`,
+	).run({
+		id: hb.machine_id,
+		from: before.heartbeat_at,
+		until: now.toISOString(),
+		boot:
+			before.heartbeat_boot !== null && before.heartbeat_boot !== hb.boot_id
+				? 1
+				: 0,
+	});
+	db.query(
+		`DELETE FROM machine_gaps WHERE rowid IN
+		   (SELECT rowid FROM machine_gaps WHERE until_at < $cut ORDER BY until_at LIMIT $n)`,
+	).run({
+		cut: new Date(now.getTime() - MACHINE_GAP_RETAIN_MS).toISOString(),
+		n: MACHINE_GAP_PRUNE_BATCH,
+	});
+}
+
+/**
  * Record one heartbeat. The liveness clock is `now` (the hub's receive time); the sender's `sent_at`
  * is never stored. Within one `boot_id` the sequence must increase, so a retransmitted or reordered
  * beat is a harmless no-op; a new `boot_id` is a restart and is always accepted.
@@ -527,6 +568,7 @@ export function recordHeartbeat(
 			before.heartbeat_seq !== null &&
 			hb.seq <= before.heartbeat_seq;
 		if (repeat) return { accepted: false, row: before };
+		recordGap(db, hb, before, now);
 		db.query(
 			`UPDATE machines SET
 			   hostname = coalesce($hostname, hostname),

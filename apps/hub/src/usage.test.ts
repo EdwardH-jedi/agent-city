@@ -102,11 +102,11 @@ beforeEach(() => {
 });
 
 describe("migration 8", () => {
-	test("user_version 8; usage and usage_limits have no text, command or path column", () => {
+	test("user_version 8 or later; usage and usage_limits have no text, command or path column", () => {
 		expect(
 			ctx.db.query<{ user_version: number }, []>("PRAGMA user_version").get()
 				?.user_version,
-		).toBe(8);
+		).toBeGreaterThanOrEqual(8);
 		const cols = (t: string) =>
 			ctx.db
 				.query<{ name: string }, []>(
