@@ -177,13 +177,13 @@ export interface Liveness {
 	/** The clock the count runs to: stops when the Mac stopped counting as online. */
 	clock: number;
 	/**
-	 * N12: the completed quiet spells of the cockpit and the item's machine, ordered by return; `undefined`
+	 * N12: the completed quiet spells of the cockpit and the item's machine, merged and in time order; `undefined`
 	 * when the hub sent no history for one of them (an older hub), and the count falls back to before N12.
 	 */
 	history?: readonly QuietSpell[];
 }
 
-/** The hub's completed gaps for the cockpit and `machineId`, as quiet spells; undefined if any is unknown. */
+/** The hub's completed gaps for the cockpit and `machineId`, as merged quiet spells in time order; undefined if any is unknown. */
 function historyOf(
 	machineId: string,
 	machines: readonly MachineLike[],
@@ -200,7 +200,16 @@ function historyOf(
 			if (Number.isNaN(last) || Number.isNaN(back) || back <= last) continue;
 			spells.push({ quiet: last + HEARTBEAT_ONLINE_BELOW_MS, back });
 		}
-	return spells.sort((a, b) => a.back - b.back || a.quiet - b.quiet);
+	// one quiet spell per stretch in which the cockpit or the machine was quiet: a short gap inside a longer one
+	// (or overlapping it) joins it, so the walk below never sees quiet time as time the count could run on
+	spells.sort((a, b) => a.quiet - b.quiet || a.back - b.back);
+	const merged: QuietSpell[] = [];
+	for (const q of spells) {
+		const last = merged.at(-1);
+		if (last && q.quiet <= last.back) last.back = Math.max(last.back, q.back);
+		else merged.push({ ...q });
+	}
+	return merged;
 }
 
 export function livenessOf(
@@ -224,8 +233,8 @@ export function livenessOf(
  * N12: the count of an item this screen has not followed (first sight, a reload), replayed over the hub's
  * completed quiet spells the way a watching screen would have stepped it: a count that had lasted more than
  * 60 s when the Mac went quiet stays done (the held rule: a tie does not count); otherwise it starts again
- * when the Mac is back. Spells are walked in order of return, so overlapping cockpit and machine spells
- * restart it once, at the later return. Only spells that end after the count's start matter; nothing is
+ * when the Mac is back. Overlapping or nested cockpit and machine spells are merged first, so they restart it
+ * once, at the end of the merged stretch. Only spells that end after the count's start matter; nothing is
  * subtracted from the clock.
  */
 export function replayDwell(

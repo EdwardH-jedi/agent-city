@@ -199,6 +199,22 @@ describe("N12: a screen opened after the Mac came back counts like one that watc
 		]);
 	});
 
+	test("a short forge gap inside a longer cockpit gap does not mature the count on cockpit-quiet time", () => {
+		// cockpit quiet from 140 s to R; forge quiet from 390 s (last beat 300) to 400 s, inside it
+		const FORGE: MachineSpec = { id: "forge", stop: 301, back: 400 };
+		const sc: Scenario = {
+			machines: [COCKPIT, FORGE],
+			data: () => ({ sessions: [waitingSession(100, "forge")] }),
+		};
+		const watched = drive(sc, 0, R + 120);
+		const reloaded = drive(sc, R + 30, R + 120);
+		expect(visitsOf(reloaded)).toEqual(visitsOf(from(watched, R + 30)));
+		expect(reloaded.find((t) => t.sec === R + 59)?.visits).toEqual([]);
+		expect(reloaded.find((t) => t.sec === R + 60)?.visits).toEqual([
+			"session:claude:fake-session-1",
+		]);
+	});
+
 	test("ticking on, the same snapshot again, a reconnect: one visit, one walk start, one knock", () => {
 		const reloaded = drive(approval, R + 30, R + 600);
 		const shown = reloaded.filter((t) => t.visits.length > 0);
