@@ -52,6 +52,7 @@ interface Tick {
 	visits: string[];
 	starts: string[];
 	cues: string[];
+	border: string;
 }
 
 interface Scenario {
@@ -86,6 +87,7 @@ function drive(sc: Scenario, open: number, end: number): Tick[] {
 			visits: r.model.visits.map((v) => v.id),
 			starts: r.model.visits.map((v) => v.starts),
 			cues: r.cues,
+			border: r.model.status.border,
 		});
 	}
 	return out;
@@ -94,6 +96,9 @@ function drive(sc: Scenario, open: number, end: number): Tick[] {
 const from = (ticks: Tick[], sec: number) => ticks.filter((t) => t.sec >= sec);
 const visitsOf = (ticks: Tick[]) =>
 	ticks.map((t) => ({ sec: t.sec, visits: t.visits, starts: t.starts }));
+const bordersOf = (ticks: Tick[]) =>
+	ticks.map((t) => ({ sec: t.sec, border: t.border }));
+const tickAt = (ticks: Tick[], sec: number) => ticks.find((t) => t.sec === sec);
 const cuesOf = (ticks: Tick[]) =>
 	ticks.flatMap((t) => t.cues.map((c) => `${t.sec}:${c}`));
 
@@ -220,6 +225,126 @@ describe("N12: a screen opened after the Mac came back counts like one that watc
 		const shown = reloaded.filter((t) => t.visits.length > 0);
 		expect(new Set(shown.map((t) => t.starts.join())).size).toBe(1);
 		expect(shown[0]?.sec).toBe(R + 60);
+		expect(cuesOf(reloaded)).toEqual([`${R + 60}:knock`]);
+	});
+});
+
+// City 09 review: a screen opened while one machine is still quiet (its gap not in recent_gaps yet) must not
+// count the time after that machine went quiet, even when the other machine has a completed gap later on.
+describe("N12: a screen opened while a gap is still going on counts like one that watched", () => {
+	const SESSION = "session:claude:fake-session-1";
+	const forgeWait = (sinceSec: number, fromSec = Number.NEGATIVE_INFINITY) => ({
+		machines: [] as MachineSpec[],
+		data: (sec: number) => ({
+			sessions: sec >= fromSec ? [waitingSession(sinceSec, "forge")] : [],
+		}),
+	});
+	// the reported case: cockpit quiet from 140 s until R; forge quiet 390–400 s, already back
+	const cockpitLong: MachineSpec[] = [
+		COCKPIT,
+		{ id: "forge", stop: 301, back: 400 },
+	];
+	// the mirror: forge quiet from 140 s until R; a short cockpit gap 390–400 s inside it
+	const forgeLong: MachineSpec[] = [
+		{ id: "cockpit", stop: 301, back: 400 },
+		{ id: "forge", stop: 51, back: R },
+	];
+
+	for (const [name, machines] of [
+		["cockpit still quiet, a completed forge gap inside", cockpitLong],
+		["forge still quiet, a completed cockpit gap inside", forgeLong],
+	] as const) {
+		test(`${name}: waiting since 100 s, reload at 500 s or just before the return: no visit until R+60, then one, one knock`, () => {
+			const sc: Scenario = { ...forgeWait(100), machines: [...machines] };
+			const watched = drive(sc, 0, R + 120);
+			// the screen that stayed open: 40 s counted before the quiet, nothing on quiet time
+			expect(tickAt(watched, 500)?.visits).toEqual([]);
+			expect(tickAt(watched, 500)?.border).toBe("none");
+			for (const open of [500, R - 1]) {
+				const reloaded = drive(sc, open, R + 120);
+				expect(reloaded[0]?.visits).toEqual([]);
+				expect(reloaded[0]?.border).toBe("none");
+				expect(visitsOf(reloaded)).toEqual(visitsOf(from(watched, open)));
+				expect(bordersOf(reloaded)).toEqual(bordersOf(from(watched, open)));
+				expect(
+					reloaded
+						.filter((t) => t.sec < R + 60)
+						.every((t) => t.visits.length === 0),
+				).toBe(true);
+				expect(
+					reloaded
+						.filter((t) => t.sec < R + 60)
+						.every((t) => t.border === "none"),
+				).toBe(true);
+				expect(reloaded.find((t) => t.visits.length > 0)?.sec).toBe(R + 60);
+				expect(tickAt(reloaded, R + 60)?.visits).toEqual([SESSION]);
+				expect(tickAt(reloaded, R + 60)?.starts).toEqual([at(R + 60)]);
+				expect(tickAt(reloaded, R + 60)?.border).toBe("yellow");
+				expect(cuesOf(reloaded)).toEqual([`${R + 60}:knock`]);
+			}
+			expect(cuesOf(from(watched, 500))).toEqual([`${R + 60}:knock`]);
+		});
+	}
+
+	test("a completed forge gap that began before the ongoing cockpit gap and ended inside it: one quiet stretch", () => {
+		// forge quiet 150–400 s (last beat 60), cockpit quiet from 340 s (last beat 250) until R
+		const sc: Scenario = {
+			...forgeWait(100),
+			machines: [
+				{ id: "cockpit", stop: 251, back: R },
+				{ id: "forge", stop: 61, back: 400 },
+			],
+		};
+		const watched = drive(sc, 0, R + 120);
+		const reloaded = drive(sc, 500, R + 120);
+		expect(reloaded[0]?.visits).toEqual([]);
+		expect(reloaded[0]?.border).toBe("none");
+		expect(visitsOf(reloaded)).toEqual(visitsOf(from(watched, 500)));
+		expect(reloaded.find((t) => t.visits.length > 0)?.sec).toBe(R + 60);
+		expect(cuesOf(reloaded)).toEqual([`${R + 60}:knock`]);
+	});
+
+	test("a 결재 on forge, cockpit still quiet: the run path agrees too", () => {
+		const sc: Scenario = {
+			machines: [...cockpitLong],
+			data: () => ({
+				runs: [
+					runIn("waiting_owner", {
+						machine_id: "forge",
+						reason: "AWAITING_PLAN_APPROVAL",
+						status: "READY",
+						last_progress_at: at(100),
+					}),
+				],
+			}),
+		};
+		const watched = drive(sc, 0, R + 120);
+		const reloaded = drive(sc, 500, R + 120);
+		expect(reloaded[0]?.visits).toEqual([]);
+		expect(reloaded[0]?.border).toBe("none");
+		expect(visitsOf(reloaded)).toEqual(visitsOf(from(watched, 500)));
+		expect(reloaded.find((t) => t.visits.length > 0)?.sec).toBe(R + 60);
+		expect(cuesOf(reloaded)).toEqual([`${R + 60}:knock`]);
+	});
+
+	test("a wait that had lasted 60 s before the cockpit went quiet keeps its visit, silently", () => {
+		// waiting since 60 s: 80 s counted at 140 s, when the cockpit stopped counting as online
+		const sc: Scenario = { ...forgeWait(60), machines: [...cockpitLong] };
+		const watched = drive(sc, 0, R + 90);
+		const reloaded = drive(sc, 500, R + 90);
+		expect(reloaded[0]?.visits).toEqual([SESSION]);
+		expect(reloaded[0]?.starts).toEqual([at(120)]);
+		expect(reloaded[0]?.border).toBe("yellow");
+		expect(visitsOf(reloaded)).toEqual(visitsOf(from(watched, 500)));
+		expect(cuesOf(reloaded)).toEqual([]);
+	});
+
+	test("a wait that began while the cockpit is quiet does not mature on quiet time", () => {
+		const sc: Scenario = { ...forgeWait(600, 600), machines: [...cockpitLong] };
+		const watched = drive(sc, 0, R + 120);
+		const reloaded = drive(sc, 700, R + 120);
+		expect(visitsOf(reloaded)).toEqual(visitsOf(from(watched, 700)));
+		expect(reloaded.find((t) => t.visits.length > 0)?.sec).toBe(R + 60);
 		expect(cuesOf(reloaded)).toEqual([`${R + 60}:knock`]);
 	});
 });
