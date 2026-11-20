@@ -7,8 +7,14 @@ import {
 	dayMinus,
 	type Event,
 	endsAgent,
+	HEARTBEAT_ONLINE_BELOW_MS,
 	type Heartbeat,
 	type IngestEvent,
+	MACHINE_GAP_PRUNE_BATCH,
+	MACHINE_GAP_RETAIN_MS,
+	MACHINE_GAPS_MAX,
+	MACHINE_GAPS_RECENT_MS,
+	type MachineGap,
 	type MachineLiveness,
 	MachineRole,
 	type MachineView,
@@ -481,7 +487,35 @@ interface MachineRow {
 const MACHINE_COLUMNS =
 	"id, hostname, heartbeat_at, heartbeat_boot, heartbeat_seq, heartbeat_interval_s";
 
+/**
+ * N12: the machine's completed gaps that ended within MACHINE_GAPS_RECENT_MS of `now`, the newest
+ * MACHINE_GAPS_MAX, oldest first. The one place GET /api/machines and the `machine` message take them from.
+ */
+function recentGaps(db: Database, role: MachineRole, now: Date): MachineGap[] {
+	return db
+		.query<
+			{ from_at: string; until_at: string; boot_changed: number },
+			{ id: string; since: string; n: number }
+		>(
+			`SELECT from_at, until_at, boot_changed FROM machine_gaps
+			 WHERE machine_id = $id AND until_at >= $since
+			 ORDER BY until_at DESC, from_at DESC LIMIT $n`,
+		)
+		.all({
+			id: role,
+			since: new Date(now.getTime() - MACHINE_GAPS_RECENT_MS).toISOString(),
+			n: MACHINE_GAPS_MAX,
+		})
+		.reverse()
+		.map((g) => ({
+			from_at: g.from_at,
+			until_at: g.until_at,
+			boot_changed: g.boot_changed === 1,
+		}));
+}
+
 const toMachineView = (
+	db: Database,
 	role: MachineRole,
 	row: MachineRow | null | undefined,
 	now: Date,
@@ -491,12 +525,51 @@ const toMachineView = (
 	heartbeat_at: row?.heartbeat_at ?? null,
 	interval_s: row?.heartbeat_interval_s ?? null,
 	status: machineStatus(row?.heartbeat_at ?? null, now),
+	recent_gaps: recentGaps(db, role, now),
 });
 
 export interface HeartbeatResult {
 	/** false → a repeat or out-of-order beat of the same boot: nothing was changed. */
 	accepted: boolean;
 	machine: MachineView;
+}
+
+/**
+ * N12: an accepted beat that comes HEARTBEAT_ONLINE_BELOW_MS or more after the machine's last accepted beat
+ * (both hub receive times) ends a gap; store it. Nothing for a first beat or a hub clock that went backwards.
+ * Called inside recordHeartbeat's transaction, after a repeat was refused. Only when a gap is written, the gaps
+ * that ended more than MACHINE_GAP_RETAIN_MS ago are pruned, at most MACHINE_GAP_PRUNE_BATCH at a time.
+ */
+function recordGap(
+	db: Database,
+	hb: Heartbeat,
+	before: MachineRow | null | undefined,
+	now: Date,
+): void {
+	const last = before?.heartbeat_at
+		? Date.parse(before.heartbeat_at)
+		: Number.NaN;
+	if (!before?.heartbeat_at || Number.isNaN(last)) return;
+	if (now.getTime() - last < HEARTBEAT_ONLINE_BELOW_MS) return;
+	db.query(
+		`INSERT OR IGNORE INTO machine_gaps (machine_id, from_at, until_at, boot_changed)
+		 VALUES ($id, $from, $until, $boot)`,
+	).run({
+		id: hb.machine_id,
+		from: before.heartbeat_at,
+		until: now.toISOString(),
+		boot:
+			before.heartbeat_boot !== null && before.heartbeat_boot !== hb.boot_id
+				? 1
+				: 0,
+	});
+	db.query(
+		`DELETE FROM machine_gaps WHERE rowid IN
+		   (SELECT rowid FROM machine_gaps WHERE until_at < $cut ORDER BY until_at LIMIT $n)`,
+	).run({
+		cut: new Date(now.getTime() - MACHINE_GAP_RETAIN_MS).toISOString(),
+		n: MACHINE_GAP_PRUNE_BATCH,
+	});
 }
 
 /**
@@ -527,6 +600,7 @@ export function recordHeartbeat(
 			before.heartbeat_seq !== null &&
 			hb.seq <= before.heartbeat_seq;
 		if (repeat) return { accepted: false, row: before };
+		recordGap(db, hb, before, now);
 		db.query(
 			`UPDATE machines SET
 			   hostname = coalesce($hostname, hostname),
@@ -546,7 +620,7 @@ export function recordHeartbeat(
 		return { accepted: true, row: read() };
 	});
 	const { accepted, row } = apply();
-	return { accepted, machine: toMachineView(hb.machine_id, row, now) };
+	return { accepted, machine: toMachineView(db, hb.machine_id, row, now) };
 }
 
 /** Always one row per MachineRole (cockpit, forge, spine); a machine never heard from is `unobserved`. */
@@ -556,7 +630,7 @@ export function listMachines(db: Database, now: Date): MachineView[] {
 		.all();
 	const byId = new Map(rows.map((r) => [r.id, r]));
 	return MachineRole.options.map((role) =>
-		toMachineView(role, byId.get(role), now),
+		toMachineView(db, role, byId.get(role), now),
 	);
 }
 

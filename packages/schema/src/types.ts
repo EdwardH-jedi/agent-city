@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
 	HEARTBEAT_INTERVAL_MAX_S,
 	HEARTBEAT_INTERVAL_MIN_S,
+	MACHINE_GAPS_MAX,
 	MAX_INGEST_BATCH,
 	RUN_COMPLETED_MAX,
 	RUN_EVENTS_MAX_PER_RUN,
@@ -71,6 +72,21 @@ export const Heartbeat = z.strictObject({
 });
 export type Heartbeat = z.infer<typeof Heartbeat>;
 
+/**
+ * N12: one completed heartbeat gap (migration 009). Hub receive times of the last accepted beat before it and of
+ * the accepted beat that ended it; `boot_changed` when that beat carried a new boot_id (the machine restarted).
+ */
+export const MachineGap = z
+	.object({
+		from_at: Ts,
+		until_at: Ts,
+		boot_changed: z.boolean(),
+	})
+	.refine((g) => Date.parse(g.from_at) < Date.parse(g.until_at), {
+		message: "a gap ends after it starts",
+	});
+export type MachineGap = z.infer<typeof MachineGap>;
+
 /** GET /api/machines row. Always one per MachineRole; `unobserved` when nothing was ever received. */
 export const MachineView = z.object({
 	id: MachineRole,
@@ -79,6 +95,24 @@ export const MachineView = z.object({
 	heartbeat_at: Ts.nullable(),
 	interval_s: z.number().int().nullable(),
 	status: MachineLiveness,
+	/**
+	 * N12: completed gaps that ended within MACHINE_GAPS_RECENT_MS of the hub's answer, the newest
+	 * MACHINE_GAPS_MAX, oldest first. Absent from an older hub's answer, which a screen reads as "no history
+	 * known" (not as "no gap").
+	 */
+	recent_gaps: z
+		.array(MachineGap)
+		.max(MACHINE_GAPS_MAX)
+		.refine(
+			(gs) =>
+				gs.every(
+					(g, i) =>
+						i === 0 ||
+						Date.parse(gs[i - 1]?.until_at ?? "") <= Date.parse(g.until_at),
+				),
+			{ message: "gaps are ordered by until_at" },
+		)
+		.optional(),
 });
 export type MachineView = z.infer<typeof MachineView>;
 

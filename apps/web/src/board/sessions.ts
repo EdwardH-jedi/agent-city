@@ -72,7 +72,10 @@ export function recentSessions(
 	return out;
 }
 
-export type MachineLike = Pick<MachineView, "id" | "status" | "heartbeat_at">;
+export type MachineLike = Pick<
+	MachineView,
+	"id" | "status" | "heartbeat_at" | "recent_gaps"
+>;
 
 /**
  * When a machine stopped reporting: the moment it stopped counting as online (last heartbeat + 90 s),
@@ -156,6 +159,16 @@ const gapped = (
 	cur[id] !== undefined &&
 	cur[id] - prev[id] >= HEARTBEAT_ONLINE_BELOW_MS;
 
+/**
+ * N12: one quiet spell. `quiet` is when the machine stopped counting as online (its last beat + 90 s, where a
+ * watching screen's clock stops); `back` is the beat that ended it — a completed gap from the hub's history — or
+ * `Infinity` while the machine is still quiet (the hub keeps only completed gaps; the ongoing one is its status).
+ */
+export interface QuietSpell {
+	quiet: number;
+	back: number;
+}
+
 /** What one tick knows about the Mac for an item on `machineId`. */
 export interface Liveness {
 	/** Not reporting now (stale / offline). */
@@ -164,6 +177,53 @@ export interface Liveness {
 	resumed: boolean;
 	/** The clock the count runs to: stops when the Mac stopped counting as online. */
 	clock: number;
+	/**
+	 * N12: the quiet spells of the cockpit and the item's machine — the hub's completed gaps plus the one still going
+	 * on, if either is quiet now — merged and in time order; `undefined` when the hub sent no history for one of
+	 * them (an older hub), and the count falls back to before N12.
+	 */
+	history?: readonly QuietSpell[];
+}
+
+/**
+ * The quiet spells of the cockpit and `machineId` as merged spells in time order: the hub's completed gaps, and an
+ * open spell (`back` = Infinity) for a machine that is quiet now. Undefined if any machine's history is unknown.
+ */
+function historyOf(
+	machineId: string,
+	machines: readonly MachineLike[],
+): QuietSpell[] | undefined {
+	const ids = machineId === "cockpit" ? ["cockpit"] : ["cockpit", machineId];
+	const rows = ids.flatMap((id) => machines.filter((m) => m.id === id));
+	if (rows.length === 0 || rows.some((m) => m.recent_gaps === undefined))
+		return undefined;
+	const spells: QuietSpell[] = [];
+	for (const m of rows) {
+		for (const g of m.recent_gaps ?? []) {
+			const last = Date.parse(g.from_at);
+			const back = Date.parse(g.until_at);
+			if (Number.isNaN(last) || Number.isNaN(back) || back <= last) continue;
+			spells.push({ quiet: last + HEARTBEAT_ONLINE_BELOW_MS, back });
+		}
+		// the gap still going on is not in recent_gaps (the hub writes a gap when the machine is back); without it a
+		// later completed gap of the other machine would look like the only quiet time (City 09 review)
+		const beat = m.heartbeat_at ? Date.parse(m.heartbeat_at) : Number.NaN;
+		if (quiet(m) && !Number.isNaN(beat))
+			spells.push({
+				quiet: beat + HEARTBEAT_ONLINE_BELOW_MS,
+				back: Number.POSITIVE_INFINITY,
+			});
+	}
+	// one quiet spell per stretch in which the cockpit or the machine was quiet: a short gap inside a longer one
+	// (or overlapping it) joins it, so the walk below never sees quiet time as time the count could run on
+	spells.sort((a, b) => a.quiet - b.quiet || a.back - b.back);
+	const merged: QuietSpell[] = [];
+	for (const q of spells) {
+		const last = merged.at(-1);
+		if (last && q.quiet <= last.back) last.back = Math.max(last.back, q.back);
+		else merged.push({ ...q });
+	}
+	return merged;
 }
 
 export function livenessOf(
@@ -173,12 +233,37 @@ export function livenessOf(
 	prevBeats: Readonly<Record<string, number>>,
 ): Liveness {
 	const cur = beatsOf(machines);
+	const history = historyOf(machineId, machines);
 	return {
 		held: isHeld(machineId, machines),
 		resumed:
 			gapped("cockpit", prevBeats, cur) || gapped(machineId, prevBeats, cur),
 		clock: sessionClock(machineId, machines, now),
+		...(history ? { history } : {}),
 	};
+}
+
+/**
+ * N12: the count of an item this screen has not followed (first sight, a reload), replayed over the quiet
+ * spells the way a watching screen would have stepped it: a count that had lasted more than 60 s when the Mac
+ * went quiet stays done (the held rule: a tie does not count); otherwise it starts again when the Mac is back.
+ * Overlapping or nested cockpit and machine spells are merged first, so they restart it once, at the end of the
+ * merged stretch. A spell still going on ends the walk: the count is on hold from that spell's start, and
+ * `from` stays where it was (always finite). Only spells that end after the count's start matter; nothing is
+ * subtracted from the clock.
+ */
+export function replayDwell(
+	start: number,
+	history: readonly QuietSpell[],
+): { from: number; ok: boolean } {
+	let from = start;
+	for (const q of history) {
+		if (q.back <= from) continue;
+		if (q.quiet - from > DWELL_MS) return { from, ok: true };
+		if (!Number.isFinite(q.back)) return { from, ok: false };
+		from = q.back;
+	}
+	return { from, ok: false };
 }
 
 /** One item's 60 s count, as this screen has followed it. */
@@ -206,10 +291,22 @@ export function stepDwell(
 ): Dwell {
 	let from = prev ? prev.from : start;
 	let ok = prev ? prev.ok : false;
-	if (!ok && !live.held && (prev?.held || live.resumed)) from = now;
-	// held: only what had lasted 60 s before the Mac went quiet (a tie at that instant does not count)
+	const replay = prev ? undefined : live.history;
+	if (replay) {
+		// N12, first sight with the hub's history: the history already holds any return seen on this tick
+		// (the same `machine` message carried both), so `resumed` is not applied on top of it
+		({ from, ok } = replayDwell(start, replay));
+	} else if (!ok && !live.held && (prev?.held || live.resumed)) from = now;
+	// held: only what had lasted 60 s before the Mac went quiet (a tie at that instant does not count). A count
+	// held on the last tick and still held cannot have gained time: its clock can move only because the quiet
+	// machine changed (the cockpit came back while the item's own machine is still quiet), and that time was
+	// quiet too (N12: overlapping cockpit and machine gaps are not counted). Replayed while held, the open spell
+	// already decided it: `live.clock` is the quiet point of the machine quiet now, which can be later than the
+	// start of the merged quiet stretch (City 09 review).
 	const lasted = live.clock - from;
-	if (!ok && (live.held ? lasted > DWELL_MS : lasted >= DWELL_MS)) ok = true;
+	const stillHeld = live.held && (prev?.held === true || replay !== undefined);
+	if (!ok && !stillHeld && (live.held ? lasted > DWELL_MS : lasted >= DWELL_MS))
+		ok = true;
 	return { from, ok, held: live.held };
 }
 

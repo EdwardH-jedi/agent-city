@@ -214,9 +214,13 @@ at weight 400); everything else is the
   leaves because time passed (a session keeps its visit past its 30 minutes), the border keeps its colour
   and nothing sounds. Reports that still arrive (the exporter runs apart from the heartbeat) are drawn
   only once the Mac is back, and a 60 s count that had not finished starts again from zero then.
-- **Paused runs (decision D2).** `paused` (Office's loop ended for the day with tasks left) is not a 결재:
-  no visit, no border, no sound, its building dark with the lead inside. It is listed under HQ 대기 as
-  `쉬는 중 · 이어서 실행 필요` with `오늘 몫은 끝났습니다. 남은 작업이 있습니다.` The first time the quiet hours end
+  The hub keeps each machine's completed heartbeat gaps (90 s or more, 30 days; `recent_gaps` on
+  `GET /api/machines` and `machine` carries those that ended in the last 24 h, newest 20), so a screen
+  opened or reloaded after the Mac came back counts the same way: R+30 s reload, the visit still starts at
+  R+60 s. An older hub without `recent_gaps` leaves the reload counting from the wait's start.
+- **Paused runs (decision D2).** `paused` (Office `READY` / `DISPATCH_STOPPED`: the loop stopped with tasks left, e.g.
+  `--max-tasks` reached or a day limit; a HOLD is `hold`) is not a 결재: no visit, no border, no sound, its building dark with the lead inside. It is listed under HQ 대기 as
+  `쉬는 중 · 이어서 실행 필요` with `실행이 멈췄습니다. 남은 작업이 있습니다.` The first time the quiet hours end
   after it paused (08:00 by default, the `?quiet=` end hour), the board knocks once — once per
   paused run per day. A morning that passes while the board may not sound (cockpit offline, `?sound=off`)
   or before the page was opened is not made up later.
